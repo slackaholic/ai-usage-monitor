@@ -1,0 +1,7 @@
+node_modules/
+.claude/
+settings.json
+usage-log.jsonl
+claude-desktop-debug.txt
+claude-api-debug.json
+*.lnk
