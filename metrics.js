@@ -50,6 +50,31 @@ function cycleStats(cycle, win) {
   };
 }
 
+function summarize(stats) {
+  const count = stats.length;
+  const blocked = stats.filter(s => s.blocked);
+  return {
+    count,
+    blockedCount: blocked.length,
+    blockRate: count ? blocked.length / count : 0,
+    totalBlockedMs: blocked.reduce((a, s) => a + s.blockedMs, 0),
+    peaks: stats.map(s => ({ ts: s.startTs, peakPct: s.peakPct })),
+  };
+}
+
+function hourlyBurn(snapshots, win) {
+  const hours = new Array(24).fill(0);
+  const pts = snapshots.filter(s => s && s[win] != null);
+  for (let i = 1; i < pts.length; i++) {
+    const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
+    const drop = pts[i - 1][win] - pts[i][win];
+    if (drop > 0 && dt < ACTIVE_GAP_MAX) {
+      hours[new Date(pts[i - 1].ts).getHours()] += drop;
+    }
+  }
+  return hours;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn };
 }

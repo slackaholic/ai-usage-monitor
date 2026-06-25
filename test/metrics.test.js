@@ -70,3 +70,38 @@ test('cycleStats measures blocked duration when a cycle hits zero', () => {
   assert.equal(s.blocked, true);
   assert.equal(s.blockedMs, 3_600_000); // 01:00 → 02:00
 });
+
+const { summarize, hourlyBurn } = require('../metrics.js');
+
+test('summarize aggregates block rate and peaks across cycles', () => {
+  const stats = [
+    { startTs: 'a', peakPct: 60, blocked: false, blockedMs: 0 },
+    { startTs: 'b', peakPct: 100, blocked: true, blockedMs: 3_600_000 },
+  ];
+  const sum = summarize(stats);
+  assert.equal(sum.count, 2);
+  assert.equal(sum.blockedCount, 1);
+  assert.equal(sum.blockRate, 0.5);
+  assert.equal(sum.totalBlockedMs, 3_600_000);
+  assert.deepEqual(sum.peaks, [{ ts: 'a', peakPct: 60 }, { ts: 'b', peakPct: 100 }]);
+});
+
+test('summarize handles no completed cycles', () => {
+  const sum = summarize([]);
+  assert.equal(sum.count, 0);
+  assert.equal(sum.blockRate, 0);
+  assert.deepEqual(sum.peaks, []);
+});
+
+test('hourlyBurn sums active drops and excludes idle gaps and resets', () => {
+  const snaps = [
+    { ts: '2026-06-25T09:00:00Z', '5h': 100 },
+    { ts: '2026-06-25T09:05:00Z', '5h': 90 },  // active drop 10
+    { ts: '2026-06-25T11:00:00Z', '5h': 70 },  // gap 115min → idle, excluded
+    { ts: '2026-06-25T11:05:00Z', '5h': 60 },  // active drop 10
+    { ts: '2026-06-25T11:10:00Z', '5h': 100 }, // reset (negative) → excluded
+  ];
+  const hours = hourlyBurn(snaps, '5h');
+  assert.equal(hours.length, 24);
+  assert.equal(hours.reduce((a, b) => a + b, 0), 20); // TZ-independent total
+});
