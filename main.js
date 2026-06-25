@@ -792,14 +792,17 @@ async function fetchClaudeUsageViaApi(key) {
   try { fs.writeFileSync(path.join(__dirname, 'claude-api-debug.json'),
     JSON.stringify({ orgId, account, rateLimits, orgUsage }, null, 2)); } catch {}
 
+  // /api/account returns the address as `email_address` (not `email`)
+  const acctEmail = account.data?.email_address || account.data?.email || null;
+
   // Try org usage endpoint first
   if (orgUsage.status === 200 && orgUsage.data) {
-    return { apiData: orgUsage.data, email: account.data?.email, url: `api:org/${orgId}/usage` };
+    return { apiData: orgUsage.data, email: acctEmail, url: `api:org/${orgId}/usage` };
   }
 
   // Try rate limit status
   if (rateLimits.status === 200 && rateLimits.data) {
-    return { apiData: rateLimits.data, email: account.data?.email, url: 'api:rate_limit_status' };
+    return { apiData: rateLimits.data, email: acctEmail, url: 'api:rate_limit_status' };
   }
 
   return { error: `API org:${orgUsage.status} rl:${rateLimits.status}`, apiDebug: { account: account.status, orgId } };

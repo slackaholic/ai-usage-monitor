@@ -188,6 +188,21 @@ function fmtDuration(ms) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+// Shared reset-label formatters so every card displays resets identically:
+// 5h window as a countdown ("Resets in 2h 41m"), weekly as a date
+// ("Resets Tue, 30 Jun 12:00"). Both take an absolute reset timestamp (ms).
+function fmtResetIn(ms) {
+  if (!ms || ms <= Date.now()) return '';
+  return 'Resets in ' + fmtDuration(ms - Date.now());
+}
+function fmtResetOn(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const dateStr = d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return `Resets ${dateStr} ${timeStr}`;
+}
+
 function fmtAgo(ts) {
   const diff = Date.now() - new Date(ts).getTime();
   if (diff < 60_000) return 'just now';
@@ -660,8 +675,8 @@ function renderClaudeWebData(parsed, stale = false) {
 
   setPct('claude-5h-pct', remaining5h);
   setPct('claude-wk-pct', remainingWk);
-  set('claude-5h-reset', parsed.sessionReset ? 'Resets in ' + parsed.sessionReset : '');
-  set('claude-wk-reset', parsed.weeklyReset  ? 'Resets '    + parsed.weeklyReset  : '');
+  set('claude-5h-reset', parsed.sessionResetMs ? fmtResetIn(parsed.sessionResetMs) : (parsed.sessionReset ? 'Resets in ' + parsed.sessionReset : ''));
+  set('claude-wk-reset', parsed.weeklyResetMs  ? fmtResetOn(parsed.weeklyResetMs)  : (parsed.weeklyReset  ? 'Resets ' + parsed.weeklyReset : ''));
 
   const bar5h = document.getElementById('claude-5h-bar');
   const barWk  = document.getElementById('claude-wk-bar');
@@ -759,15 +774,8 @@ function renderClaudeCodeApiData(data, stale = false) {
 
   setPct('claude2-5h-pct', data.pct5h);
   setPct('claude2-wk-pct', data.pct7d);
-  set('claude2-5h-reset', data.reset5h ? 'Resets in ' + data.reset5h : '');
-  if (data.reset7dMs > 0) {
-    const d = new Date(data.reset7dMs);
-    const dateStr = d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
-    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    set('claude2-wk-reset', `Resets ${dateStr} ${timeStr}`);
-  } else {
-    set('claude2-wk-reset', data.reset7d ? 'Resets in ' + data.reset7d : '');
-  }
+  set('claude2-5h-reset', data.reset5hMs > 0 ? fmtResetIn(data.reset5hMs) : (data.reset5h ? 'Resets in ' + data.reset5h : ''));
+  set('claude2-wk-reset', data.reset7dMs > 0 ? fmtResetOn(data.reset7dMs) : (data.reset7d ? 'Resets in ' + data.reset7d : ''));
 
   const bar5h = document.getElementById('claude2-5h-bar');
   const barWk  = document.getElementById('claude2-wk-bar');
@@ -897,19 +905,8 @@ function renderCodexData(parsed, stale = false) {
 
   setPct('codex-5h-pct',  parsed.shared5h);
   setPct('codex-wk-pct',  parsed.sharedWeek);
-  if (parsed.reset5hMs > 0) {
-    set('codex-5h-reset', 'Resets in ' + fmtDuration(parsed.reset5hMs - Date.now()));
-  } else {
-    set('codex-5h-reset', parsed.shared5hReset ? 'Resets ' + parsed.shared5hReset : '');
-  }
-  if (parsed.reset7dMs > 0) {
-    const d = new Date(parsed.reset7dMs);
-    const dateStr = d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
-    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    set('codex-wk-reset', `Resets ${dateStr} ${timeStr}`);
-  } else {
-    set('codex-wk-reset', parsed.sharedWeekReset ? 'Resets ' + parsed.sharedWeekReset : '');
-  }
+  set('codex-5h-reset', parsed.reset5hMs > 0 ? fmtResetIn(parsed.reset5hMs) : (parsed.shared5hReset ? 'Resets ' + parsed.shared5hReset : ''));
+  set('codex-wk-reset', parsed.reset7dMs > 0 ? fmtResetOn(parsed.reset7dMs) : (parsed.sharedWeekReset ? 'Resets ' + parsed.sharedWeekReset : ''));
   set('codex-credits', parsed.credits ?? '—');
 
   const bar5h = document.getElementById('codex-5h-bar');
