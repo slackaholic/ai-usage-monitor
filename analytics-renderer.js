@@ -7,6 +7,15 @@ let currentAccount = VALID_ACCOUNTS.includes(initialAccount) ? initialAccount : 
 let windowHours    = 24;
 let rowLimit       = 200;
 
+// Token consumption multipliers relative to a 1× base (Sonnet-equivalent).
+// Claude Code (VS Code) uses Opus-class models which burn the 5h quota 20× faster
+// than Codex / Claude Desktop at equivalent wallclock usage.
+const PLAN_MULTIPLIERS = {
+  'codex':          1,
+  'claude-desktop': 1,
+  'claude-vscode':  20,
+};
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 function fmtDuration(ms) {
   if (ms < 0) return 'now';
@@ -204,6 +213,7 @@ function renderStats(entries, container) {
   const dep5h  = entries.filter(e => e.depleted?.includes('5h')).length;
   const depWk  = entries.filter(e => e.depleted?.includes('wk')).length;
   const spanMs = new Date(last.ts) - new Date(entries[0].ts);
+  const mult   = PLAN_MULTIPLIERS[currentAccount] ?? 1;
 
   const depleteStr = burn.depletesAt
     ? burn.depletesAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -221,17 +231,25 @@ function renderStats(entries, container) {
     nextResetSub = msUntil > 0 ? `in ${fmtDuration(msUntil)}` : 'overdue';
   }
 
+  // When multiplier > 1, show effective token burn in sub-text for burn cards
+  const effSub = (rate, baseSub) => {
+    if (mult === 1 || rate <= 0) return baseSub;
+    return `${baseSub} · ${(rate * mult).toFixed(1)}%/hr equiv.`;
+  };
+
   const cards = [
-    // Row 1 — current state
-    { label: '5H Remaining',     value: last['5h'] != null ? last['5h'] + '%' : '—', sub: 'current',                        cls: last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : 'green' },
-    { label: '5H Used',          value: used5h,                                        sub: 'consumed this window',           cls: used5hCls },
-    { label: 'Weekly Remaining', value: last['wk'] != null ? last['wk'] + '%' : '—',  sub: 'current',                        cls: last['wk'] < 20 ? 'red' : last['wk'] < 50 ? 'amber' : 'green' },
-    { label: 'Next 5H Reset ~',  value: nextResetStr,                                  sub: nextResetSub,                     cls: '' },
-    // Row 2 — burn analysis
-    { label: 'Burn Now',         value: burn.rateNow > 0 ? fmtRate(burn.rateNow) : '—', sub: 'last 30 min',                  cls: '' },
-    { label: 'Burn Avg',         value: burn.rateAll > 0 ? fmtRate(burn.rateAll) : '—', sub: `over ${fmtDuration(spanMs)}`,  cls: '' },
-    { label: 'Peak Burn',        value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: '10-min window',              cls: '' },
-    { label: 'Depletes At',      value: depleteStr,                                      sub: dep5h || depWk ? `${dep5h}×5h ${depWk}×wk depletions` : 'at current rate', cls: burn.depletesAt && burn.depletesAt - Date.now() < 3_600_000 ? 'red' : '' },
+    // Row 1 — what you have
+    { label: '5H Remaining',     value: last['5h'] != null ? last['5h'] + '%' : '—', sub: 'current',               cls: last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : 'green' },
+    { label: '5H Used',          value: used5h,                                        sub: 'consumed this window', cls: used5hCls },
+    { label: 'Weekly Remaining', value: last['wk'] != null ? last['wk'] + '%' : '—',  sub: 'current',               cls: last['wk'] < 20 ? 'red' : last['wk'] < 50 ? 'amber' : 'green' },
+    // Row 2 — how fast
+    { label: 'Burn Now',  value: burn.rateNow  > 0 ? fmtRate(burn.rateNow)  : '—', sub: effSub(burn.rateNow,  'last 30 min'),              cls: '' },
+    { label: 'Burn Avg',  value: burn.rateAll  > 0 ? fmtRate(burn.rateAll)  : '—', sub: effSub(burn.rateAll,  `over ${fmtDuration(spanMs)}`), cls: '' },
+    { label: 'Peak Burn', value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: effSub(burn.ratePeak, '10-min window'),             cls: '' },
+    // Row 3 — what's next
+    { label: 'Depletes At',    value: depleteStr,   sub: dep5h || depWk ? `${dep5h}×5h ${depWk}×wk depletions` : 'at current rate', cls: burn.depletesAt && burn.depletesAt - Date.now() < 3_600_000 ? 'red' : '' },
+    { label: 'Next 5H Reset ~', value: nextResetStr, sub: nextResetSub,           cls: '' },
+    { label: 'Plan Speed',     value: `${mult}×`,   sub: mult > 1 ? `${mult}× token consumption vs 1× base` : '1× base token rate', cls: mult > 1 ? 'amber' : 'dim' },
   ];
 
   container.innerHTML = `
