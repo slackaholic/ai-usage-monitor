@@ -5,7 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "install-deps": "npm install"
+    "install-deps": "npm install",
+    "test": "node --test"
   },
   "dependencies": {
     "electron": "^28.0.0",
