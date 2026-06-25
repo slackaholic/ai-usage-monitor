@@ -1033,15 +1033,20 @@ document.getElementById('claude-login-btn').addEventListener('click', () => {
   showToast('Log in to claude.ai, then click ↻ to refresh.');
 });
 document.getElementById('btn-set-session-cookie')?.addEventListener('click', async () => {
-  const val = document.getElementById('claude-session-cookie')?.value?.trim();
-  if (!val) { showToast('Paste your activitySessionId value first.'); return; }
-  showToast('Setting cookie and testing…');
+  let val = document.getElementById('claude-session-cookie')?.value?.trim();
+  if (!val) { showToast('Paste your sessionKey value first.'); return; }
+  // Accept a bare value (sk-ant-sid01-…) as well as a full "sessionKey=…" pair
+  // or a whole cookie header. If no "=" is present, assume it's the sessionKey.
+  if (!val.includes('=')) val = 'sessionKey=' + val;
+  showToast('Importing session cookie and verifying…');
   const result = await window.electronAPI.setClaudeSessionCookie(val);
   if (result.status === 200) {
     document.getElementById('claude-session-cookie').value = '';
-    showToast('Authenticated! Click ↻ on the Claude Desktop card.');
+    showToast('Authenticated! Loading usage…');
+    hasData.claude = false;
+    fetchClaudeWebUsage();
   } else {
-    showToast(`Auth failed (HTTP ${result.status}) — check the cookie value.`);
+    showToast(`Auth failed (HTTP ${result.status}) — paste a fresh sessionKey value.`);
   }
 });
 document.getElementById('btn-borrow-claude-session')?.addEventListener('click', async () => {

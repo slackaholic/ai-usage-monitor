@@ -517,6 +517,18 @@
         <div style="text-align:right">
           <button class="sign-out-btn" id="claude-signout-btn">Sign out / switch account</button>
         </div>
+        <details style="margin-top:8px">
+          <summary class="note" style="cursor:pointer">Email-only account? Import session cookie →</summary>
+          <div class="note" style="margin:6px 0">
+            Log into <strong>claude.ai</strong> in your normal browser, open DevTools
+            (F12) → <strong>Application → Cookies → https://claude.ai</strong>, copy the
+            <code>sessionKey</code> value, and paste it below.
+          </div>
+          <div style="display:flex;gap:6px">
+            <input type="password" id="claude-session-cookie" placeholder="sessionKey=sk-ant-sid01-…" autocomplete="off" spellcheck="false" style="flex:1">
+            <button class="key-save-btn" id="btn-set-session-cookie">Import &amp; verify</button>
+          </div>
+        </details>
       </div>
 
       <div id="claude-data" style="display:none">

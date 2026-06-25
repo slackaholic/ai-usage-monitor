@@ -1036,21 +1036,25 @@ ipcMain.handle('show-claude-web-window', async () => {
     },
   });
   loginWin.webContents.setUserAgent(CHROME_UA);
-
-  // The app has no logout button, so a stale (old-account) session lingers in
-  // this partition and blocks claude.ai's email-code flow (the Continue button
-  // just spins, no code is ever sent). Log out by removing the auth cookies and
-  // local/IndexedDB state — but PRESERVE the Cloudflare clearance cookie and the
-  // HTTP cache, otherwise claude.ai serves a bot challenge that renders blank.
   const claudeSess = electronSession.fromPartition(CLAUDE_PARTITIONS['desktop']);
+
+  // Log out (so a different account can sign in) by removing the auth cookies.
+  // IMPORTANT: do NOT call clearStorageData — on this partition it hangs
+  // indefinitely (blocking the page load → blank window) and corrupts the
+  // service-worker state. Removing the cookies is sufficient; server auth is the
+  // sessionKey cookie. Keep cf_clearance/__cf* so Cloudflare still trusts us.
+  // Each cookies.remove is time-boxed since session APIs can hang here.
+  const withTimeout = (p, ms) => Promise.race([
+    Promise.resolve(p).catch(() => {}),
+    new Promise(r => setTimeout(r, ms)),
+  ]);
   try {
     const cookies = await claudeSess.cookies.get({ domain: 'claude.ai' });
     for (const c of cookies) {
-      if (/^(cf_clearance|__cf|cf_)/i.test(c.name)) continue; // keep Cloudflare clearance
+      if (/^(cf_clearance|__cf|cf_)/i.test(c.name)) continue;
       const url = (c.secure ? 'https://' : 'http://') + c.domain.replace(/^\./, '') + c.path;
-      try { await claudeSess.cookies.remove(url, c.name); } catch {}
+      await withTimeout(claudeSess.cookies.remove(url, c.name), 2000);
     }
-    await claudeSess.clearStorageData({ origin: 'https://claude.ai', storages: ['localstorage', 'indexdb', 'serviceworkers', 'cachestorage'] });
   } catch {}
   let didSignIn = false;
   const initialKey = null; // session just cleared, so any sessionKey that appears is a fresh sign-in
