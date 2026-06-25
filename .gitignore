@@ -4,4 +4,5 @@ settings.json
 usage-log.jsonl
 claude-desktop-debug.txt
 claude-api-debug.json
+codex-api-debug.json
 *.lnk

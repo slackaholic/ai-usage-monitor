@@ -254,22 +254,35 @@ const SCRAPE_SCRIPT = `
     const text = document.body ? document.body.innerText : '';
     const email = ${FIND_EMAIL_JS};
 
+    // ChatGPT's backend-api needs an Authorization: Bearer <accessToken> header,
+    // not just cookies. Grab the token from the session endpoint first.
+    let accessToken = null;
+    try {
+      const sr = await fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(5000) });
+      const sj = await sr.json().catch(() => null);
+      if (sj && sj.accessToken) accessToken = sj.accessToken;
+    } catch {}
+
     // Probe candidate API endpoints to find structured usage data
     const probe = async (url) => {
       try {
-        const r = await fetch(url, { credentials: 'include', signal: AbortSignal.timeout(5000) });
+        const headers = accessToken ? { Authorization: 'Bearer ' + accessToken } : {};
+        const r = await fetch(url, { credentials: 'include', headers, signal: AbortSignal.timeout(5000) });
         const body = await r.text().catch(() => '(read error)');
         let data = null;
         try { data = JSON.parse(body); } catch {}
         return { status: r.status, data, raw: body.slice(0, 1000) };
       } catch (e) { return { error: e.message }; }
     };
-    const api = {};
+    const api = { _hasToken: !!accessToken };
     const results = await Promise.all([
       probe('/backend-api/accounts/check').then(r => { api['accounts/check'] = r; }),
       probe('/backend-api/me').then(r => { api['me'] = r; }),
       probe('/backend-api/usage').then(r => { api['usage'] = r; }),
       probe('/backend-api/rate_limits').then(r => { api['rate_limits'] = r; }),
+      probe('/backend-api/conversation_limit').then(r => { api['conversation_limit'] = r; }),
+      probe('/backend-api/codex/usage').then(r => { api['codex/usage'] = r; }),
+      probe('/backend-api/codex/rate_limits').then(r => { api['codex/rate_limits'] = r; }),
       probe('/codex/cloud/api/usage').then(r => { api['codex/cloud/api/usage'] = r; }),
       probe('/codex/cloud/api/rate_limits').then(r => { api['codex/cloud/api/rate_limits'] = r; }),
       probe('/backend-api/billing/hard_limit_status').then(r => { api['billing/hard_limit_status'] = r; }),
@@ -278,6 +291,12 @@ const SCRAPE_SCRIPT = `
     return JSON.stringify({ text, email, api });
   })()
 `;
+
+// Records URLs of usage/limit-related requests the Codex page makes, so we can
+// discover the real structured-data endpoint instead of guessing.
+let codexNetworkLog = [];
+let codexNetHooked = false;
+const CODEX_NET_RE = /usage|rate.?limit|quota|conversation_limit|billing|hard_limit|credits/i;
 
 function getOrCreateCodexWindow() {
   if (codexWindow && !codexWindow.isDestroyed()) return codexWindow;
@@ -294,6 +313,20 @@ function getOrCreateCodexWindow() {
     },
   });
 
+  if (!codexNetHooked) {
+    const ses = codexWindow.webContents.session;
+    ses.webRequest.onCompleted((details) => {
+      try {
+        if ((details.resourceType === 'xhr' || details.resourceType === 'fetch') &&
+            CODEX_NET_RE.test(details.url)) {
+          codexNetworkLog.push({ method: details.method, url: details.url, status: details.statusCode });
+          if (codexNetworkLog.length > 100) codexNetworkLog.shift();
+        }
+      } catch {}
+    });
+    codexNetHooked = true;
+  }
+
   codexWindow.webContents.setBackgroundThrottling(false);
   codexWindow.on('closed', () => { codexWindow = null; });
   return codexWindow;
@@ -308,7 +341,10 @@ async function scrapeCodexPage(win) {
     win.hide();
     try {
       const p = JSON.parse(raw);
-      try { fs.writeFileSync(path.join(__dirname, 'codex-api-debug.json'), JSON.stringify(p.api || {}, null, 2)); } catch {}
+      try {
+        const debug = { probes: p.api || {}, networkRequests: codexNetworkLog.slice() };
+        fs.writeFileSync(path.join(__dirname, 'codex-api-debug.json'), JSON.stringify(debug, null, 2));
+      } catch {}
       return { text: p.text, email: p.email, api: p.api };
     } catch { return { text: raw }; }
   } catch (e) {
@@ -320,6 +356,7 @@ async function scrapeCodexPage(win) {
 ipcMain.handle('fetch-codex-usage', async () => {
   const win = getOrCreateCodexWindow();
   win.hide();
+  codexNetworkLog = [];
 
   try {
     await Promise.race([

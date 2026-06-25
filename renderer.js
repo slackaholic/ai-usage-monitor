@@ -154,9 +154,30 @@ function parseResetToMs(str) {
     r.setHours(h, m, 0, 0);
     return r.getTime();
   }
+  // Relative: "in 3 hours", "2h 30m", "in 45 minutes", "in 1 hour 15 min"
+  const relH = str.match(/(\d+)\s*(?:hours?|hrs?|h)\b/i);
+  const relM = str.match(/(\d+)\s*(?:minutes?|mins?|m)\b/i);
+  if (relH || relM) {
+    const h = relH ? parseInt(relH[1], 10) : 0;
+    const m = relM ? parseInt(relM[1], 10) : 0;
+    return Date.now() + h * 3_600_000 + m * 60_000;
+  }
   // "in 5d" / "5 days"
   const days = str.match(/(\d+)\s*d/i);
   if (days) return Date.now() + parseInt(days[1]) * 86_400_000;
+  // "at 8:14 PM" — next occurrence of that clock time
+  const at = str.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+  if (at) {
+    let h = parseInt(at[1], 10);
+    const m = parseInt(at[2], 10);
+    const ap = at[3] ? at[3].toLowerCase() : null;
+    if (ap === 'pm' && h !== 12) h += 12;
+    if (ap === 'am' && h === 12) h = 0;
+    const r = new Date();
+    r.setHours(h, m, 0, 0);
+    if (r.getTime() <= Date.now()) r.setDate(r.getDate() + 1);
+    return r.getTime();
+  }
   return 0;
 }
 
@@ -877,6 +898,8 @@ function renderCodexData(parsed, stale = false) {
     const entry = { ts: new Date().toISOString(), account: 'codex', '5h': parsed.shared5h, wk: parsed.sharedWeek };
     const dep = [parsed.shared5h === 0 && '5h', parsed.sharedWeek === 0 && 'wk'].filter(Boolean);
     if (dep.length) entry.depleted = dep;
+    const fhReset = parseResetToMs(parsed.shared5hReset);
+    if (fhReset > 0) entry.reset5hTs = fhReset;
     const wkReset = parseResetToMs(parsed.sharedWeekReset);
     if (wkReset > 0) entry.reset7dTs = wkReset;
     const cxSession = trackSession('codex', parsed.shared5h);
