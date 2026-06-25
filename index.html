@@ -259,7 +259,7 @@
       background: var(--surface); border-bottom: 1px solid var(--border);
       flex-shrink: 0; transition: max-height 0.3s ease;
     }
-    #settings-panel.open { max-height: 400px; }
+    #settings-panel.open { max-height: 85vh; overflow-y: auto; }
     .settings-inner { padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 12px; }
     .settings-section { display: flex; flex-direction: column; gap: 7px; }
     .settings-title {
@@ -372,8 +372,8 @@
         <button class="settings-win-btn" id="btn-show-codex-window">Login — Codex</button>
       </div>
       <div class="settings-row" style="margin-top:6px">
-        <button class="settings-win-btn" id="btn-borrow-claude-session-top" style="flex:1">⤵ Import from Desktop app</button>
-        <button class="settings-win-btn" id="btn-logoff-claude-top" style="flex:1">⏻ Log off</button>
+        <button class="settings-win-btn" id="btn-borrow-claude-session-top" style="flex:1">⤵ Import Claude session</button>
+        <button class="settings-win-btn" id="btn-logoff-claude-top" style="flex:1">⏻ Log off Claude</button>
       </div>
       <div class="note" style="margin-top:4px">
         Email-only Claude account? Sign into Claude Desktop, then Import.
