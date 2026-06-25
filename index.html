@@ -372,13 +372,11 @@
         <button class="settings-win-btn" id="btn-show-codex-window">Login — Codex</button>
       </div>
       <div class="settings-row" style="margin-top:6px">
-        <button class="settings-win-btn" id="btn-borrow-claude-session-top" style="flex:1">⤵ Import Claude session from Desktop app</button>
-      </div>
-      <div class="settings-row" style="margin-top:6px">
-        <button class="settings-win-btn" id="btn-logoff-claude-top" style="flex:1">⏻ Log off Claude Desktop</button>
+        <button class="settings-win-btn" id="btn-borrow-claude-session-top" style="flex:1">⤵ Import from Desktop app</button>
+        <button class="settings-win-btn" id="btn-logoff-claude-top" style="flex:1">⏻ Log off</button>
       </div>
       <div class="note" style="margin-top:4px">
-        Email-only Claude account? Sign into the <strong>Claude Desktop app</strong>, then click Import — copies that session automatically.
+        Email-only Claude account? Sign into Claude Desktop, then Import.
       </div>
     </div>
 
@@ -527,24 +525,11 @@
           <button class="key-save-btn" style="flex:1" id="btn-borrow-claude-session">⤵ Import from Claude Desktop app</button>
         </div>
         <div class="note" style="margin-bottom:5px">
-          Email-only account? Just sign into the <strong>Claude Desktop app</strong> normally,
-          then click Import above — it copies that session automatically (no codes or keys).
+          Email-only account? Sign into the <strong>Claude Desktop app</strong>, then click Import — copies that session automatically (no codes or keys).
         </div>
         <div style="text-align:right">
           <button class="sign-out-btn" id="claude-signout-btn">Sign out / switch account</button>
         </div>
-        <details style="margin-top:8px">
-          <summary class="note" style="cursor:pointer">Email-only account? Import session cookie →</summary>
-          <div class="note" style="margin:6px 0">
-            Log into <strong>claude.ai</strong> in your normal browser, open DevTools
-            (F12) → <strong>Application → Cookies → https://claude.ai</strong>, copy the
-            <code>sessionKey</code> value, and paste it below.
-          </div>
-          <div style="display:flex;gap:6px">
-            <input type="password" id="claude-session-cookie" placeholder="sessionKey=sk-ant-sid01-…" autocomplete="off" spellcheck="false" style="flex:1">
-            <button class="key-save-btn" id="btn-set-session-cookie">Import &amp; verify</button>
-          </div>
-        </details>
       </div>
 
       <div id="claude-data" style="display:none">
