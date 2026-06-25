@@ -1039,13 +1039,21 @@ ipcMain.handle('show-claude-web-window', async () => {
 
   // The app has no logout button, so a stale (old-account) session lingers in
   // this partition and blocks claude.ai's email-code flow (the Continue button
-  // just spins, no code is ever sent). Wipe all storage for the partition first
-  // so the sign-in window starts as a clean, logged-out browser. This doubles
-  // as the "log out / switch account" action.
+  // just spins, no code is ever sent). Log out by removing the auth cookies and
+  // local/IndexedDB state — but PRESERVE the Cloudflare clearance cookie and the
+  // HTTP cache, otherwise claude.ai serves a bot challenge that renders blank.
   const claudeSess = electronSession.fromPartition(CLAUDE_PARTITIONS['desktop']);
-  try { await claudeSess.clearStorageData(); } catch {}
+  try {
+    const cookies = await claudeSess.cookies.get({ domain: 'claude.ai' });
+    for (const c of cookies) {
+      if (/^(cf_clearance|__cf|cf_)/i.test(c.name)) continue; // keep Cloudflare clearance
+      const url = (c.secure ? 'https://' : 'http://') + c.domain.replace(/^\./, '') + c.path;
+      try { await claudeSess.cookies.remove(url, c.name); } catch {}
+    }
+    await claudeSess.clearStorageData({ origin: 'https://claude.ai', storages: ['localstorage', 'indexdb', 'serviceworkers', 'cachestorage'] });
+  } catch {}
   let didSignIn = false;
-  const initialKey = null; // storage just cleared, so any sessionKey that appears is a fresh sign-in
+  const initialKey = null; // session just cleared, so any sessionKey that appears is a fresh sign-in
   const cookiePoller = setInterval(async () => {
     if (loginWin.isDestroyed()) { clearInterval(cookiePoller); return; }
     const cookies = await claudeSess.cookies.get({ url: 'https://claude.ai', name: 'sessionKey' });
@@ -1072,6 +1080,15 @@ ipcMain.handle('show-claude-web-window', async () => {
     };
     popup.webContents.on('did-navigate', onNav);
     popup.webContents.on('did-finish-load', () => onNav(null, popup.webContents.getURL()));
+  });
+
+  // If the login page fails to load (transient Cloudflare/network blip),
+  // retry once rather than leaving a blank white window.
+  let didRetry = false;
+  loginWin.webContents.on('did-fail-load', (_e, code) => {
+    if (code === -3 || didRetry || loginWin.isDestroyed()) return; // -3 = aborted by our own nav
+    didRetry = true;
+    setTimeout(() => { if (!loginWin.isDestroyed()) loginWin.loadURL('https://claude.ai/login'); }, 1500);
   });
 
   loginWin.loadURL('https://claude.ai/login');
