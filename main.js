@@ -822,31 +822,85 @@ ipcMain.handle('reset-claude-session', async (_, key) => {
   const win = claudeWebWindows[key];
   if (win && !win.isDestroyed()) { win.destroy(); claudeWebWindows[key] = null; }
   const { session: electronSession } = require('electron');
-  await electronSession.fromPartition(CLAUDE_PARTITIONS[key]).clearStorageData();
-  return { ok: true };
+  const ses = electronSession.fromPartition(CLAUDE_PARTITIONS[key]);
+  // Log off by removing the auth cookies. Do NOT call clearStorageData() — it
+  // hangs indefinitely on this partition. Keep cf_clearance so future logins
+  // still render. Each remove is time-boxed in case a session API stalls.
+  const withTimeout = (p, ms) => Promise.race([Promise.resolve(p).catch(() => {}), new Promise(r => setTimeout(r, ms))]);
+  let removed = 0;
+  try {
+    const cookies = await ses.cookies.get({ domain: 'claude.ai' });
+    for (const c of cookies) {
+      if (/^(cf_clearance|__cf|cf_)/i.test(c.name)) continue;
+      const url = (c.secure ? 'https://' : 'http://') + c.domain.replace(/^\./, '') + c.path;
+      await withTimeout(ses.cookies.remove(url, c.name), 2000);
+      removed++;
+    }
+  } catch {}
+  return { ok: true, removed };
 });
 
 // Borrow claude.ai session cookies from Claude Desktop's Electron store.
 // Claude Desktop keeps cookies at %APPDATA%\Claude\Network\Cookies (Chrome SQLite format).
 // The AES-256-GCM key is in %APPDATA%\Claude\Local State, DPAPI-encrypted.
 // Since we run as the same Windows user, we can decrypt both.
+// Locate Claude Desktop's Chromium profile dir (the one with "Local State" and
+// "Network/Cookies"). Tries the common locations plus any MSIX/Store package.
+function findClaudeDataDir() {
+  const home = os.homedir();
+  const ROAMING = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+  const LOCAL = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const bases = [
+    path.join(ROAMING, 'Claude'),
+    path.join(LOCAL, 'Claude'),
+    path.join(LOCAL, 'AnthropicClaude'),
+    path.join(ROAMING, 'AnthropicClaude'),
+    path.join(LOCAL, 'Programs', 'Claude'),
+    path.join(LOCAL, 'Claude', 'User Data'),
+    path.join(ROAMING, 'Claude', 'User Data'),
+  ];
+  // MSIX/Store install: %LOCALAPPDATA%\Packages\<id>\LocalCache\{Roaming,Local}\Claude
+  try {
+    const pkgRoot = path.join(LOCAL, 'Packages');
+    for (const pkg of fs.readdirSync(pkgRoot)) {
+      if (!/claude|anthropic/i.test(pkg)) continue;
+      bases.push(path.join(pkgRoot, pkg, 'LocalCache', 'Roaming', 'Claude'));
+      bases.push(path.join(pkgRoot, pkg, 'LocalCache', 'Local', 'Claude'));
+      bases.push(path.join(pkgRoot, pkg, 'LocalState', 'Claude'));
+      bases.push(path.join(pkgRoot, pkg, 'LocalState'));
+    }
+  } catch {}
+  const checked = [];
+  for (const b of bases) {
+    let okLs = false, okCk = false;
+    try { okLs = fs.existsSync(path.join(b, 'Local State')); } catch {}
+    try { okCk = fs.existsSync(path.join(b, 'Network', 'Cookies')); } catch {}
+    checked.push(`${b}[ls=${okLs},ck=${okCk}]`);
+    if (okLs && okCk) return { dir: b, checked };
+  }
+  return { dir: null, checked };
+}
+
 async function borrowClaudeDesktopSession(targetKey = 'desktop') {
   const { execFileSync } = require('child_process');
   const { session: electronSession } = require('electron');
   const crypto = require('crypto');
 
-  const claudeData = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Claude');
+  // Claude Desktop's data dir location varies (Roaming vs Local, plain vs MSIX
+  // package). Auto-detect the dir that actually has both "Local State" and
+  // "Network/Cookies" instead of assuming %APPDATA%\Claude.
+  const found = findClaudeDataDir();
+  if (!found.dir) {
+    return { ok: false, reason: 'Claude Desktop data not found. Checked: ' + found.checked.join(' | ') };
+  }
+  const claudeData = found.dir;
   const localStatePath = path.join(claudeData, 'Local State');
   const cookiesPath = path.join(claudeData, 'Network', 'Cookies');
-
-  if (!fs.existsSync(localStatePath) || !fs.existsSync(cookiesPath)) {
-    return { ok: false, reason: `Not found — checked: ${localStatePath} | cookies: ${cookiesPath} | APPDATA env: ${process.env.APPDATA}` };
-  }
 
   // Step 1: DPAPI-decrypt the AES key via PowerShell
   const psScript = [
     'Add-Type -AssemblyName System.Security',
-    `$ls = [System.IO.File]::ReadAllText([System.Text.Encoding]::UTF8, '${localStatePath.replace(/'/g, "''")}') | ConvertFrom-Json`,
+    `$ls = [System.IO.File]::ReadAllText('${localStatePath.replace(/'/g, "''")}') | ConvertFrom-Json`,
     '$encKey = [Convert]::FromBase64String($ls.os_crypt.encrypted_key)',
     '$encKey = $encKey[5..($encKey.Length-1)]',
     '$dec = [System.Security.Cryptography.ProtectedData]::Unprotect($encKey,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser)',
@@ -861,10 +915,29 @@ async function borrowClaudeDesktopSession(targetKey = 'desktop') {
     return { ok: false, reason: 'DPAPI decrypt failed: ' + e.message };
   }
 
-  // Step 2: Copy cookies file to temp (avoid SQLite lock from running Claude Desktop)
+  // Step 2: Copy cookies file to temp. The running Claude Desktop app holds the
+  // SQLite file open, so fs.copyFileSync fails with EBUSY. Read it through a
+  // .NET FileStream opened with FileShare.ReadWrite (Chromium opens the DB with
+  // sharing, so this succeeds where copyFileSync can't), then fall back to a
+  // plain copy if PowerShell is unavailable.
   const tmpCookies = path.join(os.tmpdir(), 'claude-borrow-cookies.db');
-  try { fs.copyFileSync(cookiesPath, tmpCookies); } catch (e) {
-    return { ok: false, reason: 'Could not copy cookies: ' + e.message };
+  try {
+    const copyPs = [
+      "$ErrorActionPreference='Stop'",
+      `$s=[System.IO.File]::Open('${cookiesPath.replace(/'/g, "''")}',[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::ReadWrite)`,
+      `$d=[System.IO.File]::Create('${tmpCookies.replace(/'/g, "''")}')`,
+      '$s.CopyTo($d); $d.Close(); $s.Close()',
+    ].join('; ');
+    execFileSync('powershell.exe', ['-NonInteractive', '-Command', copyPs], { timeout: 10000 });
+    if (!fs.existsSync(tmpCookies) || fs.statSync(tmpCookies).size === 0) throw new Error('copy produced empty file');
+  } catch (e) {
+    try { fs.copyFileSync(cookiesPath, tmpCookies); } catch (e2) {
+      const locked = /sharing|being used by another process|EBUSY|locked/i.test((e.message || '') + (e2.message || ''));
+      if (locked) {
+        return { ok: false, locked: true, reason: 'Claude Desktop is holding its session file locked. Fully quit the Claude Desktop app (system tray → right-click → Quit), then click Import again. You can reopen it afterwards.' };
+      }
+      return { ok: false, reason: 'Could not copy cookies: ' + (e.message || e2.message) };
+    }
   }
 
   // Step 3: Read cookies with sql.js
@@ -887,7 +960,7 @@ async function borrowClaudeDesktopSession(targetKey = 'desktop') {
 
   if (!rows.length) return { ok: false, reason: 'No claude.ai cookies found in Claude Desktop' };
 
-  // Step 4: Decrypt each cookie value (v10/v11 prefix = AES-256-GCM)
+  // Step 4: Decrypt each cookie value (v10/v11 prefix = AES-256-GCM) and import.
   const targetSession = electronSession.fromPartition(CLAUDE_PARTITIONS[targetKey]);
   let imported = 0;
   for (const [host_key, name, value, encrypted_value, cookiePath, expires_utc, is_secure, is_httponly, samesite] of rows) {
@@ -896,20 +969,27 @@ async function borrowClaudeDesktopSession(targetKey = 'desktop') {
       try {
         const encBuf = Buffer.isBuffer(encrypted_value) ? encrypted_value : Buffer.from(encrypted_value);
         const prefix = encBuf.slice(0, 3).toString('ascii');
-        if (prefix === 'v10' || prefix === 'v11') {
-          const nonce = encBuf.slice(3, 15);
-          const tag = encBuf.slice(encBuf.length - 16);
-          const ct  = encBuf.slice(15, encBuf.length - 16);
-          const dec = crypto.createDecipheriv('aes-256-gcm', aesKey, nonce);
-          dec.setAuthTag(tag);
-          cookieValue = dec.update(ct).toString('utf8') + dec.final('utf8');
+        if (prefix !== 'v10' && prefix !== 'v11') continue;
+        const nonce = encBuf.slice(3, 15);
+        const tag = encBuf.slice(encBuf.length - 16);
+        const ct  = encBuf.slice(15, encBuf.length - 16);
+        const dec = crypto.createDecipheriv('aes-256-gcm', aesKey, nonce);
+        dec.setAuthTag(tag);
+        let plain = Buffer.concat([dec.update(ct), dec.final()]);
+        // Newer Chromium prepends a 32-byte SHA-256 of the host to the cookie
+        // value (domain-bound cookies). If present, strip it — otherwise the
+        // leading binary bytes make the value invalid and cookies.set fails.
+        for (const h of [host_key, host_key.replace(/^\./, '')]) {
+          const hh = crypto.createHash('sha256').update(h).digest();
+          if (plain.length >= 32 && plain.slice(0, 32).equals(hh)) { plain = plain.slice(32); break; }
         }
+        cookieValue = plain.toString('utf8');
       } catch { continue; }
     }
     // Chrome stores expiry as microseconds since 1601-01-01; convert to Unix seconds
     const expirationDate = expires_utc ? (expires_utc / 1e6 - 11644473600) : undefined;
     const sameSiteMap = { '-1': 'unspecified', 0: 'no_restriction', 1: 'lax', 2: 'strict' };
-    const domain = host_key.startsWith('.') ? host_key : host_key;
+    const domain = host_key;
     const urlHost = host_key.startsWith('.') ? host_key.slice(1) : host_key;
     try {
       await targetSession.cookies.set({

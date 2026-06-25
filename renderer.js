@@ -1086,14 +1086,17 @@ document.getElementById('btn-show-codex-window')?.addEventListener('click', () =
 });
 document.getElementById('claude-load-btn').addEventListener('click', fetchClaudeWebUsage);
 document.getElementById('claude-refresh').addEventListener('click', fetchClaudeWebUsage);
-document.getElementById('claude-signout-btn').addEventListener('click', async () => {
+async function logoffClaudeDesktop() {
+  showToast('Logging off Claude Desktop…');
   await window.electronAPI.resetClaudeSession('desktop');
   hasData.claude = false;
   document.getElementById('claude-data').style.display = 'none';
   document.getElementById('claude-login-prompt').style.display = '';
   setBadge('claude-badge', '–', '');
-  showToast('Desktop session cleared — open the login window to sign in again.');
-});
+  showToast('Logged off Claude Desktop — import or sign in to connect an account.');
+}
+document.getElementById('claude-signout-btn')?.addEventListener('click', logoffClaudeDesktop);
+document.getElementById('btn-logoff-claude-top')?.addEventListener('click', logoffClaudeDesktop);
 
 document.getElementById('claude2-refresh').addEventListener('click', fetchClaudeWebUsage2);
 
