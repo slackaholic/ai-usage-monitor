@@ -293,6 +293,9 @@ function renderStats(entries, container) {
     return `${baseSub} · ${(rate * mult).toFixed(1)}%/hr equiv.`;
   };
 
+  // Best available 5H reset reference: exact API timestamp → log-jump estimate → null
+  const reset5hRef = apiReset5h ?? burn.nextResetEst?.getTime() ?? null;
+
   // Reset-aware color: green = will last to reset, amber = 30-90min early, red = >90min early
   const gapColor = (depleteMs, resetMs, fallback = '') => {
     if (!depleteMs || !resetMs) return fallback;
@@ -306,35 +309,34 @@ function renderStats(entries, container) {
     rate > 0 && last['5h'] > 0
       ? new Date(last.ts).getTime() + (last['5h'] / rate) * 3_600_000
       : null;
-  // Same for weekly
-  const burnDepleteWkMs = (rate) =>
-    rate > 0 && last['wk'] > 0
-      ? new Date(last.ts).getTime() + (last['wk'] / rate) * 3_600_000
-      : null;
+  // Burn rate color: reset-aware when possible, rate-threshold fallback otherwise
+  const burnCls = (rate) => {
+    const cls = gapColor(burnDeplete5hMs(rate), reset5hRef);
+    if (cls) return cls;
+    if (rate <= 0) return '';
+    return rate < 15 ? 'green' : rate < 40 ? 'amber' : 'red';
+  };
 
   const cards = [
     // Row 1 — what you have
     { label: '5H Remaining',     value: last['5h'] != null ? last['5h'] + '%' : '—', sub: 'current',
-      cls: gapColor(burn.depletesAt?.getTime(), apiReset5h, last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : 'green') },
+      cls: gapColor(burn.depletesAt?.getTime(), reset5hRef, last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : 'green') },
     { label: '5H Used',          value: used5h, sub: 'consumed this window', cls: used5hCls },
     { label: 'Weekly Remaining', value: last['wk'] != null ? last['wk'] + '%' : '—',  sub: 'current',
       cls: gapColor(burn.depleteWkAt?.getTime(), apiReset7d, last['wk'] < 20 ? 'red' : last['wk'] < 50 ? 'amber' : 'green') },
     // Row 2 — how fast (burn rates; effective rate shown when multiplier >1)
-    { label: 'Burn Now',  value: burn.rateNow  > 0 ? fmtRate(burn.rateNow)  : '—', sub: effSub(burn.rateNow,  'last 30 min'),
-      cls: gapColor(burnDeplete5hMs(burn.rateNow), apiReset5h) },
-    { label: 'Burn Avg',  value: burn.rateAll  > 0 ? fmtRate(burn.rateAll)  : '—', sub: effSub(burn.rateAll,  `over ${fmtDuration(spanMs)}`),
-      cls: gapColor(burnDeplete5hMs(burn.rateAll), apiReset5h) },
-    { label: 'Peak Burn', value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: effSub(burn.ratePeak, '10-min window'),
-      cls: gapColor(burnDeplete5hMs(burn.ratePeak), apiReset5h) },
+    { label: 'Burn Now',  value: burn.rateNow  > 0 ? fmtRate(burn.rateNow)  : '—', sub: effSub(burn.rateNow,  'last 30 min'),               cls: burnCls(burn.rateNow) },
+    { label: 'Burn Avg',  value: burn.rateAll  > 0 ? fmtRate(burn.rateAll)  : '—', sub: effSub(burn.rateAll,  `over ${fmtDuration(spanMs)}`), cls: burnCls(burn.rateAll) },
+    { label: 'Peak Burn', value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: effSub(burn.ratePeak, '10-min window'),              cls: burnCls(burn.ratePeak) },
     // Row 3 — what's next
     { label: 'Depletes At',       value: depleteStr, sub: depleteSub, cls: (() => {
         if (!depleteSooner || depleteStr === 'stable') return 'green';
-        const resetRef = depleteWhich === 'wk' ? apiReset7d : apiReset5h;
+        const resetRef = depleteWhich === 'wk' ? apiReset7d : reset5hRef;
         if (!resetRef) return depleteSooner - Date.now() < 3_600_000 ? 'red' : '';
-        const gapMs = resetRef - depleteSooner.getTime(); // positive = depletes before reset
-        if (gapMs <= 30 * 60_000) return 'green';   // depletes at/within 30min of reset — ideal
-        if (gapMs < 90 * 60_000) return 'amber';    // 30–90min early
-        return 'red';                                 // depletes >90min before reset
+        const gapMs = resetRef - depleteSooner.getTime();
+        if (gapMs <= 30 * 60_000) return 'green';
+        if (gapMs < 90 * 60_000) return 'amber';
+        return 'red';
       })() },
     { label: 'Next 5H Reset ~',   value: next5hStr,  sub: next5hSub,  cls: '' },
     { label: 'Next Weekly Reset', value: next7dStr,  sub: next7dSub,  cls: apiReset7d && apiReset7d - Date.now() < 86_400_000 ? 'amber' : '' },
