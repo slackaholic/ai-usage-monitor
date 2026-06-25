@@ -459,6 +459,7 @@ function hideSection(id) {
   hiddenSections.add(id);
   const el = document.getElementById(id);
   if (el) el.style.display = 'none';
+  refreshCompactStatsForSection(id); // keep compact view in sync
   saveHiddenSections();
   updateShowHiddenRow();
 }
@@ -469,9 +470,24 @@ function showSection(id, visible) {
   if (el) el.style.display = visible ? '' : 'none';
 }
 
-function showCompactStat(id, visible) {
+// Data-driven desired visibility of each compact stat (ignoring hidden state)
+const compactStatData = {};
+
+function applyCompactStat(id) {
+  const sectionId = id.replace(/-(5h|wk)$/, '') + '-section';
+  const show = !!compactStatData[id] && !hiddenSections.has(sectionId);
   const el = document.getElementById('cs-' + id);
-  if (el) el.style.display = visible ? '' : 'none';
+  if (el) el.style.display = show ? '' : 'none';
+}
+
+function refreshCompactStatsForSection(sectionId) {
+  const prefix = sectionId.replace(/-section$/, '');
+  ['5h', 'wk'].forEach(s => applyCompactStat(prefix + '-' + s));
+}
+
+function showCompactStat(id, visible) {
+  compactStatData[id] = visible;
+  applyCompactStat(id); // honors hiddenSections
 }
 
 // Section hide buttons
@@ -485,6 +501,7 @@ document.getElementById('show-all-btn').addEventListener('click', () => {
     hiddenSections.delete(id);
     const el = document.getElementById(id);
     if (el) el.style.display = '';
+    refreshCompactStatsForSection(id); // restore compact stats (data-driven)
   });
   saveHiddenSections();
   updateShowHiddenRow();
@@ -554,6 +571,53 @@ function setBadge(id, text, cls) {
   el.className = 'badge ' + (cls || '');
 }
 
+// Set an element's text, falling back to an em-dash for null/undefined.
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val ?? '—';
+}
+
+// Size + colour a progress bar from a remaining-percentage (no-op when null).
+function setBar(id, pct) {
+  const el = document.getElementById(id);
+  if (el && pct != null) { el.style.width = pct + '%'; el.style.background = barGradient(pct); }
+}
+
+// Render one usage stat (5h or weekly) across the full card, its bar, and the
+// compact view in one call. prefix: 'codex' | 'claude' | 'claude2'; win: '5h' | 'wk'.
+function renderStat(prefix, win, pct) {
+  setPct(`${prefix}-${win}-pct`, pct);
+  setBar(`${prefix}-${win}-bar`, pct);
+  setPct(`c-${prefix}-${win}`, pct);
+  showCompactStat(`${prefix}-${win}`, pct != null);
+}
+
+// Build a usage-log entry with depletion flags + reset timestamps.
+// Callers attach an account-specific sessionStart before appending.
+function buildUsageEntry(account, p5h, pwk, reset5hMs, reset7dMs) {
+  const entry = { ts: new Date().toISOString(), account, '5h': p5h, wk: pwk };
+  const dep = [p5h === 0 && '5h', pwk === 0 && 'wk'].filter(Boolean);
+  if (dep.length) entry.depleted = dep;
+  if (reset5hMs > 0) entry.reset5hTs = reset5hMs;
+  if (reset7dMs > 0) entry.reset7dTs = reset7dMs;
+  return entry;
+}
+
+function markUpdated() {
+  document.getElementById('last-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+}
+
+// Badge "Loading…" + spinner state shared by the async fetch functions.
+function fetchStart(prefix) {
+  setBadge(prefix + '-badge', 'Loading…', 'warn');
+  document.getElementById(prefix + '-badge').classList.add('pulsing');
+  document.getElementById(prefix + '-refresh').classList.add('spinning');
+}
+function fetchStop(prefix) {
+  document.getElementById(prefix + '-badge').classList.remove('pulsing');
+  document.getElementById(prefix + '-refresh').classList.remove('spinning');
+}
+
 function resizeToFit() {
   requestAnimationFrame(() => {
     const titlebar      = document.querySelector('.titlebar');
@@ -595,7 +659,7 @@ async function loadClaudeData() {
   claudeEntries = (result.entries || []).map(e => ({ ...e, ts: new Date(e.timestamp).getTime() }));
   setBadge('claude-badge', claudeEntries.length + ' turns', 'ok');
   renderClaudeTokens();
-  document.getElementById('last-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+  markUpdated();
   resizeToFit();
 }
 
@@ -670,36 +734,21 @@ function parseClaudeWebText(text) {
 function renderClaudeWebData(parsed, stale = false) {
   const remaining5h = parsed.sessionUsed != null ? 100 - parsed.sessionUsed : null;
   const remainingWk = parsed.weeklyUsed  != null ? 100 - parsed.weeklyUsed  : null;
-  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; };
   if (!stale) applyAccountLabel('claude', parsed.email);
 
-  setPct('claude-5h-pct', remaining5h);
-  setPct('claude-wk-pct', remainingWk);
-  set('claude-5h-reset', parsed.sessionResetMs ? fmtResetIn(parsed.sessionResetMs) : (parsed.sessionReset ? 'Resets in ' + parsed.sessionReset : ''));
-  set('claude-wk-reset', parsed.weeklyResetMs  ? fmtResetOn(parsed.weeklyResetMs)  : (parsed.weeklyReset  ? 'Resets ' + parsed.weeklyReset : ''));
-
-  const bar5h = document.getElementById('claude-5h-bar');
-  const barWk  = document.getElementById('claude-wk-bar');
-  if (bar5h && remaining5h != null) { bar5h.style.width = remaining5h + '%'; bar5h.style.background = barGradient(remaining5h); }
-  if (barWk  && remainingWk != null) { barWk.style.width  = remainingWk + '%'; barWk.style.background  = barGradient(remainingWk); }
-
-  setPct('c-claude-5h', remaining5h);
-  setPct('c-claude-wk', remainingWk);
-  showCompactStat('claude-5h', remaining5h != null);
-  showCompactStat('claude-wk', remainingWk != null);
+  renderStat('claude', '5h', remaining5h);
+  renderStat('claude', 'wk', remainingWk);
+  setText('claude-5h-reset', parsed.sessionResetMs ? fmtResetIn(parsed.sessionResetMs) : (parsed.sessionReset ? 'Resets in ' + parsed.sessionReset : ''));
+  setText('claude-wk-reset', parsed.weeklyResetMs  ? fmtResetOn(parsed.weeklyResetMs)  : (parsed.weeklyReset  ? 'Resets ' + parsed.weeklyReset : ''));
 
   if (!stale) {
     pushTrend('claude-5h', remaining5h);
     pushTrend('claude-wk', remainingWk);
     saveCachedData('claude', parsed);
-    const entry = { ts: new Date().toISOString(), account: 'claude-desktop', '5h': remaining5h, wk: remainingWk };
-    const dep = [remaining5h === 0 && '5h', remainingWk === 0 && 'wk'].filter(Boolean);
-    if (dep.length) entry.depleted = dep;
     // Prefer exact timestamps from org API; fall back to parsed reset strings
     const reset5h = parsed.sessionResetMs || 0;
     const reset7d = parsed.weeklyResetMs  || parseResetToMs(parsed.weeklyReset);
-    if (reset5h > 0) entry.reset5hTs = reset5h;
-    if (reset7d > 0) entry.reset7dTs = reset7d;
+    const entry = buildUsageEntry('claude-desktop', remaining5h, remainingWk, reset5h, reset7d);
     const cdSession = trackSession('claude-desktop', remaining5h);
     if (cdSession) entry.sessionStart = cdSession;
     window.electronAPI.appendUsageLog(entry);
@@ -713,13 +762,10 @@ function renderClaudeWebData(parsed, stale = false) {
 
 async function fetchClaudeWebUsage() {
   clearTimeout(claudeRetryTimer); claudeRetryTimer = null;
-  setBadge('claude-badge', 'Loading…', 'warn');
-  document.getElementById('claude-badge').classList.add('pulsing');
-  document.getElementById('claude-refresh').classList.add('spinning');
+  fetchStart('claude');
 
   const result = await window.electronAPI.fetchClaudeWebUsage();
-  document.getElementById('claude-badge').classList.remove('pulsing');
-  document.getElementById('claude-refresh').classList.remove('spinning');
+  fetchStop('claude');
 
   if (result.error === 'session-expired') {
     setBadge('claude-badge', 'Sign In', 'warn');
@@ -763,29 +809,18 @@ async function fetchClaudeWebUsage() {
   renderClaudeWebData(parsed);
   renderClaudeTokens();
   setBadge('claude-badge', 'Live', 'ok');
-  document.getElementById('last-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+  markUpdated();
   if (openPanels.has('claude')) { window.electronAPI.readUsageLog('claude-desktop', 200).then(e => renderTrendAnalytics('claude', e)); }
 }
 
 // ── Claude Code (VS Code / CLI) — direct API via ~/.claude/.credentials.json
 function renderClaudeCodeApiData(data, stale = false) {
-  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; };
   if (!stale) applyAccountLabel('claude2', data.account);
 
-  setPct('claude2-5h-pct', data.pct5h);
-  setPct('claude2-wk-pct', data.pct7d);
-  set('claude2-5h-reset', data.reset5hMs > 0 ? fmtResetIn(data.reset5hMs) : (data.reset5h ? 'Resets in ' + data.reset5h : ''));
-  set('claude2-wk-reset', data.reset7dMs > 0 ? fmtResetOn(data.reset7dMs) : (data.reset7d ? 'Resets in ' + data.reset7d : ''));
-
-  const bar5h = document.getElementById('claude2-5h-bar');
-  const barWk  = document.getElementById('claude2-wk-bar');
-  if (bar5h && data.pct5h != null) { bar5h.style.width = data.pct5h + '%'; bar5h.style.background = barGradient(data.pct5h); }
-  if (barWk  && data.pct7d  != null) { barWk.style.width  = data.pct7d  + '%'; barWk.style.background  = barGradient(data.pct7d); }
-
-  setPct('c-claude2-5h', data.pct5h);
-  setPct('c-claude2-wk', data.pct7d);
-  showCompactStat('claude2-5h', data.pct5h != null);
-  showCompactStat('claude2-wk', data.pct7d  != null);
+  renderStat('claude2', '5h', data.pct5h);
+  renderStat('claude2', 'wk', data.pct7d);
+  setText('claude2-5h-reset', data.reset5hMs > 0 ? fmtResetIn(data.reset5hMs) : (data.reset5h ? 'Resets in ' + data.reset5h : ''));
+  setText('claude2-wk-reset', data.reset7dMs > 0 ? fmtResetOn(data.reset7dMs) : (data.reset7d ? 'Resets in ' + data.reset7d : ''));
 
   if (!stale) {
     pushTrend('claude2-5h', data.pct5h);
@@ -793,11 +828,7 @@ function renderClaudeCodeApiData(data, stale = false) {
     // Cache in a format compatible with loadCachedData (reuse claude2 slot)
     const cacheObj = { sessionUsed: data.pct5h != null ? 100 - data.pct5h : null, weeklyUsed: data.pct7d != null ? 100 - data.pct7d : null, sessionReset: data.reset5h, weeklyReset: data.reset7d, account: data.account };
     saveCachedData('claude2', cacheObj);
-    const entry = { ts: new Date().toISOString(), account: 'claude-vscode', '5h': data.pct5h, wk: data.pct7d };
-    const dep = [data.pct5h === 0 && '5h', data.pct7d === 0 && 'wk'].filter(Boolean);
-    if (dep.length) entry.depleted = dep;
-    if (data.reset5hMs > 0) entry.reset5hTs = data.reset5hMs;
-    if (data.reset7dMs  > 0) entry.reset7dTs  = data.reset7dMs;
+    const entry = buildUsageEntry('claude-vscode', data.pct5h, data.pct7d, data.reset5hMs || 0, data.reset7dMs || 0);
     // Claude Code: exact session start derived from API reset header (5h before next reset)
     if (data.reset5hMs > 0) {
       const vsSession = new Date(data.reset5hMs - 5 * 3_600_000).toISOString();
@@ -819,13 +850,10 @@ function renderClaudeCodeApiData(data, stale = false) {
 
 async function fetchClaudeWebUsage2() {
   clearTimeout(claude2RetryTimer); claude2RetryTimer = null;
-  setBadge('claude2-badge', 'Loading…', 'warn');
-  document.getElementById('claude2-badge').classList.add('pulsing');
-  document.getElementById('claude2-refresh').classList.add('spinning');
+  fetchStart('claude2');
 
   const result = await window.electronAPI.fetchClaudeCodeApiUsage();
-  document.getElementById('claude2-badge').classList.remove('pulsing');
-  document.getElementById('claude2-refresh').classList.remove('spinning');
+  fetchStop('claude2');
 
   if (result.error === 'no-credentials') {
     setBadge('claude2-badge', 'No credentials', 'error');
@@ -843,7 +871,7 @@ async function fetchClaudeWebUsage2() {
   renderClaudeCodeApiData(result);
   setBadge('claude2-badge', 'Live', 'ok');
   if (openPanels.has('claude2')) { window.electronAPI.readUsageLog('claude-vscode', 200).then(e => renderTrendAnalytics('claude2', e)); }
-  document.getElementById('last-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+  markUpdated();
 
   // Fetch email lazily if not already cached
   const cachedEmail = (() => { try { return JSON.parse(localStorage.getItem('claude2-email') || 'null'); } catch { return null; } })();
@@ -900,36 +928,21 @@ function parseCodexApiUsage(data) {
 }
 
 function renderCodexData(parsed, stale = false) {
-  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; };
   if (!stale) applyAccountLabel('codex', parsed.email);
 
-  setPct('codex-5h-pct',  parsed.shared5h);
-  setPct('codex-wk-pct',  parsed.sharedWeek);
-  set('codex-5h-reset', parsed.reset5hMs > 0 ? fmtResetIn(parsed.reset5hMs) : (parsed.shared5hReset ? 'Resets ' + parsed.shared5hReset : ''));
-  set('codex-wk-reset', parsed.reset7dMs > 0 ? fmtResetOn(parsed.reset7dMs) : (parsed.sharedWeekReset ? 'Resets ' + parsed.sharedWeekReset : ''));
-  set('codex-credits', parsed.credits ?? '—');
-
-  const bar5h = document.getElementById('codex-5h-bar');
-  const barWk  = document.getElementById('codex-wk-bar');
-  if (bar5h && parsed.shared5h   != null) { bar5h.style.width = parsed.shared5h   + '%'; bar5h.style.background = barGradient(parsed.shared5h); }
-  if (barWk  && parsed.sharedWeek != null) { barWk.style.width  = parsed.sharedWeek + '%'; barWk.style.background  = barGradient(parsed.sharedWeek); }
-
-  setPct('c-codex-5h', parsed.shared5h);
-  setPct('c-codex-wk', parsed.sharedWeek);
-  showCompactStat('codex-5h', parsed.shared5h   != null);
-  showCompactStat('codex-wk', parsed.sharedWeek != null);
+  renderStat('codex', '5h', parsed.shared5h);
+  renderStat('codex', 'wk', parsed.sharedWeek);
+  setText('codex-5h-reset', parsed.reset5hMs > 0 ? fmtResetIn(parsed.reset5hMs) : (parsed.shared5hReset ? 'Resets ' + parsed.shared5hReset : ''));
+  setText('codex-wk-reset', parsed.reset7dMs > 0 ? fmtResetOn(parsed.reset7dMs) : (parsed.sharedWeekReset ? 'Resets ' + parsed.sharedWeekReset : ''));
+  setText('codex-credits', parsed.credits);
 
   if (!stale) {
     pushTrend('codex-5h', parsed.shared5h);
     pushTrend('codex-wk', parsed.sharedWeek);
     saveCachedData('codex', parsed);
-    const entry = { ts: new Date().toISOString(), account: 'codex', '5h': parsed.shared5h, wk: parsed.sharedWeek };
-    const dep = [parsed.shared5h === 0 && '5h', parsed.sharedWeek === 0 && 'wk'].filter(Boolean);
-    if (dep.length) entry.depleted = dep;
     const fhReset = parsed.reset5hMs > 0 ? parsed.reset5hMs : parseResetToMs(parsed.shared5hReset);
-    if (fhReset > 0) entry.reset5hTs = fhReset;
     const wkReset = parsed.reset7dMs > 0 ? parsed.reset7dMs : parseResetToMs(parsed.sharedWeekReset);
-    if (wkReset > 0) entry.reset7dTs = wkReset;
+    const entry = buildUsageEntry('codex', parsed.shared5h, parsed.sharedWeek, fhReset, wkReset);
     const cxSession = trackSession('codex', parsed.shared5h);
     if (cxSession) entry.sessionStart = cxSession;
     window.electronAPI.appendUsageLog(entry);
@@ -943,13 +956,10 @@ function renderCodexData(parsed, stale = false) {
 
 async function fetchCodexUsage() {
   clearTimeout(codexRetryTimer); codexRetryTimer = null;
-  setBadge('codex-badge', 'Loading…', 'warn');
-  document.getElementById('codex-badge').classList.add('pulsing');
-  document.getElementById('codex-refresh').classList.add('spinning');
+  fetchStart('codex');
 
   const result = await window.electronAPI.fetchCodexUsage();
-  document.getElementById('codex-badge').classList.remove('pulsing');
-  document.getElementById('codex-refresh').classList.remove('spinning');
+  fetchStop('codex');
 
   if (result.error) {
     if (result.error === 'window-closed' || result.error === 'Login timeout — please log in and try again') {
@@ -978,7 +988,7 @@ async function fetchCodexUsage() {
   hasData.codex = true;
   renderCodexData(parsed);
   setBadge('codex-badge', 'Live', 'ok');
-  document.getElementById('last-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+  markUpdated();
   if (openPanels.has('codex')) { window.electronAPI.readUsageLog('codex', 200).then(e => renderTrendAnalytics('codex', e)); }
 }
 
@@ -1045,21 +1055,6 @@ document.getElementById('btn-borrow-claude-session-top')?.addEventListener('clic
 document.getElementById('btn-show-claude-window')?.addEventListener('click', () => {
   window.electronAPI.showClaudeWebWindow();
   showToast('Log in to claude.ai in that window, then close it and click ↻ on the Claude Desktop card.');
-});
-document.getElementById('btn-clear-claude-cookies')?.addEventListener('click', async () => {
-  await window.electronAPI.clearClaudeWebCookies('desktop');
-  showToast('Claude Desktop cookies cleared.');
-});
-document.getElementById('btn-diagnose-claude')?.addEventListener('click', async () => {
-  const d = await window.electronAPI.diagnoseClaudeSession();
-  const msg = [
-    `APPDATA: ${d.appdata}`,
-    `PS from Electron:\n${d.psDir}`,
-    `fs.readdirSync: ${d.dirContents.join(', ')}`,
-    `session cookies (${d.ourSessionCookies}): ${d.ourCookieNames.join(', ') || 'none'}`,
-    `auth test: ${d.authTest}`,
-  ].join('\n\n');
-  alert(msg);
 });
 document.getElementById('btn-show-codex-window')?.addEventListener('click', () => {
   window.electronAPI.showCodexWindow();

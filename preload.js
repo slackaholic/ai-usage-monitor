@@ -23,9 +23,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showClaudeWebWindow2:  () => ipcRenderer.invoke('show-claude-web-window-2'),
   resetClaudeSession:    (key) => ipcRenderer.invoke('reset-claude-session', key),
   borrowClaudeDesktopSession: () => ipcRenderer.invoke('borrow-claude-desktop-session'),
-  diagnoseClaudeSession: () => ipcRenderer.invoke('diagnose-claude-session'),
-  clearClaudeWebCookies: (key) => ipcRenderer.invoke('clear-claude-web-cookies', key),
-  setClaudeSessionCookie: (value) => ipcRenderer.invoke('set-claude-session-cookie', value),
 
   // Open URL in system browser
   openExternal: (url) => ipcRenderer.send('open-external', url),

@@ -137,7 +137,7 @@ ipcMain.on('close-window', () => { mainWindow.removeAllListeners('close'); app.q
 ipcMain.handle('get-always-on-top', () => isAlwaysOnTop);
 ipcMain.on('resize-to-fit', (_, totalHeight) => {
   const { screen } = require('electron');
-  const newHeight = Math.min(Math.max(totalHeight + 8, 200), 1200);
+  const newHeight = Math.min(Math.max(totalHeight + 8, 120), 1200);
   const [w] = mainWindow.getSize();
   const [x, y] = mainWindow.getPosition();
   const workArea = screen.getDisplayNearestPoint({ x, y }).workArea;
@@ -1011,96 +1011,6 @@ async function borrowClaudeDesktopSession(targetKey = 'desktop') {
 }
 
 ipcMain.handle('borrow-claude-desktop-session', () => borrowClaudeDesktopSession('desktop'));
-
-ipcMain.handle('diagnose-claude-session', async () => {
-  const { session: electronSession, net } = require('electron');
-  const claudeData = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Claude');
-  // Run dir via PowerShell spawned from THIS process to see what IT can access
-  const { execFileSync } = require('child_process');
-  let psDir = '';
-  try {
-    psDir = execFileSync('powershell.exe', ['-NonInteractive', '-Command',
-      `"whoami; $env:APPDATA; Test-Path '$env:APPDATA\\Claude'; if (Test-Path '$env:APPDATA\\Claude') { Get-ChildItem '$env:APPDATA\\Claude' -Name | Select -First 10 } else { dir '$env:APPDATA' -Name | Select -First 20 }"`
-    ], { encoding: 'utf8', timeout: 8000 }).trim();
-  } catch (e) { psDir = 'ps error: ' + e.message; }
-
-  let dirContents = [];
-  try { dirContents = fs.readdirSync(claudeData); } catch (e) { dirContents = ['readdirSync error: ' + e.message]; }
-  let networkContents = [];
-  try { networkContents = fs.readdirSync(path.join(claudeData, 'Network')); } catch (e) { networkContents = ['error: ' + e.message]; }
-
-  const ses = electronSession.fromPartition(CLAUDE_PARTITIONS['desktop']);
-  const ourCookies = await ses.cookies.get({ domain: 'claude.ai' });
-
-  // Test if we're actually authenticated by calling the account API
-  let authTest = 'not tested';
-  try {
-    authTest = await new Promise((resolve) => {
-      const req = net.request({ method: 'GET', url: 'https://claude.ai/api/account', partition: CLAUDE_PARTITIONS['desktop'], useSessionCookies: true });
-      let body = '';
-      req.on('response', (res) => {
-        res.on('data', c => { body += c; });
-        res.on('end', () => resolve(`HTTP ${res.statusCode}: ${body.slice(0, 200)}`));
-      });
-      req.on('error', e => resolve('error: ' + e.message));
-      req.end();
-    });
-  } catch (e) { authTest = 'exception: ' + e.message; }
-
-  return {
-    appdata: process.env.APPDATA,
-    claudeData,
-    psDir,
-    dirContents,
-    ourSessionCookies: ourCookies.length,
-    ourCookieNames: ourCookies.map(c => c.name),
-    authTest,
-  };
-});
-
-ipcMain.handle('set-claude-session-cookie', async (_, cookieString) => {
-  const { session: electronSession, net } = require('electron');
-  const ses = electronSession.fromPartition(CLAUDE_PARTITIONS['desktop']);
-  // Parse full Cookie header string: "name=value; name2=value2; ..."
-  const pairs = String(cookieString).split(';').map(s => s.trim()).filter(Boolean);
-  let imported = 0;
-  for (const pair of pairs) {
-    const eq = pair.indexOf('=');
-    if (eq < 1) continue;
-    const name = pair.slice(0, eq).trim();
-    const value = pair.slice(eq + 1).trim();
-    try {
-      await ses.cookies.set({
-        url: 'https://claude.ai',
-        name, value,
-        domain: '.claude.ai',
-        path: '/',
-        secure: true,
-        expirationDate: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
-      });
-      imported++;
-    } catch {}
-  }
-  // Test auth
-  const authResult = await new Promise((resolve) => {
-    const req = net.request({ method: 'GET', url: 'https://claude.ai/api/account', partition: CLAUDE_PARTITIONS['desktop'], useSessionCookies: true });
-    let body = '';
-    req.on('response', (res) => {
-      res.on('data', c => { body += c; });
-      res.on('end', () => resolve({ status: res.statusCode, imported, body: body.slice(0, 300) }));
-    });
-    req.on('error', e => resolve({ status: 0, imported, body: e.message }));
-    req.end();
-  });
-  return authResult;
-});
-
-ipcMain.handle('clear-claude-web-cookies', async (_, key = 'desktop') => {
-  const { session: electronSession } = require('electron');
-  const ses = electronSession.fromPartition(CLAUDE_PARTITIONS[key]);
-  await ses.clearStorageData({ storages: ['cookies'] });
-  return { ok: true };
-});
 
 ipcMain.handle('show-claude-web-window', async () => {
   const { screen, session: electronSession } = require('electron');
