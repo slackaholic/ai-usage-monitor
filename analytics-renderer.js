@@ -250,6 +250,9 @@ function renderStats(entries, container) {
   const burn   = computeBurnStats(entries);
   const dep5h  = entries.filter(e => e.depleted?.includes('5h')).length;
   const depWk  = entries.filter(e => e.depleted?.includes('wk')).length;
+  // Count distinct sessions from logged sessionStart field (falls back to computed jump count)
+  const loggedSessions = new Set(entries.map(e => e.sessionStart).filter(Boolean)).size;
+  const sessionCount   = loggedSessions || burn.sessions;
   const spanMs = new Date(last.ts) - new Date(entries[0].ts);
   const mult   = PLAN_MULTIPLIERS[currentAccount] ?? 1;
 
@@ -399,7 +402,7 @@ function renderStats(entries, container) {
       sub: effSub(burn.rateNow, 'last 30 min'), cls: burnCls(burn.rateNow) },
     { label: 'Session Burn', value: burn.rateSession > 0 ? fmtRate(burn.rateSession) : '—',
       sub: burn.sessionMs > 0
-        ? effSub(burn.rateSession, `${(burn.sessionMs / 3_600_000).toFixed(1)}h active · idle excluded`)
+        ? effSub(burn.rateSession, `${(burn.sessionMs / 3_600_000).toFixed(1)}h active · ${sessionCount} session${sessionCount !== 1 ? 's' : ''}`)
         : 'no active periods detected',
       cls: burnCls(burn.rateSession) },
     { label: 'Peak Burn',    value: burn.ratePeak    > 0 ? fmtRate(burn.ratePeak)    : '—',
@@ -527,7 +530,9 @@ async function renderAll() {
   const meta = document.getElementById('header-meta');
   if (entries.length) {
     const span = new Date(entries[entries.length - 1].ts) - new Date(entries[0].ts);
-    meta.textContent = `${entries.length} entries · ${fmtDuration(span)} window · last: ${fmtAgo(entries[entries.length - 1].ts)}`;
+    const sc = new Set(entries.map(e => e.sessionStart).filter(Boolean)).size;
+    const sessionMeta = sc > 0 ? ` · ${sc} session${sc !== 1 ? 's' : ''}` : '';
+    meta.textContent = `${entries.length} entries · ${fmtDuration(span)} window${sessionMeta} · last: ${fmtAgo(entries[entries.length - 1].ts)}`;
   } else {
     meta.textContent = 'No data';
   }

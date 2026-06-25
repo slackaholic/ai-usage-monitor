@@ -110,6 +110,26 @@ function applyTrendDisplay(key, delta) {
 // ── Analytics / sparkline ──────────────────────────────────────────────────
 const LOG_ACCOUNT = { codex: 'codex', claude: 'claude-desktop', claude2: 'claude-vscode' };
 
+// Per-account session tracking. sessionStart persists in each log entry so analytics
+// can group entries by session even after an app restart.
+const _ss = {
+  'claude-desktop': { start: null, lastPct: null },
+  'claude-vscode':  { start: null, lastPct: null },
+  'codex':          { start: null, lastPct: null },
+};
+
+// Update session state for scraped accounts (Codex, Claude Desktop).
+// Returns the current sessionStart ISO string.
+function trackSession(account, pct5h) {
+  const s = _ss[account];
+  if (s.lastPct !== null && pct5h != null && pct5h - s.lastPct > 15) {
+    s.start = new Date().toISOString(); // quota jumped up → new 5H window
+  }
+  if (!s.start && pct5h != null) s.start = new Date().toISOString(); // first observation
+  s.lastPct = pct5h ?? s.lastPct;
+  return s.start;
+}
+
 // Parse reset strings from scrapers into epoch ms.
 // Handles: absolute dates ("Jun 25, 2026 8:14 AM"), day-time ("Sat 4:59 PM"),
 // relative ("in 5d", "5 days").
@@ -615,6 +635,8 @@ function renderClaudeWebData(parsed, stale = false) {
     if (dep.length) entry.depleted = dep;
     const wkReset = parseResetToMs(parsed.weeklyReset);
     if (wkReset > 0) entry.reset7dTs = wkReset;
+    const cdSession = trackSession('claude-desktop', remaining5h);
+    if (cdSession) entry.sessionStart = cdSession;
     window.electronAPI.appendUsageLog(entry);
   }
 
@@ -707,6 +729,16 @@ function renderClaudeCodeApiData(data, stale = false) {
     if (dep.length) entry.depleted = dep;
     if (data.reset5hMs > 0) entry.reset5hTs = data.reset5hMs;
     if (data.reset7dMs  > 0) entry.reset7dTs  = data.reset7dMs;
+    // Claude Code: exact session start derived from API reset header (5h before next reset)
+    if (data.reset5hMs > 0) {
+      const vsSession = new Date(data.reset5hMs - 5 * 3_600_000).toISOString();
+      entry.sessionStart = vsSession;
+      _ss['claude-vscode'].start   = vsSession;
+      _ss['claude-vscode'].lastPct = data.pct5h;
+    } else {
+      const vsSession = trackSession('claude-vscode', data.pct5h);
+      if (vsSession) entry.sessionStart = vsSession;
+    }
     window.electronAPI.appendUsageLog(entry);
   }
 
@@ -807,6 +839,8 @@ function renderCodexData(parsed, stale = false) {
     if (dep.length) entry.depleted = dep;
     const wkReset = parseResetToMs(parsed.sharedWeekReset);
     if (wkReset > 0) entry.reset7dTs = wkReset;
+    const cxSession = trackSession('codex', parsed.shared5h);
+    if (cxSession) entry.sessionStart = cxSession;
     window.electronAPI.appendUsageLog(entry);
   }
 
