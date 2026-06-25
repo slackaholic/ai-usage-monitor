@@ -1053,9 +1053,11 @@ document.getElementById('btn-borrow-claude-session')?.addEventListener('click', 
   showToast('Importing Claude Desktop session…');
   const result = await window.electronAPI.borrowClaudeDesktopSession();
   if (result.ok) {
-    showToast(`Imported ${result.imported} cookies — click ↻ on the Claude Desktop card.`);
+    showToast(`Imported ${result.imported} cookies — loading usage…`);
+    hasData.claude = false;
+    fetchClaudeWebUsage();
   } else {
-    showToast('Import failed: ' + result.reason);
+    showToast('Import failed: ' + (result.reason || 'unknown — is the Claude Desktop app installed & signed in?'));
   }
 });
 document.getElementById('btn-show-claude-window')?.addEventListener('click', () => {
