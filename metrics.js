@@ -31,6 +31,25 @@ function segmentCycles(snapshots, win) {
   return cycles;
 }
 
+function cycleStats(cycle, win) {
+  const remaining = cycle.map(p => p[win]);
+  const minRemaining = Math.min(...remaining);
+  const blocked = remaining.some(r => r === 0);
+  let blockedMs = 0;
+  if (blocked) {
+    const firstZero = cycle.find(p => p[win] === 0);
+    blockedMs = new Date(cycle[cycle.length - 1].ts) - new Date(firstZero.ts);
+  }
+  return {
+    startTs: cycle[0].ts,
+    endTs: cycle[cycle.length - 1].ts,
+    peakPct: 100 - minRemaining,
+    headroomPct: minRemaining,
+    blocked,
+    blockedMs,
+  };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats };
 }
