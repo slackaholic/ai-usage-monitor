@@ -253,7 +253,29 @@ const SCRAPE_SCRIPT = `
     }
     const text = document.body ? document.body.innerText : '';
     const email = ${FIND_EMAIL_JS};
-    return JSON.stringify({ text, email });
+
+    // Probe candidate API endpoints to find structured usage data
+    const probe = async (url) => {
+      try {
+        const r = await fetch(url, { credentials: 'include', signal: AbortSignal.timeout(5000) });
+        const body = await r.text().catch(() => '(read error)');
+        let data = null;
+        try { data = JSON.parse(body); } catch {}
+        return { status: r.status, data, raw: body.slice(0, 1000) };
+      } catch (e) { return { error: e.message }; }
+    };
+    const api = {};
+    const results = await Promise.all([
+      probe('/backend-api/accounts/check').then(r => { api['accounts/check'] = r; }),
+      probe('/backend-api/me').then(r => { api['me'] = r; }),
+      probe('/backend-api/usage').then(r => { api['usage'] = r; }),
+      probe('/backend-api/rate_limits').then(r => { api['rate_limits'] = r; }),
+      probe('/codex/cloud/api/usage').then(r => { api['codex/cloud/api/usage'] = r; }),
+      probe('/codex/cloud/api/rate_limits').then(r => { api['codex/cloud/api/rate_limits'] = r; }),
+      probe('/backend-api/billing/hard_limit_status').then(r => { api['billing/hard_limit_status'] = r; }),
+    ]);
+
+    return JSON.stringify({ text, email, api });
   })()
 `;
 
@@ -281,10 +303,14 @@ async function scrapeCodexPage(win) {
   try {
     const raw = await Promise.race([
       win.webContents.executeJavaScript(SCRAPE_SCRIPT),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('Script timeout (20s)')), 20000)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('Script timeout (30s)')), 30000)),
     ]);
     win.hide();
-    try { const p = JSON.parse(raw); return { text: p.text, email: p.email }; } catch { return { text: raw }; }
+    try {
+      const p = JSON.parse(raw);
+      try { fs.writeFileSync(path.join(__dirname, 'codex-api-debug.json'), JSON.stringify(p.api || {}, null, 2)); } catch {}
+      return { text: p.text, email: p.email, api: p.api };
+    } catch { return { text: raw }; }
   } catch (e) {
     win.hide();
     return { error: e.message };
