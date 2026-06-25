@@ -89,27 +89,52 @@ function computeBurnStats(entries) {
   }
   const nextResetEst = lastResetAt ? new Date(lastResetAt.getTime() + 5 * 3_600_000) : null;
 
-  const effectiveRate = rateNow > 0 ? rateNow : rateAll;
+  // Session burn rate: only intervals where 5h was actively dropping AND poll gap < 15min.
+  // Excludes idle time so the rate reflects actual usage intensity, not diluted averages.
+  let sessionDrop = 0, sessionMs = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dt  = new Date(pts[i].ts).getTime() - new Date(pts[i - 1].ts).getTime();
+    const d5h = pts[i - 1]['5h'] - pts[i]['5h'];
+    if (d5h > 0 && dt < 15 * 60_000) {
+      sessionDrop += d5h;
+      sessionMs   += dt;
+    }
+  }
+  const rateSession = sessionMs > 0 ? sessionDrop / (sessionMs / 3_600_000) : 0;
+
+  // Depletion: prefer rateNow → rateSession → rateAll (most to least real-time)
+  const effectiveRate = rateNow > 0 ? rateNow : rateSession > 0 ? rateSession : rateAll;
   const ratePerMs     = effectiveRate / 3_600_000;
   let depletesAt = null;
   if (effectiveRate > 0 && last['5h'] > 0) {
     depletesAt = new Date(new Date(last.ts).getTime() + last['5h'] / ratePerMs);
   }
 
-  // Weekly depletion forecast (uses overall avg — weekly drains too slowly for "now" rate)
+  // Weekly depletion — use session-only rate for weekly too (same idle-exclusion logic)
   const wkPts = entries.filter(e => e['wk'] != null);
-  let depleteWkAt = null;
+  let depleteWkAt = null, rateSessionWk = 0, sessionMsWk = 0;
   if (wkPts.length >= 2) {
-    const wkFirst = wkPts[0], wkLast = wkPts[wkPts.length - 1];
-    const wkSpanMs = new Date(wkLast.ts) - new Date(wkFirst.ts);
-    const wkDrop   = wkFirst['wk'] - wkLast['wk'];
-    if (wkSpanMs > 0 && wkDrop > 0 && wkLast['wk'] > 0) {
-      const rateWkPerMs = wkDrop / wkSpanMs;
-      depleteWkAt = new Date(new Date(wkLast.ts).getTime() + wkLast['wk'] / rateWkPerMs);
+    let wkDrop = 0;
+    for (let i = 1; i < wkPts.length; i++) {
+      const dt  = new Date(wkPts[i].ts).getTime() - new Date(wkPts[i - 1].ts).getTime();
+      const dwk = wkPts[i - 1]['wk'] - wkPts[i]['wk'];
+      if (dwk > 0 && dt < 15 * 60_000) { wkDrop += dwk; sessionMsWk += dt; }
+    }
+    rateSessionWk = sessionMsWk > 0 ? wkDrop / (sessionMsWk / 3_600_000) : 0;
+    const wkLast = wkPts[wkPts.length - 1];
+    // Fall back to overall avg if no active drops detected (very slow-draining weekly)
+    if (rateSessionWk === 0) {
+      const wkFirst = wkPts[0];
+      const wkSpanMs = new Date(wkLast.ts) - new Date(wkFirst.ts);
+      const totalDrop = wkFirst['wk'] - wkLast['wk'];
+      rateSessionWk = wkSpanMs > 0 && totalDrop > 0 ? totalDrop / (wkSpanMs / 3_600_000) : 0;
+    }
+    if (rateSessionWk > 0 && wkLast['wk'] > 0) {
+      depleteWkAt = new Date(new Date(wkLast.ts).getTime() + (wkLast['wk'] / rateSessionWk) * 3_600_000);
     }
   }
 
-  return { rateAll, rateNow, ratePeak, ratePerMs, depletesAt, depleteWkAt, sessions, lastResetAt, nextResetEst };
+  return { rateAll, rateNow, ratePeak, rateSession, sessionMs, ratePerMs, depletesAt, depleteWkAt, sessions, lastResetAt, nextResetEst };
 }
 
 // ── Sparkline ──────────────────────────────────────────────────────────────
@@ -325,9 +350,15 @@ function renderStats(entries, container) {
     { label: 'Weekly Remaining', value: last['wk'] != null ? last['wk'] + '%' : '—',  sub: 'current',
       cls: gapColor(burn.depleteWkAt?.getTime(), apiReset7d, last['wk'] < 20 ? 'red' : last['wk'] < 50 ? 'amber' : 'green') },
     // Row 2 — how fast (burn rates; effective rate shown when multiplier >1)
-    { label: 'Burn Now',  value: burn.rateNow  > 0 ? fmtRate(burn.rateNow)  : '—', sub: effSub(burn.rateNow,  'last 30 min'),               cls: burnCls(burn.rateNow) },
-    { label: 'Burn Avg',  value: burn.rateAll  > 0 ? fmtRate(burn.rateAll)  : '—', sub: effSub(burn.rateAll,  `over ${fmtDuration(spanMs)}`), cls: burnCls(burn.rateAll) },
-    { label: 'Peak Burn', value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: effSub(burn.ratePeak, '10-min window'),              cls: burnCls(burn.ratePeak) },
+    { label: 'Burn Now',     value: burn.rateNow     > 0 ? fmtRate(burn.rateNow)     : '—',
+      sub: effSub(burn.rateNow, 'last 30 min'), cls: burnCls(burn.rateNow) },
+    { label: 'Session Burn', value: burn.rateSession > 0 ? fmtRate(burn.rateSession) : '—',
+      sub: burn.sessionMs > 0
+        ? effSub(burn.rateSession, `${(burn.sessionMs / 3_600_000).toFixed(1)}h active · idle excluded`)
+        : 'no active periods detected',
+      cls: burnCls(burn.rateSession) },
+    { label: 'Peak Burn',    value: burn.ratePeak    > 0 ? fmtRate(burn.ratePeak)    : '—',
+      sub: effSub(burn.ratePeak, '10-min window · burst'), cls: burnCls(burn.ratePeak) },
     // Row 3 — what's next
     { label: 'Depletes At',       value: depleteStr, sub: depleteSub, cls: (() => {
         if (!depleteSooner || depleteStr === 'stable') return 'green';
