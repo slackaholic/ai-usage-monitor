@@ -871,14 +871,45 @@ function parseCodexText(text) {
   };
 }
 
+// Structured Codex usage from /backend-api/codex/usage.
+// rate_limit.primary_window = 5h (limit_window_seconds 18000),
+// secondary_window = weekly (604800). used_percent is % USED; reset_at is Unix seconds.
+function parseCodexApiUsage(data) {
+  const rl = data && data.rate_limit;
+  if (!rl) return null;
+  const pw = rl.primary_window || {};
+  const sw = rl.secondary_window || {};
+  const remain  = (w) => (typeof w.used_percent === 'number') ? Math.max(0, 100 - w.used_percent) : null;
+  const resetMs = (w) => (w.reset_at) ? w.reset_at * 1000 : 0;
+  return {
+    shared5h:   remain(pw),
+    sharedWeek: remain(sw),
+    reset5hMs:  resetMs(pw),
+    reset7dMs:  resetMs(sw),
+    credits:    (data.credits && data.credits.balance != null) ? data.credits.balance : null,
+    email:      data.email || null,
+  };
+}
+
 function renderCodexData(parsed, stale = false) {
   const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; };
   if (!stale) applyAccountLabel('codex', parsed.email);
 
   setPct('codex-5h-pct',  parsed.shared5h);
   setPct('codex-wk-pct',  parsed.sharedWeek);
-  set('codex-5h-reset',  parsed.shared5hReset   ? 'Resets ' + parsed.shared5hReset   : '');
-  set('codex-wk-reset',  parsed.sharedWeekReset ? 'Resets ' + parsed.sharedWeekReset : '');
+  if (parsed.reset5hMs > 0) {
+    set('codex-5h-reset', 'Resets in ' + fmtDuration(parsed.reset5hMs - Date.now()));
+  } else {
+    set('codex-5h-reset', parsed.shared5hReset ? 'Resets ' + parsed.shared5hReset : '');
+  }
+  if (parsed.reset7dMs > 0) {
+    const d = new Date(parsed.reset7dMs);
+    const dateStr = d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    set('codex-wk-reset', `Resets ${dateStr} ${timeStr}`);
+  } else {
+    set('codex-wk-reset', parsed.sharedWeekReset ? 'Resets ' + parsed.sharedWeekReset : '');
+  }
   set('codex-credits', parsed.credits ?? '—');
 
   const bar5h = document.getElementById('codex-5h-bar');
@@ -898,9 +929,9 @@ function renderCodexData(parsed, stale = false) {
     const entry = { ts: new Date().toISOString(), account: 'codex', '5h': parsed.shared5h, wk: parsed.sharedWeek };
     const dep = [parsed.shared5h === 0 && '5h', parsed.sharedWeek === 0 && 'wk'].filter(Boolean);
     if (dep.length) entry.depleted = dep;
-    const fhReset = parseResetToMs(parsed.shared5hReset);
+    const fhReset = parsed.reset5hMs > 0 ? parsed.reset5hMs : parseResetToMs(parsed.shared5hReset);
     if (fhReset > 0) entry.reset5hTs = fhReset;
-    const wkReset = parseResetToMs(parsed.sharedWeekReset);
+    const wkReset = parsed.reset7dMs > 0 ? parsed.reset7dMs : parseResetToMs(parsed.sharedWeekReset);
     if (wkReset > 0) entry.reset7dTs = wkReset;
     const cxSession = trackSession('codex', parsed.shared5h);
     if (cxSession) entry.sessionStart = cxSession;
@@ -934,7 +965,11 @@ async function fetchCodexUsage() {
     return;
   }
 
-  const parsed = parseCodexText(result.text || '');
+  // Prefer structured API data (/backend-api/codex/usage) over text scraping
+  const apiParsed = result.apiData ? parseCodexApiUsage(result.apiData) : null;
+  const parsed = (apiParsed && (apiParsed.shared5h !== null || apiParsed.sharedWeek !== null))
+    ? apiParsed
+    : parseCodexText(result.text || '');
   if (parsed.shared5h === null && parsed.sharedWeek === null) {
     setBadge('codex-badge', 'No data', 'warn');
     showToast('Could not find usage data — try opening the login window.');
@@ -942,7 +977,7 @@ async function fetchCodexUsage() {
     return;
   }
 
-  if (result.email) parsed.email = result.email;
+  if (!parsed.email && result.email) parsed.email = result.email;
   hasData.codex = true;
   renderCodexData(parsed);
   setBadge('codex-badge', 'Live', 'ok');
