@@ -783,8 +783,18 @@ async function fetchClaudeUsageViaApi(key) {
   return { error: `API org:${orgUsage.status} rl:${rateLimits.status}`, apiDebug: { account: account.status, orgId } };
 }
 
-ipcMain.handle('fetch-claude-web-usage',   () => fetchClaudeUsageForKey('desktop'));
-ipcMain.handle('fetch-claude-web-usage-2', () => fetchClaudeUsageForKey('vscode'));
+ipcMain.handle('fetch-claude-web-usage', async () => {
+  // Try the org usage API first — more reliable than scraping a page that can change
+  const api = await fetchClaudeUsageViaApi('desktop');
+  if (api.apiData) return api;
+  // Fall back to browser scraping if API fails
+  return fetchClaudeUsageForKey('desktop');
+});
+ipcMain.handle('fetch-claude-web-usage-2', async () => {
+  const api = await fetchClaudeUsageViaApi('vscode');
+  if (api.apiData) return api;
+  return fetchClaudeUsageForKey('vscode');
+});
 
 ipcMain.handle('reset-claude-session', async (_, key) => {
   const win = claudeWebWindows[key];

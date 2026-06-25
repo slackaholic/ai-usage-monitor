@@ -578,6 +578,32 @@ function renderClaudeTokens() {
   document.getElementById('5h-msgs').textContent   = agg.count;
 }
 
+// ── Claude org usage API parser ────────────────────────────────────────────
+// Parses the /api/organizations/{orgId}/usage JSON response.
+// five_hour.utilization and seven_day.utilization are % USED (not remaining).
+function parseClaudeOrgUsage(data) {
+  const fh  = data?.five_hour;
+  const sd  = data?.seven_day;
+  const fmtReset = (iso) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d)) return null;
+    const diff = d - Date.now();
+    if (diff <= 0) return null;
+    const h = Math.floor(diff / 3_600_000);
+    const m = Math.floor((diff % 3_600_000) / 60_000);
+    return h > 0 ? `${h} hr ${m} min` : `${m} min`;
+  };
+  return {
+    sessionUsed:   fh?.utilization  ?? null,
+    sessionReset:  fmtReset(fh?.resets_at),
+    sessionResetMs: fh?.resets_at ? new Date(fh.resets_at).getTime() : null,
+    weeklyUsed:    sd?.utilization  ?? null,
+    weeklyReset:   sd?.resets_at ? new Date(sd.resets_at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : null,
+    weeklyResetMs:  sd?.resets_at ? new Date(sd.resets_at).getTime() : null,
+  };
+}
+
 // ── Claude web usage parser (shared) ──────────────────────────────────────
 function parseClaudeWebText(text) {
   function pctUsed(pattern) {
@@ -633,8 +659,11 @@ function renderClaudeWebData(parsed, stale = false) {
     const entry = { ts: new Date().toISOString(), account: 'claude-desktop', '5h': remaining5h, wk: remainingWk };
     const dep = [remaining5h === 0 && '5h', remainingWk === 0 && 'wk'].filter(Boolean);
     if (dep.length) entry.depleted = dep;
-    const wkReset = parseResetToMs(parsed.weeklyReset);
-    if (wkReset > 0) entry.reset7dTs = wkReset;
+    // Prefer exact timestamps from org API; fall back to parsed reset strings
+    const reset5h = parsed.sessionResetMs || 0;
+    const reset7d = parsed.weeklyResetMs  || parseResetToMs(parsed.weeklyReset);
+    if (reset5h > 0) entry.reset5hTs = reset5h;
+    if (reset7d > 0) entry.reset7dTs = reset7d;
     const cdSession = trackSession('claude-desktop', remaining5h);
     if (cdSession) entry.sessionStart = cdSession;
     window.electronAPI.appendUsageLog(entry);
@@ -679,11 +708,15 @@ async function fetchClaudeWebUsage() {
     return;
   }
 
-  const parsed = parseClaudeWebText(result.text || '');
+  // Prefer structured API data (org usage endpoint) over text scraping
+  const parsed = result.apiData
+    ? parseClaudeOrgUsage(result.apiData)
+    : parseClaudeWebText(result.text || '');
+
   if (parsed.sessionUsed === null && parsed.weeklyUsed === null) {
     setBadge('claude-badge', 'No data', 'warn');
-    const diagUrl   = result.url ? result.url.replace('https://', '') : '?';
-    const diagText  = (result.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const diagUrl  = result.url ? result.url.replace('https://', '') : '?';
+    const diagText = (result.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     showToast(`[${diagUrl}] ${diagText || 'No usage data found'}`);
     claudeRetryTimer = setTimeout(fetchClaudeWebUsage, 45_000);
     return;
