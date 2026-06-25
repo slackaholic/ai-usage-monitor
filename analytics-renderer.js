@@ -96,7 +96,20 @@ function computeBurnStats(entries) {
     depletesAt = new Date(new Date(last.ts).getTime() + last['5h'] / ratePerMs);
   }
 
-  return { rateAll, rateNow, ratePeak, ratePerMs, depletesAt, sessions, lastResetAt, nextResetEst };
+  // Weekly depletion forecast (uses overall avg — weekly drains too slowly for "now" rate)
+  const wkPts = entries.filter(e => e['wk'] != null);
+  let depleteWkAt = null;
+  if (wkPts.length >= 2) {
+    const wkFirst = wkPts[0], wkLast = wkPts[wkPts.length - 1];
+    const wkSpanMs = new Date(wkLast.ts) - new Date(wkFirst.ts);
+    const wkDrop   = wkFirst['wk'] - wkLast['wk'];
+    if (wkSpanMs > 0 && wkDrop > 0 && wkLast['wk'] > 0) {
+      const rateWkPerMs = wkDrop / wkSpanMs;
+      depleteWkAt = new Date(new Date(wkLast.ts).getTime() + wkLast['wk'] / rateWkPerMs);
+    }
+  }
+
+  return { rateAll, rateNow, ratePeak, ratePerMs, depletesAt, depleteWkAt, sessions, lastResetAt, nextResetEst };
 }
 
 // ── Sparkline ──────────────────────────────────────────────────────────────
@@ -215,10 +228,32 @@ function renderStats(entries, container) {
   const spanMs = new Date(last.ts) - new Date(entries[0].ts);
   const mult   = PLAN_MULTIPLIERS[currentAccount] ?? 1;
 
-  const depleteStr = burn.depletesAt
-    ? burn.depletesAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      + (burn.depletesAt - Date.now() < 0 ? ' (past)' : '')
+  const fmtDepleteTime = (d) => d
+    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (d - Date.now() < 0 ? ' (past)' : '')
+    : null;
+
+  const deplete5hStr = fmtDepleteTime(burn.depletesAt) ?? (burn.rateAll === 0 ? 'stable' : '—');
+  const depleteWkStr = fmtDepleteTime(burn.depleteWkAt);
+  const depleteWkFull = burn.depleteWkAt
+    ? burn.depleteWkAt.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+      + ' ' + burn.depleteWkAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+  // Show the sooner constraint as the primary value
+  const depleteSooner = burn.depletesAt && burn.depleteWkAt
+    ? (burn.depletesAt <= burn.depleteWkAt ? burn.depletesAt : burn.depleteWkAt)
+    : (burn.depletesAt ?? burn.depleteWkAt);
+  const depleteStr  = depleteSooner
+    ? depleteSooner.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (depleteSooner - Date.now() < 0 ? ' (past)' : '')
     : burn.rateAll === 0 ? 'stable' : '—';
+  const depleteWhich = depleteSooner === burn.depleteWkAt && depleteSooner !== burn.depletesAt ? 'wk' : '5h';
+  const depleteSub = dep5h || depWk
+    ? `${dep5h}×5h ${depWk}×wk depletions`
+    : depleteStr === 'stable' ? 'no measurable drain'
+    : depleteWhich === 'wk'
+      ? `wk limit · 5h: ${deplete5hStr}`
+      : depleteWkStr
+        ? `5h limit · wk: ${depleteWkStr}`
+        : '5h limit · at current rate';
 
   const used5h = last['5h'] != null ? (100 - last['5h']) + '%' : '—';
   const used5hCls = last['5h'] != null ? (last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : '') : '';
@@ -267,7 +302,7 @@ function renderStats(entries, container) {
     { label: 'Burn Avg',  value: burn.rateAll  > 0 ? fmtRate(burn.rateAll)  : '—', sub: effSub(burn.rateAll,  `over ${fmtDuration(spanMs)}`), cls: '' },
     { label: 'Peak Burn', value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: effSub(burn.ratePeak, '10-min window'),              cls: '' },
     // Row 3 — what's next
-    { label: 'Depletes At',       value: depleteStr, sub: dep5h || depWk ? `${dep5h}×5h ${depWk}×wk depletions` : 'at current rate', cls: burn.depletesAt && burn.depletesAt - Date.now() < 3_600_000 ? 'red' : '' },
+    { label: 'Depletes At',       value: depleteStr, sub: depleteSub, cls: depleteSooner && depleteSooner - Date.now() < 3_600_000 ? 'red' : '' },
     { label: 'Next 5H Reset ~',   value: next5hStr,  sub: next5hSub,  cls: '' },
     { label: 'Next Weekly Reset', value: next7dStr,  sub: next7dSub,  cls: apiReset7d && apiReset7d - Date.now() < 86_400_000 ? 'amber' : '' },
   ];
