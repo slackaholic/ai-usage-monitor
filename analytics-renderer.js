@@ -293,15 +293,39 @@ function renderStats(entries, container) {
     return `${baseSub} · ${(rate * mult).toFixed(1)}%/hr equiv.`;
   };
 
+  // Reset-aware color: green = will last to reset, amber = 30-90min early, red = >90min early
+  const gapColor = (depleteMs, resetMs, fallback = '') => {
+    if (!depleteMs || !resetMs) return fallback;
+    const gap = resetMs - depleteMs;
+    if (gap <= 30 * 60_000) return 'green';
+    if (gap <  90 * 60_000) return 'amber';
+    return 'red';
+  };
+  // Hypothetical depletion time for a given %/hr burn rate against current 5H remaining
+  const burnDeplete5hMs = (rate) =>
+    rate > 0 && last['5h'] > 0
+      ? new Date(last.ts).getTime() + (last['5h'] / rate) * 3_600_000
+      : null;
+  // Same for weekly
+  const burnDepleteWkMs = (rate) =>
+    rate > 0 && last['wk'] > 0
+      ? new Date(last.ts).getTime() + (last['wk'] / rate) * 3_600_000
+      : null;
+
   const cards = [
     // Row 1 — what you have
-    { label: '5H Remaining',     value: last['5h'] != null ? last['5h'] + '%' : '—', sub: 'current',               cls: last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : 'green' },
-    { label: '5H Used',          value: used5h,                                        sub: 'consumed this window', cls: used5hCls },
-    { label: 'Weekly Remaining', value: last['wk'] != null ? last['wk'] + '%' : '—',  sub: 'current',               cls: last['wk'] < 20 ? 'red' : last['wk'] < 50 ? 'amber' : 'green' },
+    { label: '5H Remaining',     value: last['5h'] != null ? last['5h'] + '%' : '—', sub: 'current',
+      cls: gapColor(burn.depletesAt?.getTime(), apiReset5h, last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : 'green') },
+    { label: '5H Used',          value: used5h, sub: 'consumed this window', cls: used5hCls },
+    { label: 'Weekly Remaining', value: last['wk'] != null ? last['wk'] + '%' : '—',  sub: 'current',
+      cls: gapColor(burn.depleteWkAt?.getTime(), apiReset7d, last['wk'] < 20 ? 'red' : last['wk'] < 50 ? 'amber' : 'green') },
     // Row 2 — how fast (burn rates; effective rate shown when multiplier >1)
-    { label: 'Burn Now',  value: burn.rateNow  > 0 ? fmtRate(burn.rateNow)  : '—', sub: effSub(burn.rateNow,  'last 30 min'),               cls: '' },
-    { label: 'Burn Avg',  value: burn.rateAll  > 0 ? fmtRate(burn.rateAll)  : '—', sub: effSub(burn.rateAll,  `over ${fmtDuration(spanMs)}`), cls: '' },
-    { label: 'Peak Burn', value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: effSub(burn.ratePeak, '10-min window'),              cls: '' },
+    { label: 'Burn Now',  value: burn.rateNow  > 0 ? fmtRate(burn.rateNow)  : '—', sub: effSub(burn.rateNow,  'last 30 min'),
+      cls: gapColor(burnDeplete5hMs(burn.rateNow), apiReset5h) },
+    { label: 'Burn Avg',  value: burn.rateAll  > 0 ? fmtRate(burn.rateAll)  : '—', sub: effSub(burn.rateAll,  `over ${fmtDuration(spanMs)}`),
+      cls: gapColor(burnDeplete5hMs(burn.rateAll), apiReset5h) },
+    { label: 'Peak Burn', value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: effSub(burn.ratePeak, '10-min window'),
+      cls: gapColor(burnDeplete5hMs(burn.ratePeak), apiReset5h) },
     // Row 3 — what's next
     { label: 'Depletes At',       value: depleteStr, sub: depleteSub, cls: (() => {
         if (!depleteSooner || depleteStr === 'stable') return 'green';
