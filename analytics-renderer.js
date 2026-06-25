@@ -249,7 +249,7 @@ function renderStats(entries, container) {
     // Row 3 — what's next
     { label: 'Depletes At',    value: depleteStr,   sub: dep5h || depWk ? `${dep5h}×5h ${depWk}×wk depletions` : 'at current rate', cls: burn.depletesAt && burn.depletesAt - Date.now() < 3_600_000 ? 'red' : '' },
     { label: 'Next 5H Reset ~', value: nextResetStr, sub: nextResetSub,           cls: '' },
-    { label: 'Plan Speed',     value: `${mult}×`,   sub: mult > 1 ? `${mult}× token consumption vs 1× base` : '1× base token rate', cls: mult > 1 ? 'amber' : 'dim' },
+    { label: 'Usage Multiplier', value: `${mult}×`, sub: mult > 1 ? `${mult}× quota consumption vs 1× base` : '1× base quota rate', cls: mult > 1 ? 'amber' : 'dim' },
   ];
 
   container.innerHTML = `
