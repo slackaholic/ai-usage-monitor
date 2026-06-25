@@ -72,6 +72,8 @@ test('cycleStats measures blocked duration when a cycle hits zero', () => {
 });
 
 const { summarize, hourlyBurn } = require('../metrics.js');
+const fs = require('node:fs');
+const path = require('node:path');
 
 test('summarize aggregates block rate and peaks across cycles', () => {
   const stats = [
@@ -104,4 +106,28 @@ test('hourlyBurn sums active drops and excludes idle gaps and resets', () => {
   const hours = hourlyBurn(snaps, '5h');
   assert.equal(hours.length, 24);
   assert.equal(hours.reduce((a, b) => a + b, 0), 20); // TZ-independent total
+});
+
+test('real log: full pipeline yields sane stats and never throws', () => {
+  const p = path.join(__dirname, '..', 'usage-log.jsonl');
+  if (!fs.existsSync(p)) return; // clean checkout — nothing to validate
+  const all = fs.readFileSync(p, 'utf8').trim().split('\n')
+    .filter(Boolean)
+    .map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(Boolean);
+
+  for (const acct of ['codex', 'claude-desktop', 'claude-vscode']) {
+    const snaps = all.filter(e => e.account === acct);
+    for (const win of ['5h', 'wk']) {
+      const stats = segmentCycles(snaps, win).map(c => cycleStats(c, win));
+      for (const s of stats) {
+        assert.ok(s.peakPct >= 0 && s.peakPct <= 100, `peak ${s.peakPct}`);
+        assert.ok(s.headroomPct >= 0 && s.headroomPct <= 100, `headroom ${s.headroomPct}`);
+        assert.ok(s.blockedMs >= 0);
+      }
+      const sum = summarize(stats);
+      assert.ok(sum.blockRate >= 0 && sum.blockRate <= 1);
+      assert.equal(hourlyBurn(snaps, win).length, 24);
+    }
+  }
 });
