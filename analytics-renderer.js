@@ -578,6 +578,33 @@ function buildEffWindow(entries, win) {
 function renderEfficiency(entries, container) {
   container.innerHTML = `<div class="section-head">Efficiency</div>`
     + ['5h', 'wk'].map(win => buildEffWindow(entries, win)).join('');
+
+  ['5h', 'wk'].forEach(win => {
+    const completed = segmentCycles(entries, win).slice(0, -1).map(c => cycleStats(c, win));
+    renderPeakBars(container.querySelector(`#eff-peaks-${win}`), summarize(completed).peaks);
+    renderHourHeatmap(container.querySelector(`#eff-heat-${win}`), hourlyBurn(entries, win));
+  });
+}
+
+function renderPeakBars(el, peaks) {
+  if (!el) return;
+  if (!peaks.length) { el.innerHTML = '<div class="empty">No completed cycles yet.</div>'; return; }
+  const bars = peaks.map(p => {
+    const h = Math.max(2, Math.round(p.peakPct));
+    const color = p.peakPct >= 90 ? 'var(--red)' : p.peakPct >= 70 ? '#fbbf24' : 'var(--green)';
+    return `<div class="peak-bar" title="${p.peakPct}% · ${fmtDate(p.ts)}" style="height:${h}%;background:${color}"></div>`;
+  }).join('');
+  el.innerHTML = `<div class="eff-cap">Peak usage per completed cycle</div><div class="peak-bars">${bars}</div>`;
+}
+
+function renderHourHeatmap(el, hours) {
+  if (!el) return;
+  const max = Math.max(1, ...hours);
+  const cells = hours.map((v, h) => {
+    const a = (v / max).toFixed(2);
+    return `<div class="heat-cell" title="${h}:00 — ${v.toFixed(0)}% burned" style="background:rgba(168,85,247,${a})">${h % 6 === 0 ? h : ''}</div>`;
+  }).join('');
+  el.innerHTML = `<div class="eff-cap">Burn by hour of day</div><div class="heat-row">${cells}</div>`;
 }
 
 // ── Main render ────────────────────────────────────────────────────────────
