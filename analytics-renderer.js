@@ -312,6 +312,38 @@ function renderStats(entries, container) {
     next7dSub = msUntil > 0 ? `${timeStr} · in ${fmtDuration(msUntil)}` : 'reset passed — refresh';
   }
 
+  // ── Weekly window analysis ────────────────────────────────────────────────
+  // Derive weekly period start from the logged reset timestamp — no calendar assumptions.
+  // Works correctly regardless of when the subscription started or was renewed.
+  const lastWeeklyResetMs = apiReset7d ? apiReset7d - 7 * 86_400_000 : null;
+
+  const thisWeekEntries = lastWeeklyResetMs
+    ? entries.filter(e => new Date(e.ts).getTime() >= lastWeeklyResetMs)
+    : entries;
+
+  const logCoversWeekStart = !!(lastWeeklyResetMs &&
+    entries.length > 0 && new Date(entries[0].ts).getTime() <= lastWeeklyResetMs);
+
+  // Count 5H windows elapsed this weekly period via log-detected >15pp upward jumps
+  const twPts = thisWeekEntries.filter(e => e['5h'] != null);
+  let windowsElapsed = twPts.length > 0 ? 1 : 0; // current partial window counts as 1
+  for (let i = 1; i < twPts.length; i++) {
+    if (twPts[i]['5h'] - twPts[i - 1]['5h'] > 15) windowsElapsed++;
+  }
+
+  // Weekly % consumed since start of period
+  const twFirstWk  = thisWeekEntries.find(e => e['wk'] != null)?.['wk'] ?? null;
+  const wkConsumed = twFirstWk != null && last['wk'] != null && twFirstWk > last['wk']
+    ? twFirstWk - last['wk'] : null;
+
+  // Average % cost per 5H window — requires ≥2 windows to be meaningful
+  const wkPerWindow = wkConsumed > 0 && windowsElapsed >= 2
+    ? wkConsumed / windowsElapsed : null;
+
+  // Projected windows remaining at current per-window pace
+  const windowsRemaining = wkPerWindow > 0 && last['wk'] != null
+    ? last['wk'] / wkPerWindow : null;
+
   // When multiplier > 1, show effective token burn in sub-text for burn cards
   const effSub = (rate, baseSub) => {
     if (mult === 1 || rate <= 0) return baseSub;
@@ -344,10 +376,23 @@ function renderStats(entries, container) {
 
   const cards = [
     // Row 1 — what you have
-    { label: '5H Remaining',     value: last['5h'] != null ? last['5h'] + '%' : '—', sub: 'current',
+    { label: '5H Remaining',
+      value: last['5h'] != null ? last['5h'] + '%' : '—',
+      sub: 'current',
       cls: gapColor(burn.depletesAt?.getTime(), reset5hRef, last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : 'green') },
-    { label: '5H Used',          value: used5h, sub: 'consumed this window', cls: used5hCls },
-    { label: 'Weekly Remaining', value: last['wk'] != null ? last['wk'] + '%' : '—',  sub: 'current',
+    { label: 'Wk Windows Left',
+      value: windowsRemaining != null ? windowsRemaining.toFixed(1) : '—',
+      sub: wkPerWindow != null
+        ? `~${wkPerWindow.toFixed(1)}% wk/window · ${windowsElapsed} elapsed${logCoversWeekStart ? '' : ' · partial data'}`
+        : windowsElapsed >= 2
+          ? `${windowsElapsed} windows counted · insufficient wk change`
+          : 'need ≥2 windows to estimate',
+      cls: windowsRemaining == null ? '' : windowsRemaining >= 6 ? 'green' : windowsRemaining >= 3 ? 'amber' : 'red' },
+    { label: 'Weekly Remaining',
+      value: last['wk'] != null ? last['wk'] + '%' : '—',
+      sub: wkPerWindow != null
+        ? `~${wkPerWindow.toFixed(1)}% per window · ${windowsElapsed} elapsed`
+        : 'current',
       cls: gapColor(burn.depleteWkAt?.getTime(), apiReset7d, last['wk'] < 20 ? 'red' : last['wk'] < 50 ? 'amber' : 'green') },
     // Row 2 — how fast (burn rates; effective rate shown when multiplier >1)
     { label: 'Burn Now',     value: burn.rateNow     > 0 ? fmtRate(burn.rateNow)     : '—',
