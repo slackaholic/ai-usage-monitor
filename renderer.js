@@ -673,6 +673,8 @@ function renderClaudeCodeApiData(data, stale = false) {
     const entry = { ts: new Date().toISOString(), account: 'claude-vscode', '5h': data.pct5h, wk: data.pct7d };
     const dep = [data.pct5h === 0 && '5h', data.pct7d === 0 && 'wk'].filter(Boolean);
     if (dep.length) entry.depleted = dep;
+    if (data.reset5hMs > 0) entry.reset5hTs = data.reset5hMs;
+    if (data.reset7dMs  > 0) entry.reset7dTs  = data.reset7dMs;
     window.electronAPI.appendUsageLog(entry);
   }
 

@@ -223,15 +223,28 @@ function renderStats(entries, container) {
   const used5h = last['5h'] != null ? (100 - last['5h']) + '%' : '—';
   const used5hCls = last['5h'] != null ? (last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : '') : '';
 
+  // Prefer the exact API-sourced reset timestamp logged in recent entries
+  const apiResetEntry = [...entries].reverse().find(e => e.reset5hTs > 0);
+  const apiResetTs    = apiResetEntry?.reset5hTs ?? null;
+
   let nextResetStr = '—', nextResetSub = 'check VS Code for exact time';
-  if (burn.nextResetEst) {
+  if (apiResetTs) {
+    const msUntil = apiResetTs - Date.now();
+    const timeStr = new Date(apiResetTs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (msUntil > 0) {
+      nextResetStr = timeStr;
+      nextResetSub = `in ${fmtDuration(msUntil)} · from API`;
+    } else {
+      nextResetStr = timeStr;
+      nextResetSub = 'reset passed — refresh to update';
+    }
+  } else if (burn.nextResetEst) {
+    // Fall back to log-jump estimate only if in future and within 5.5h
     const msUntil = burn.nextResetEst - Date.now();
     if (msUntil > 0 && msUntil < 5.5 * 3_600_000) {
-      // Only show if it's in the future and within one plausible 5h window
       nextResetStr = burn.nextResetEst.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      nextResetSub = `in ${fmtDuration(msUntil)} · est. from last reset`;
+      nextResetSub = `in ${fmtDuration(msUntil)} · est.`;
     }
-    // If stale (past) or >5.5h away the estimate is unreliable — leave as '—'
   }
 
   // When multiplier > 1, show effective token burn in sub-text for burn cards

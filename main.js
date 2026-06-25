@@ -540,11 +540,13 @@ ipcMain.handle('fetch-claude-code-api-usage', async () => {
       };
 
       resolve({
-        pct5h:   Math.round((1 - util5h) * 100),
-        pct7d:   Math.round((1 - util7d) * 100),
-        reset5h: fmtReset(reset5hMs),
-        reset7d:  fmtReset(reset7dMs),
-        status5h: h['anthropic-ratelimit-unified-5h-status'] ?? 'unknown',
+        pct5h:     Math.round((1 - util5h) * 100),
+        pct7d:     Math.round((1 - util7d) * 100),
+        reset5h:   fmtReset(reset5hMs),
+        reset7d:   fmtReset(reset7dMs),
+        reset5hMs,  // epoch ms — exact reset timestamp from API header
+        reset7dMs,
+        status5h:  h['anthropic-ratelimit-unified-5h-status'] ?? 'unknown',
         status7d:  h['anthropic-ratelimit-unified-7d-status']  ?? 'unknown',
         account,
       });
