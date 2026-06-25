@@ -251,8 +251,8 @@ function renderStats(entries, container) {
     : depleteStr === 'stable' ? 'no measurable drain'
     : depleteWhich === 'wk'
       ? `wk limit · 5h: ${deplete5hStr}`
-      : depleteWkStr
-        ? `5h limit · wk: ${depleteWkStr}`
+      : depleteWkFull
+        ? `5h limit · wk: ${depleteWkFull}`
         : '5h limit · at current rate';
 
   const used5h = last['5h'] != null ? (100 - last['5h']) + '%' : '—';
