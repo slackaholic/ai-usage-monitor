@@ -71,9 +71,14 @@ function computeBurnStats(entries) {
   }
 
   let sessions = 0;
+  let lastResetAt = null;
   for (let i = 1; i < pts.length; i++) {
-    if (pts[i]['5h'] - pts[i - 1]['5h'] > 15) sessions++;
+    if (pts[i]['5h'] - pts[i - 1]['5h'] > 15) {
+      sessions++;
+      lastResetAt = new Date(pts[i].ts);
+    }
   }
+  const nextResetEst = lastResetAt ? new Date(lastResetAt.getTime() + 5 * 3_600_000) : null;
 
   const effectiveRate = rateNow > 0 ? rateNow : rateAll;
   const ratePerMs     = effectiveRate / 3_600_000;
@@ -82,7 +87,7 @@ function computeBurnStats(entries) {
     depletesAt = new Date(new Date(last.ts).getTime() + last['5h'] / ratePerMs);
   }
 
-  return { rateAll, rateNow, ratePeak, ratePerMs, depletesAt, sessions };
+  return { rateAll, rateNow, ratePeak, ratePerMs, depletesAt, sessions, lastResetAt, nextResetEst };
 }
 
 // ── Sparkline ──────────────────────────────────────────────────────────────
@@ -205,15 +210,28 @@ function renderStats(entries, container) {
       + (burn.depletesAt - Date.now() < 0 ? ' (past)' : '')
     : burn.rateAll === 0 ? 'stable' : '—';
 
+  const used5h = last['5h'] != null ? (100 - last['5h']) + '%' : '—';
+  const used5hCls = last['5h'] != null ? (last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : '') : '';
+
+  let nextResetStr = '—', nextResetSub = 'est. 5h from last reset';
+  if (burn.nextResetEst) {
+    const msUntil = burn.nextResetEst - Date.now();
+    const timeStr = burn.nextResetEst.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    nextResetStr = timeStr;
+    nextResetSub = msUntil > 0 ? `in ${fmtDuration(msUntil)}` : 'overdue';
+  }
+
   const cards = [
-    { label: '5H Remaining',  value: last['5h'] != null ? last['5h'] + '%' : '—',  sub: 'current',                       cls: last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : 'green' },
-    { label: 'Weekly Remaining', value: last['wk'] != null ? last['wk'] + '%' : '—', sub: 'current',                    cls: last['wk'] < 20 ? 'red' : last['wk'] < 50 ? 'amber' : 'green' },
-    { label: 'Burn Now',      value: burn.rateNow > 0 ? fmtRate(burn.rateNow) : '—', sub: 'last 30 min',                 cls: '' },
-    { label: 'Burn Avg',      value: burn.rateAll > 0 ? fmtRate(burn.rateAll) : '—', sub: `over ${fmtDuration(spanMs)}`, cls: '' },
-    { label: 'Peak Burn',     value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: '10-min window',             cls: '' },
-    { label: 'Depletes At',   value: depleteStr,                                      sub: 'at current rate',             cls: burn.depletesAt && burn.depletesAt - Date.now() < 3_600_000 ? 'red' : '' },
-    { label: 'Session Resets', value: String(burn.sessions),                          sub: '5h jumped >15pp',             cls: burn.sessions > 0 ? '' : 'dim' },
-    { label: 'Depletions',    value: dep5h || depWk ? `${dep5h}×5h  ${depWk}×wk` : '0', sub: `${entries.length} log entries`, cls: dep5h || depWk ? 'red' : 'dim' },
+    // Row 1 — current state
+    { label: '5H Remaining',     value: last['5h'] != null ? last['5h'] + '%' : '—', sub: 'current',                        cls: last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : 'green' },
+    { label: '5H Used',          value: used5h,                                        sub: 'consumed this window',           cls: used5hCls },
+    { label: 'Weekly Remaining', value: last['wk'] != null ? last['wk'] + '%' : '—',  sub: 'current',                        cls: last['wk'] < 20 ? 'red' : last['wk'] < 50 ? 'amber' : 'green' },
+    { label: 'Next 5H Reset ~',  value: nextResetStr,                                  sub: nextResetSub,                     cls: '' },
+    // Row 2 — burn analysis
+    { label: 'Burn Now',         value: burn.rateNow > 0 ? fmtRate(burn.rateNow) : '—', sub: 'last 30 min',                  cls: '' },
+    { label: 'Burn Avg',         value: burn.rateAll > 0 ? fmtRate(burn.rateAll) : '—', sub: `over ${fmtDuration(spanMs)}`,  cls: '' },
+    { label: 'Peak Burn',        value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: '10-min window',              cls: '' },
+    { label: 'Depletes At',      value: depleteStr,                                      sub: dep5h || depWk ? `${dep5h}×5h ${depWk}×wk depletions` : 'at current rate', cls: burn.depletesAt && burn.depletesAt - Date.now() < 3_600_000 ? 'red' : '' },
   ];
 
   container.innerHTML = `
@@ -293,7 +311,7 @@ function renderTable(entries, container) {
             if (isReset5h) events.push(`<span style="color:var(--accent)">reset</span>`);
             return `<tr class="${rowCls}">
               <td class="mono">${fmtDate(e.ts)}</td>
-              <td style="color:var(--text-dim);font-size:10px">${fmtAgo(e.ts)}</td>
+              <td style="color:var(--text-mid);font-size:10px">${fmtAgo(e.ts)}</td>
               <td class="${e['5h'] != null ? 'accent' : ''}">${e['5h'] != null ? e['5h'] + '%' : '—'}</td>
               <td class="${dClass(d5h)}">${fmtD(d5h)}</td>
               <td class="${e['wk'] != null ? 'green' : ''}" style="color:${e['wk'] != null ? 'var(--green)' : ''}">${e['wk'] != null ? e['wk'] + '%' : '—'}</td>
