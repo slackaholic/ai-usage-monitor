@@ -739,7 +739,14 @@ function renderClaudeCodeApiData(data, stale = false) {
   setPct('claude2-5h-pct', data.pct5h);
   setPct('claude2-wk-pct', data.pct7d);
   set('claude2-5h-reset', data.reset5h ? 'Resets in ' + data.reset5h : '');
-  set('claude2-wk-reset', data.reset7d  ? 'Resets in ' + data.reset7d  : '');
+  if (data.reset7dMs > 0) {
+    const d = new Date(data.reset7dMs);
+    const dateStr = d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    set('claude2-wk-reset', `Resets ${dateStr} ${timeStr}`);
+  } else {
+    set('claude2-wk-reset', data.reset7d ? 'Resets in ' + data.reset7d : '');
+  }
 
   const bar5h = document.getElementById('claude2-5h-bar');
   const barWk  = document.getElementById('claude2-wk-bar');
