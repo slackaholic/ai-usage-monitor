@@ -223,12 +223,15 @@ function renderStats(entries, container) {
   const used5h = last['5h'] != null ? (100 - last['5h']) + '%' : '—';
   const used5hCls = last['5h'] != null ? (last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : '') : '';
 
-  let nextResetStr = '—', nextResetSub = 'est. 5h from last reset';
+  let nextResetStr = '—', nextResetSub = 'check VS Code for exact time';
   if (burn.nextResetEst) {
     const msUntil = burn.nextResetEst - Date.now();
-    const timeStr = burn.nextResetEst.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    nextResetStr = timeStr;
-    nextResetSub = msUntil > 0 ? `in ${fmtDuration(msUntil)}` : 'overdue';
+    if (msUntil > 0 && msUntil < 5.5 * 3_600_000) {
+      // Only show if it's in the future and within one plausible 5h window
+      nextResetStr = burn.nextResetEst.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      nextResetSub = `in ${fmtDuration(msUntil)} · est. from last reset`;
+    }
+    // If stale (past) or >5.5h away the estimate is unreliable — leave as '—'
   }
 
   // When multiplier > 1, show effective token burn in sub-text for burn cards
