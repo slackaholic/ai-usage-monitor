@@ -512,6 +512,74 @@ function renderTable(entries, container) {
   `;
 }
 
+// ── Efficiency ─────────────────────────────────────────────────────────────
+function buildEffWindow(entries, win) {
+  const title = win === '5h' ? '5-Hour Window' : 'Weekly Window';
+  const cycles = segmentCycles(entries, win);
+  if (!cycles.length) {
+    return `<div class="eff-sub">${title}</div><div class="empty">No data yet.</div>`;
+  }
+
+  const current = cycleStats(cycles[cycles.length - 1], win);
+  const completedCycles = cycles.slice(0, -1);
+  const completed = completedCycles.map(c => cycleStats(c, win));
+  const lastDone = completed.length ? completed[completed.length - 1] : null;
+  const sum = summarize(completed);
+
+  // Confidence: gap between the last completed cycle's final poll and the reset
+  // that ended it (≈ the current cycle's first poll).
+  let confidenceMs = null;
+  if (lastDone && completedCycles.length) {
+    const lastEnd = completedCycles[completedCycles.length - 1].slice(-1)[0].ts;
+    confidenceMs = new Date(cycles[cycles.length - 1][0].ts) - new Date(lastEnd);
+  }
+
+  const grid = cards => `<div class="stat-grid">${cards.map(c => `
+    <div class="stat-card ${c.cls}"><div class="label">${c.label}</div>
+      <div class="value">${c.value}</div><div class="sub">${c.sub}</div></div>`).join('')}</div>`;
+
+  const liveCards = [
+    { label: 'Peak So Far', value: current.peakPct + '%', sub: 'this cycle',
+      cls: current.peakPct >= 90 ? 'red' : current.peakPct >= 70 ? 'amber' : 'green' },
+    { label: 'Headroom', value: current.headroomPct + '%', sub: 'unused so far', cls: '' },
+    { label: 'Status', value: current.blocked ? 'Blocked' : 'Running',
+      sub: current.blocked ? 'hit the limit' : 'within limit',
+      cls: current.blocked ? 'red' : 'green' },
+  ];
+
+  const scoreCards = lastDone ? [
+    { label: 'Last Peak', value: lastDone.peakPct + '%', sub: 'previous cycle', cls: '' },
+    { label: 'Left at Reset', value: lastDone.headroomPct + '%', sub: 'headroom', cls: '' },
+    { label: 'Blocked', value: lastDone.blocked ? 'Yes' : 'No',
+      sub: lastDone.blocked ? fmtDuration(lastDone.blockedMs) + ' stuck' : 'never ran out',
+      cls: lastDone.blocked ? 'red' : 'green' },
+  ] : [];
+
+  const histLine = sum.count
+    ? `${sum.blockedCount} of ${sum.count} completed cycles ran out`
+      + (sum.totalBlockedMs > 0 ? ` · ≈${fmtDuration(sum.totalBlockedMs)} blocked total` : '')
+    : 'No completed cycles yet.';
+
+  const confLine = confidenceMs != null && confidenceMs > 0
+    ? `<div class="eff-note">Scorecard based on a poll ${fmtDuration(confidenceMs)} before reset.</div>`
+    : '';
+
+  return `
+    <div class="eff-sub">${title} — Now</div>
+    ${grid(liveCards)}
+    ${scoreCards.length ? `<div class="eff-sub">${title} — Last Completed Cycle</div>${grid(scoreCards)}${confLine}` : ''}
+    <div class="eff-sub">${title} — History</div>
+    <div class="eff-hist">${histLine}</div>
+    <div id="eff-peaks-${win}" class="eff-peaks"></div>
+    <div id="eff-heat-${win}" class="eff-heat"></div>
+  `;
+}
+
+function renderEfficiency(entries, container) {
+  container.innerHTML = `<div class="section-head">Efficiency</div>`
+    + ['5h', 'wk'].map(win => buildEffWindow(entries, win)).join('');
+}
+
 // ── Main render ────────────────────────────────────────────────────────────
 async function renderAll() {
   const body = document.getElementById('body');
@@ -544,15 +612,21 @@ async function renderAll() {
 
   // Build sections
   const statsEl = document.createElement('div');
+  const effEl   = document.createElement('div');
   const chartEl = document.createElement('div');
   const tableEl = document.createElement('div');
 
   body.innerHTML = '';
   body.appendChild(statsEl);
+  body.appendChild(effEl);
   body.appendChild(chartEl);
   body.appendChild(tableEl);
 
+  // Efficiency reads the FULL log (all cycles), independent of the time-window filter.
+  const allEntries = await window.electronAPI.readUsageLog(currentAccount, 0);
+
   renderStats(entries, statsEl);
+  renderEfficiency(allEntries, effEl);
   renderChart(entries, chartEl);
   renderTable(entries, tableEl);
 }
