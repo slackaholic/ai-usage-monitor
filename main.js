@@ -1037,15 +1037,15 @@ ipcMain.handle('show-claude-web-window', async () => {
   });
   loginWin.webContents.setUserAgent(CHROME_UA);
 
-  // After Google OAuth the popup sets sessionKey in the partition.
-  // Poll every 2 s — but only act when the cookie *changes* from what was
-  // already present. Otherwise an existing (old-account) session is mistaken
-  // for a fresh sign-in and the window is yanked to /new before the user can
-  // log out and type a different account's credentials.
+  // The app has no logout button, so a stale (old-account) session lingers in
+  // this partition and blocks claude.ai's email-code flow (the Continue button
+  // just spins, no code is ever sent). Wipe all storage for the partition first
+  // so the sign-in window starts as a clean, logged-out browser. This doubles
+  // as the "log out / switch account" action.
   const claudeSess = electronSession.fromPartition(CLAUDE_PARTITIONS['desktop']);
+  try { await claudeSess.clearStorageData(); } catch {}
   let didSignIn = false;
-  const initialCookies = await claudeSess.cookies.get({ url: 'https://claude.ai', name: 'sessionKey' }).catch(() => []);
-  const initialKey = initialCookies.length ? initialCookies[0].value : null;
+  const initialKey = null; // storage just cleared, so any sessionKey that appears is a fresh sign-in
   const cookiePoller = setInterval(async () => {
     if (loginWin.isDestroyed()) { clearInterval(cookiePoller); return; }
     const cookies = await claudeSess.cookies.get({ url: 'https://claude.ai', name: 'sessionKey' });
