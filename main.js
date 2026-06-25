@@ -1019,7 +1019,7 @@ ipcMain.handle('clear-claude-web-cookies', async (_, key = 'desktop') => {
   return { ok: true };
 });
 
-ipcMain.handle('show-claude-web-window', () => {
+ipcMain.handle('show-claude-web-window', async () => {
   const { screen, session: electronSession } = require('electron');
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
   const loginWin = new BrowserWindow({
@@ -1038,13 +1038,19 @@ ipcMain.handle('show-claude-web-window', () => {
   loginWin.webContents.setUserAgent(CHROME_UA);
 
   // After Google OAuth the popup sets sessionKey in the partition.
-  // Poll every 2 s — when the cookie appears, navigate the window to /new.
+  // Poll every 2 s — but only act when the cookie *changes* from what was
+  // already present. Otherwise an existing (old-account) session is mistaken
+  // for a fresh sign-in and the window is yanked to /new before the user can
+  // log out and type a different account's credentials.
   const claudeSess = electronSession.fromPartition(CLAUDE_PARTITIONS['desktop']);
   let didSignIn = false;
+  const initialCookies = await claudeSess.cookies.get({ url: 'https://claude.ai', name: 'sessionKey' }).catch(() => []);
+  const initialKey = initialCookies.length ? initialCookies[0].value : null;
   const cookiePoller = setInterval(async () => {
     if (loginWin.isDestroyed()) { clearInterval(cookiePoller); return; }
     const cookies = await claudeSess.cookies.get({ url: 'https://claude.ai', name: 'sessionKey' });
-    if (cookies.length > 0 && !didSignIn) {
+    const currentKey = cookies.length ? cookies[0].value : null;
+    if (currentKey && currentKey !== initialKey && !didSignIn) {
       didSignIn = true;
       clearInterval(cookiePoller);
       loginWin.setTitle('Signed in — you can close this window');
