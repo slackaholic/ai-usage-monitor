@@ -223,28 +223,32 @@ function renderStats(entries, container) {
   const used5h = last['5h'] != null ? (100 - last['5h']) + '%' : '—';
   const used5hCls = last['5h'] != null ? (last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : '') : '';
 
-  // Prefer the exact API-sourced reset timestamp logged in recent entries
-  const apiResetEntry = [...entries].reverse().find(e => e.reset5hTs > 0);
-  const apiResetTs    = apiResetEntry?.reset5hTs ?? null;
-
-  let nextResetStr = '—', nextResetSub = 'check VS Code for exact time';
-  if (apiResetTs) {
-    const msUntil = apiResetTs - Date.now();
-    const timeStr = new Date(apiResetTs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    if (msUntil > 0) {
-      nextResetStr = timeStr;
-      nextResetSub = `in ${fmtDuration(msUntil)} · from API`;
-    } else {
-      nextResetStr = timeStr;
-      nextResetSub = 'reset passed — refresh to update';
-    }
+  // 5H reset — prefer exact API timestamp, fall back to log-jump estimate
+  const apiReset5h = [...entries].reverse().find(e => e.reset5hTs > 0)?.reset5hTs ?? null;
+  let next5hStr = '—', next5hSub = '—';
+  if (apiReset5h) {
+    const msUntil = apiReset5h - Date.now();
+    const timeStr = new Date(apiReset5h).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    next5hStr = timeStr;
+    next5hSub = msUntil > 0 ? `in ${fmtDuration(msUntil)} · from API` : 'reset passed — refresh';
   } else if (burn.nextResetEst) {
-    // Fall back to log-jump estimate only if in future and within 5.5h
     const msUntil = burn.nextResetEst - Date.now();
     if (msUntil > 0 && msUntil < 5.5 * 3_600_000) {
-      nextResetStr = burn.nextResetEst.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      nextResetSub = `in ${fmtDuration(msUntil)} · est.`;
+      next5hStr = burn.nextResetEst.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      next5hSub = `in ${fmtDuration(msUntil)} · est.`;
     }
+  }
+
+  // Weekly reset — from logged reset7dTs (all accounts)
+  const apiReset7d = [...entries].reverse().find(e => e.reset7dTs > 0)?.reset7dTs ?? null;
+  let next7dStr = '—', next7dSub = 'will appear after next poll';
+  if (apiReset7d) {
+    const msUntil = apiReset7d - Date.now();
+    const d = new Date(apiReset7d);
+    const dateStr = d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    next7dStr = dateStr;
+    next7dSub = msUntil > 0 ? `${timeStr} · in ${fmtDuration(msUntil)}` : 'reset passed — refresh';
   }
 
   // When multiplier > 1, show effective token burn in sub-text for burn cards
@@ -258,14 +262,14 @@ function renderStats(entries, container) {
     { label: '5H Remaining',     value: last['5h'] != null ? last['5h'] + '%' : '—', sub: 'current',               cls: last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : 'green' },
     { label: '5H Used',          value: used5h,                                        sub: 'consumed this window', cls: used5hCls },
     { label: 'Weekly Remaining', value: last['wk'] != null ? last['wk'] + '%' : '—',  sub: 'current',               cls: last['wk'] < 20 ? 'red' : last['wk'] < 50 ? 'amber' : 'green' },
-    // Row 2 — how fast
-    { label: 'Burn Now',  value: burn.rateNow  > 0 ? fmtRate(burn.rateNow)  : '—', sub: effSub(burn.rateNow,  'last 30 min'),              cls: '' },
+    // Row 2 — how fast (burn rates; effective rate shown when multiplier >1)
+    { label: 'Burn Now',  value: burn.rateNow  > 0 ? fmtRate(burn.rateNow)  : '—', sub: effSub(burn.rateNow,  'last 30 min'),               cls: '' },
     { label: 'Burn Avg',  value: burn.rateAll  > 0 ? fmtRate(burn.rateAll)  : '—', sub: effSub(burn.rateAll,  `over ${fmtDuration(spanMs)}`), cls: '' },
-    { label: 'Peak Burn', value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: effSub(burn.ratePeak, '10-min window'),             cls: '' },
+    { label: 'Peak Burn', value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: effSub(burn.ratePeak, '10-min window'),              cls: '' },
     // Row 3 — what's next
-    { label: 'Depletes At',    value: depleteStr,   sub: dep5h || depWk ? `${dep5h}×5h ${depWk}×wk depletions` : 'at current rate', cls: burn.depletesAt && burn.depletesAt - Date.now() < 3_600_000 ? 'red' : '' },
-    { label: 'Next 5H Reset ~', value: nextResetStr, sub: nextResetSub,           cls: '' },
-    { label: 'Usage Multiplier', value: `${mult}×`, sub: mult > 1 ? `${mult}× quota consumption vs 1× base` : '1× base quota rate', cls: mult > 1 ? 'amber' : 'dim' },
+    { label: 'Depletes At',       value: depleteStr, sub: dep5h || depWk ? `${dep5h}×5h ${depWk}×wk depletions` : 'at current rate', cls: burn.depletesAt && burn.depletesAt - Date.now() < 3_600_000 ? 'red' : '' },
+    { label: 'Next 5H Reset ~',   value: next5hStr,  sub: next5hSub,  cls: '' },
+    { label: 'Next Weekly Reset', value: next7dStr,  sub: next7dSub,  cls: apiReset7d && apiReset7d - Date.now() < 86_400_000 ? 'amber' : '' },
   ];
 
   container.innerHTML = `

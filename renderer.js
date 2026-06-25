@@ -110,6 +110,36 @@ function applyTrendDisplay(key, delta) {
 // ── Analytics / sparkline ──────────────────────────────────────────────────
 const LOG_ACCOUNT = { codex: 'codex', claude: 'claude-desktop', claude2: 'claude-vscode' };
 
+// Parse reset strings from scrapers into epoch ms.
+// Handles: absolute dates ("Jun 25, 2026 8:14 AM"), day-time ("Sat 4:59 PM"),
+// relative ("in 5d", "5 days").
+function parseResetToMs(str) {
+  if (!str) return 0;
+  // Direct date parse (works for "Jun 25, 2026 8:14 AM")
+  const d = new Date(str);
+  if (!isNaN(d.getTime()) && d.getTime() > Date.now() - 86_400_000) return d.getTime();
+  // "Sat 4:59 PM" / "Mon 10:30 AM"
+  const dayTime = str.match(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+(\d+):(\d+)\s*(AM|PM)$/i);
+  if (dayTime) {
+    const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const target = days.findIndex(x => x.toLowerCase() === dayTime[1].toLowerCase());
+    const now = new Date();
+    let diff = (target - now.getDay() + 7) % 7 || 7;
+    const r = new Date(now);
+    r.setDate(now.getDate() + diff);
+    let h = parseInt(dayTime[2]);
+    const m = parseInt(dayTime[3]);
+    if (dayTime[4].toLowerCase() === 'pm' && h !== 12) h += 12;
+    if (dayTime[4].toLowerCase() === 'am' && h === 12) h = 0;
+    r.setHours(h, m, 0, 0);
+    return r.getTime();
+  }
+  // "in 5d" / "5 days"
+  const days = str.match(/(\d+)\s*d/i);
+  if (days) return Date.now() + parseInt(days[1]) * 86_400_000;
+  return 0;
+}
+
 function fmtDuration(ms) {
   if (ms < 0) return 'now';
   const h = Math.floor(ms / 3_600_000);
@@ -583,6 +613,8 @@ function renderClaudeWebData(parsed, stale = false) {
     const entry = { ts: new Date().toISOString(), account: 'claude-desktop', '5h': remaining5h, wk: remainingWk };
     const dep = [remaining5h === 0 && '5h', remainingWk === 0 && 'wk'].filter(Boolean);
     if (dep.length) entry.depleted = dep;
+    const wkReset = parseResetToMs(parsed.weeklyReset);
+    if (wkReset > 0) entry.reset7dTs = wkReset;
     window.electronAPI.appendUsageLog(entry);
   }
 
@@ -773,6 +805,8 @@ function renderCodexData(parsed, stale = false) {
     const entry = { ts: new Date().toISOString(), account: 'codex', '5h': parsed.shared5h, wk: parsed.sharedWeek };
     const dep = [parsed.shared5h === 0 && '5h', parsed.sharedWeek === 0 && 'wk'].filter(Boolean);
     if (dep.length) entry.depleted = dep;
+    const wkReset = parseResetToMs(parsed.sharedWeekReset);
+    if (wkReset > 0) entry.reset7dTs = wkReset;
     window.electronAPI.appendUsageLog(entry);
   }
 
