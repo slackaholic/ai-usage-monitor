@@ -71,6 +71,27 @@ test('cycleStats measures blocked duration when a cycle hits zero', () => {
   assert.equal(s.blockedMs, 3_600_000); // 01:00 → 02:00
 });
 
+test('cycleStats: cycle starting at 0 is NOT blocked (left-censored)', () => {
+  const cycle = [
+    { ts: '2026-06-25T00:00:00Z', '5h': 0 },
+    { ts: '2026-06-25T01:00:00Z', '5h': 0 },
+  ];
+  const s = cycleStats(cycle, '5h');
+  assert.equal(s.blocked, false);
+  assert.equal(s.blockedMs, 0);
+  assert.equal(s.peakPct, 100);
+  assert.equal(s.headroomPct, 0);
+});
+
+test('segmentCycles splits on a gap longer than the window length', () => {
+  const snaps = [
+    { ts: '2026-06-25T00:00:00Z', '5h': 100 },
+    { ts: '2026-06-25T06:00:00Z', '5h': 100 }, // 6h gap > 5h window → boundary
+  ];
+  const cycles = segmentCycles(snaps, '5h');
+  assert.equal(cycles.length, 2);
+});
+
 const { summarize, hourlyBurn } = require('../metrics.js');
 const fs = require('node:fs');
 const path = require('node:path');

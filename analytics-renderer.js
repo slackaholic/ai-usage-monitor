@@ -561,7 +561,7 @@ function buildEffWindow(entries, win) {
     : 'No completed cycles yet.';
 
   const confLine = confidenceMs != null && confidenceMs > 0
-    ? `<div class="eff-note">Scorecard based on a poll ${fmtDuration(confidenceMs)} before reset.</div>`
+    ? `<div class="eff-note">Scorecard based on a poll ${fmtDuration(confidenceMs)} before the next cycle began.</div>`
     : '';
 
   return `
@@ -591,7 +591,7 @@ function renderPeakBars(el, peaks) {
   if (!peaks.length) { el.innerHTML = '<div class="empty">No completed cycles yet.</div>'; return; }
   const bars = peaks.map(p => {
     const h = Math.max(2, Math.round(p.peakPct));
-    const color = p.peakPct >= 90 ? 'var(--red)' : p.peakPct >= 70 ? '#fbbf24' : 'var(--green)';
+    const color = p.peakPct >= 90 ? 'var(--red)' : p.peakPct >= 70 ? 'var(--amber)' : 'var(--green)';
     return `<div class="peak-bar" title="${p.peakPct}% · ${fmtDate(p.ts)}" style="height:${h}%;background:${color}"></div>`;
   }).join('');
   el.innerHTML = `<div class="eff-cap">Peak usage per completed cycle</div><div class="peak-bars">${bars}</div>`;
