@@ -1049,7 +1049,7 @@ document.getElementById('btn-set-session-cookie')?.addEventListener('click', asy
     showToast(`Auth failed (HTTP ${result.status}) — paste a fresh sessionKey value.`);
   }
 });
-document.getElementById('btn-borrow-claude-session')?.addEventListener('click', async () => {
+async function borrowClaudeDesktopSession() {
   showToast('Importing Claude Desktop session…');
   const result = await window.electronAPI.borrowClaudeDesktopSession();
   if (result.ok) {
@@ -1059,7 +1059,9 @@ document.getElementById('btn-borrow-claude-session')?.addEventListener('click', 
   } else {
     showToast('Import failed: ' + (result.reason || 'unknown — is the Claude Desktop app installed & signed in?'));
   }
-});
+}
+document.getElementById('btn-borrow-claude-session')?.addEventListener('click', borrowClaudeDesktopSession);
+document.getElementById('btn-borrow-claude-session-top')?.addEventListener('click', borrowClaudeDesktopSession);
 document.getElementById('btn-show-claude-window')?.addEventListener('click', () => {
   window.electronAPI.showClaudeWebWindow();
   showToast('Log in to claude.ai in that window, then close it and click ↻ on the Claude Desktop card.');
