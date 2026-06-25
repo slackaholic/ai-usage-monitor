@@ -255,6 +255,7 @@ function renderStats(entries, container) {
         ? `5h limit · wk: ${depleteWkFull}`
         : '5h limit · at current rate';
 
+
   const used5h = last['5h'] != null ? (100 - last['5h']) + '%' : '—';
   const used5hCls = last['5h'] != null ? (last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : '') : '';
 
@@ -302,7 +303,15 @@ function renderStats(entries, container) {
     { label: 'Burn Avg',  value: burn.rateAll  > 0 ? fmtRate(burn.rateAll)  : '—', sub: effSub(burn.rateAll,  `over ${fmtDuration(spanMs)}`), cls: '' },
     { label: 'Peak Burn', value: burn.ratePeak > 0 ? fmtRate(burn.ratePeak) : '—', sub: effSub(burn.ratePeak, '10-min window'),              cls: '' },
     // Row 3 — what's next
-    { label: 'Depletes At',       value: depleteStr, sub: depleteSub, cls: depleteSooner && depleteSooner - Date.now() < 3_600_000 ? 'red' : '' },
+    { label: 'Depletes At',       value: depleteStr, sub: depleteSub, cls: (() => {
+        if (!depleteSooner || depleteStr === 'stable') return 'green';
+        const resetRef = depleteWhich === 'wk' ? apiReset7d : apiReset5h;
+        if (!resetRef) return depleteSooner - Date.now() < 3_600_000 ? 'red' : '';
+        const gapMs = resetRef - depleteSooner.getTime(); // positive = depletes before reset
+        if (gapMs <= 30 * 60_000) return 'green';   // depletes at/within 30min of reset — ideal
+        if (gapMs < 90 * 60_000) return 'amber';    // 30–90min early
+        return 'red';                                 // depletes >90min before reset
+      })() },
     { label: 'Next 5H Reset ~',   value: next5hStr,  sub: next5hSub,  cls: '' },
     { label: 'Next Weekly Reset', value: next7dStr,  sub: next7dSub,  cls: apiReset7d && apiReset7d - Date.now() < 86_400_000 ? 'amber' : '' },
   ];
