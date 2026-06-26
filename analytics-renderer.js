@@ -702,18 +702,80 @@ function renderMonthSection() {
 }
 
 // ── Cost (estimates) ───────────────────────────────────────────────────────
+// Accounts with exact local token logs we can price.
+const TOKEN_LOADERS = {
+  'claude-vscode': () => window.electronAPI.readClaudeCodeUsage(),
+  'codex':         () => window.electronAPI.readCodexUsage(),
+};
+const TOKEN_SOURCE_LABEL = {
+  'claude-vscode': 'Claude Code token data',
+  'codex':         'Codex token data',
+};
+
+// Per-day / per-month API-equivalent cost. Independent of the time-window
+// dropdown (uses full history); figures labeled "last 30 days" / "this month".
+function renderCostOverTime(el, entries) {
+  if (!el) return;
+  if (!entries || !entries.length) { el.innerHTML = ''; return; }
+
+  const byDay = costByDay(entries);      // { 'YYYY-MM-DD': usd }
+  const byMonth = costByMonth(entries);  // { 'YYYY-MM': usd }
+
+  // Build the last 30 local calendar days, oldest → newest.
+  const today = new Date();
+  const days = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    days.push({ key, usd: byDay[key] || 0 });
+  }
+  const total30 = days.reduce((a, d) => a + d.usd, 0);
+  const avgPerDay = total30 / 30;
+  const projected = avgPerDay * 30;
+  const maxUsd = Math.max(0, ...days.map(d => d.usd));
+
+  const bars = days.map(d => {
+    const h = maxUsd > 0 ? Math.max(2, Math.round((d.usd / maxUsd) * 100)) : 2;
+    const isMax = maxUsd > 0 && d.usd === maxUsd;
+    const color = isMax ? 'var(--amber)' : 'var(--green)';
+    return `<div class="peak-bar" title="${esc(d.key)} · ${fmtMoneyUsd(d.usd)}" style="height:${h}%;background:${color}"></div>`;
+  }).join('');
+
+  // Last 3 local calendar months, oldest → newest; current month marked.
+  const monthRows = [];
+  const curMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+  for (let i = 2; i >= 0; i--) {
+    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const label = d.toLocaleString(undefined, { month: 'short', year: 'numeric' });
+    const suffix = key === curMonthKey ? ' (so far)' : '';
+    monthRows.push(`<tr><td>${esc(label)}${suffix}</td><td>${fmtMoneyUsd(byMonth[key] || 0)}</td></tr>`);
+  }
+
+  el.innerHTML = `
+    <div class="cost-rate">≈ ${fmtMoneyUsd(avgPerDay)}/day · ~${fmtMoneyUsd(projected)}/mo at this pace</div>
+    <div class="cost-sub">estimate from the last 30 days of token usage</div>
+    <div class="eff-cap">Cost per day · last 30 days</div>
+    <div class="peak-bars">${bars}</div>
+    <table class="cost-table"><thead><tr><th>Month</th><th>Cost</th></tr></thead><tbody>${monthRows.join('')}</tbody></table>
+  `;
+}
+
 async function renderCost(container) {
-  let partA;
-  if (currentAccount === 'claude-vscode') {
-    const res = await window.electronAPI.readClaudeCodeUsage();
+  let partA = '';
+  let overTimeEntries = null; // full (unfiltered) entries for the over-time block
+  const loader = TOKEN_LOADERS[currentAccount];
+
+  if (loader) {
+    const res = await loader();
     if (!res || res.error) {
-      partA = `<div class="cost-sub">Could not read Claude Code token data: ${esc((res && res.error) || 'unknown error')}</div>`;
+      partA = `<div class="cost-sub">Could not read ${esc(TOKEN_SOURCE_LABEL[currentAccount])}: ${esc((res && res.error) || 'unknown error')}</div>`;
     } else {
+      const all = res.entries || [];
+      overTimeEntries = all;
       const cutoff = windowCutoffMs();
-      const toks = (res.entries || []).filter(e =>
-        cutoff == null || new Date(e.timestamp).getTime() >= cutoff);
+      const toks = all.filter(e => cutoff == null || new Date(e.timestamp).getTime() >= cutoff);
       const c = summarizeCost(toks);
-      // Stable family order (Opus → Sonnet → Haiku → Fable), not first-seen.
       const rows = Object.keys(FAMILY_PRICES).filter(fam => c.byModel[fam]).map(fam => {
         const v = c.byModel[fam];
         return `<tr><td>${fam}</td><td>${fmtTokens(v.tokens)}</td><td>${fmtMoneyUsd(v.cost)}</td></tr>`;
@@ -727,10 +789,11 @@ async function renderCost(container) {
       `;
     }
   } else {
-    partA = `<div class="cost-sub">Token-level cost isn't available for this account — Codex and Claude Desktop expose only rate-limit %.</div>`;
+    partA = `<div class="cost-sub">Token-level cost isn't available for this account — Claude Desktop exposes only rate-limit %.</div>`;
   }
 
-  container.innerHTML = `<div class="section-head">Cost (estimates)</div>${partA}<div id="cost-compare"></div>`;
+  container.innerHTML = `<div class="section-head">Cost (estimates)</div>${partA}<div id="cost-over-time"></div><div id="cost-compare"></div>`;
+  renderCostOverTime(container.querySelector('#cost-over-time'), overTimeEntries);
   await renderCostCompare(container.querySelector('#cost-compare'));
 }
 

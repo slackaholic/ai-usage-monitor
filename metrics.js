@@ -128,6 +128,10 @@ const FAMILY_PRICES = {
   Sonnet: { in: 3,  out: 15 },
   Haiku:  { in: 1,  out: 5  },
   Fable:  { in: 10, out: 50 },
+  'GPT-5.5':      { in: 5,    out: 30   },
+  'GPT-5.4':      { in: 2.5,  out: 15   },
+  'GPT-5.4-mini': { in: 0.75, out: 4.5  },
+  'GPT-5.4-nano': { in: 0.2,  out: 1.25 },
 };
 const CACHE_WRITE_MULT = 1.25;          // 5-minute ephemeral cache write
 const CACHE_READ_MULT = 0.1;            // cache read
@@ -139,6 +143,12 @@ function modelFamily(model) {
   if (m.includes('sonnet')) return 'Sonnet';
   if (m.includes('haiku')) return 'Haiku';
   if (m.includes('fable')) return 'Fable';
+  // OpenAI / Codex — match only the known gpt-5.4/5.5 slugs; unknown gpt variants
+  // (e.g. gpt-5-mini, gpt-4o-mini, codex-auto-review) stay unpriced rather than guessed.
+  if (m.includes('5.4-nano')) return 'GPT-5.4-nano';
+  if (m.includes('5.4-mini')) return 'GPT-5.4-mini';
+  if (m.includes('gpt-5.5')) return 'GPT-5.5';
+  if (m.includes('gpt-5.4')) return 'GPT-5.4';
   return null;
 }
 
@@ -172,6 +182,49 @@ function summarizeCost(entries) {
   return { total, byModel, unpriced, cacheSavings };
 }
 
+// Local-calendar-day key 'YYYY-MM-DD' from an ISO timestamp. Uses new Date(arg)
+// (allowed) — never Date.now()/argless new Date().
+function dayKey(ts) {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+function costByDay(entries) {
+  const out = {};
+  for (const e of (entries || [])) {
+    const c = entryCost(e);
+    if (c == null) continue;
+    const k = dayKey(e.timestamp);
+    if (!k) continue;
+    out[k] = (out[k] || 0) + c;
+  }
+  return out;
+}
+
+// Local-calendar-month key 'YYYY-MM' from an ISO timestamp. Uses new Date(arg)
+// (allowed) — never Date.now()/argless new Date().
+function monthKey(ts) {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  return `${d.getFullYear()}-${m}`;
+}
+
+function costByMonth(entries) {
+  const out = {};
+  for (const e of (entries || [])) {
+    const c = entryCost(e);
+    if (c == null) continue;
+    const k = monthKey(e.timestamp);
+    if (!k) continue;
+    out[k] = (out[k] || 0) + c;
+  }
+  return out;
+}
+
 function activeMs(snapshots, win) {
   const pts = snapshots.filter(s => s && s[win] != null);
   let ms = 0;
@@ -199,6 +252,23 @@ function subscriptionValue(snapshots, monthlyPrice, win) {
   };
 }
 
+// Convert a Codex `last_token_usage` object into the standard entry shape.
+// Codex input_tokens INCLUDES cached_input_tokens; OpenAI does not bill cache
+// writes (cache_creation = 0); output_tokens already includes reasoning tokens.
+function normalizeCodexTokenUsage(u, model, timestamp) {
+  if (!u) return null;
+  const input = u.input_tokens || 0;
+  const cached = u.cached_input_tokens || 0;
+  return {
+    timestamp,
+    model: model || 'unknown',
+    input_tokens: Math.max(0, input - cached),
+    output_tokens: u.output_tokens || 0,
+    cache_creation: 0,
+    cache_read: cached,
+  };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
 }

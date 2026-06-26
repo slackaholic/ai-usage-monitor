@@ -186,7 +186,7 @@ test('monthBurnGrid marks hasData for logged days including zero-burn days', () 
   assert.equal(monthBurnGrid(snaps, '5h', 2026, 4).filter(r => r.hasData).length, 0); // May: none
 });
 
-const { entryCost, summarizeCost, activeMs, subscriptionValue } = require('../metrics.js');
+const { entryCost, summarizeCost, activeMs, subscriptionValue, modelFamily } = require('../metrics.js');
 
 const approx = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -239,4 +239,107 @@ test('subscriptionValue prorates monthly price over the data span', () => {
   assert.equal(v.windows, 2);                    // long gap splits the cycle
   assert.equal(subscriptionValue(snaps, 0, '5h'), null);          // no price
   assert.equal(subscriptionValue([snaps[0]], 30, '5h'), null);    // < 2 points
+});
+
+test('modelFamily maps OpenAI slugs, longest-match first', () => {
+  assert.equal(modelFamily('gpt-5.5'), 'GPT-5.5');
+  assert.equal(modelFamily('gpt-5.4'), 'GPT-5.4');
+  assert.equal(modelFamily('gpt-5.4-mini'), 'GPT-5.4-mini');
+  assert.equal(modelFamily('gpt-5.4-nano'), 'GPT-5.4-nano');
+  assert.equal(modelFamily('gpt-5.3-codex-spark'), null); // unpriced
+  assert.equal(modelFamily('opus-4-8'), 'Opus');           // existing still works
+});
+
+test('modelFamily leaves unknown gpt variants unpriced (not guessed)', () => {
+  assert.equal(modelFamily('gpt-5-mini'), null);
+  assert.equal(modelFamily('gpt-4o-mini'), null);
+  assert.equal(modelFamily('gpt-5-nano'), null);
+  assert.equal(modelFamily('codex-auto-review'), null);
+  // known gpt-5.4 variants still priced
+  assert.equal(modelFamily('gpt-5.4-mini'), 'GPT-5.4-mini');
+  assert.equal(modelFamily('gpt-5.4-nano'), 'GPT-5.4-nano');
+});
+
+test('entryCost prices a normalized OpenAI entry (cache read at 10%)', () => {
+  // non-cached input 1M @2.5, output 1M @15, cache_read 1M @ 2.5*0.1
+  const e = { model: 'gpt-5.4', input_tokens: 1_000_000, output_tokens: 1_000_000,
+              cache_creation: 0, cache_read: 1_000_000 };
+  approx(entryCost(e), 17.75); // 2.5 + 15 + 0.25
+});
+
+test('entryCost returns null for unpriced spark model', () => {
+  assert.equal(entryCost({ model: 'gpt-5.3-codex-spark', output_tokens: 1_000_000 }), null);
+});
+
+const { costByDay } = require('../metrics.js');
+
+test('costByDay buckets cost by local calendar day, skipping unpriced', () => {
+  const entries = [
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-01T10:00:00' }, // 15
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-01T20:00:00' }, // 15
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-02T09:00:00' }, // 15
+    { model: 'spark',   output_tokens: 9_000_000, timestamp: '2026-06-02T09:30:00' }, // unpriced
+  ];
+  const by = costByDay(entries);
+  assert.ok(Math.abs(by['2026-06-01'] - 30) < 1e-9);
+  assert.ok(Math.abs(by['2026-06-02'] - 15) < 1e-9);
+  assert.equal(Object.keys(by).length, 2);
+});
+
+test('costByDay returns {} for empty input', () => {
+  assert.deepEqual(costByDay([]), {});
+  assert.deepEqual(costByDay(undefined), {});
+});
+
+const { costByMonth } = require('../metrics.js');
+
+test('costByMonth aggregates days within a month and separates months', () => {
+  const entries = [
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-05-31T10:00:00' }, // 15 (May)
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-01T10:00:00' }, // 15 (Jun)
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-20T10:00:00' }, // 15 (Jun)
+  ];
+  const by = costByMonth(entries);
+  assert.ok(Math.abs(by['2026-05'] - 15) < 1e-9);
+  assert.ok(Math.abs(by['2026-06'] - 30) < 1e-9);
+});
+
+test('sum of costByDay within a month equals costByMonth for that month', () => {
+  const entries = [
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-01T10:00:00' },
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-02T10:00:00' },
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-02T18:00:00' },
+  ];
+  const days = costByDay(entries);
+  const monthSumFromDays = Object.entries(days)
+    .filter(([k]) => k.startsWith('2026-06'))
+    .reduce((a, [, v]) => a + v, 0);
+  assert.ok(Math.abs(monthSumFromDays - costByMonth(entries)['2026-06']) < 1e-9);
+});
+
+test('costByMonth returns {} for empty input', () => {
+  assert.deepEqual(costByMonth([]), {});
+});
+
+const { normalizeCodexTokenUsage, entryCost: _ec } = require('../metrics.js');
+
+test('normalizeCodexTokenUsage splits cached input and zeroes cache_creation', () => {
+  const u = { input_tokens: 76414, cached_input_tokens: 75648, output_tokens: 704,
+              reasoning_output_tokens: 458, total_tokens: 77118 };
+  const e = normalizeCodexTokenUsage(u, 'gpt-5.5', '2026-06-25T12:46:39.043Z');
+  assert.equal(e.timestamp, '2026-06-25T12:46:39.043Z');
+  assert.equal(e.model, 'gpt-5.5');
+  assert.equal(e.input_tokens, 766);   // 76414 - 75648
+  assert.equal(e.cache_read, 75648);
+  assert.equal(e.cache_creation, 0);
+  assert.equal(e.output_tokens, 704);
+  assert.ok(_ec(e) > 0);               // priceable via gpt-5.5
+});
+
+test('normalizeCodexTokenUsage handles missing fields and falsy input', () => {
+  assert.equal(normalizeCodexTokenUsage(null, 'gpt-5.5', 't'), null);
+  const e = normalizeCodexTokenUsage({}, undefined, 't');
+  assert.equal(e.input_tokens, 0);
+  assert.equal(e.cache_read, 0);
+  assert.equal(e.model, 'unknown');
 });
