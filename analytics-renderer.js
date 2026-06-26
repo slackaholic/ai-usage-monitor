@@ -2,6 +2,7 @@
 
 // ── State ──────────────────────────────────────────────────────────────────
 const VALID_ACCOUNTS = ['codex', 'claude-desktop', 'claude-vscode'];
+const ACCOUNT_LABELS = { codex: 'Codex', 'claude-desktop': 'Claude Desktop', 'claude-vscode': 'Claude Code' };
 const initialAccount = new URLSearchParams(window.location.search).get('account');
 let currentAccount = VALID_ACCOUNTS.includes(initialAccount) ? initialAccount : 'codex';
 let windowHours    = 24;
@@ -48,6 +49,19 @@ function fmtDate(ts) {
 
 function fmtRate(r) {
   return r > 0.05 ? r.toFixed(1) + '%/hr' : '0%/hr';
+}
+
+function fmtMoney(n) { return '$' + (n || 0).toFixed(2); }
+function fmtTokens(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return Math.round(n / 1_000) + 'K';
+  return String(n || 0);
+}
+function windowCutoffMs() { return windowHours > 0 ? Date.now() - windowHours * 3_600_000 : null; }
+function windowLabel() {
+  if (windowHours === 0) return 'all time';
+  if (windowHours % 24 === 0) return `last ${windowHours / 24}d`;
+  return `last ${windowHours}h`;
 }
 
 // ── Burn stats ─────────────────────────────────────────────────────────────
@@ -683,6 +697,114 @@ function renderMonthSection() {
   if (next) next.addEventListener('click', () => stepMonth(1));
 }
 
+// ── Cost (estimates) ───────────────────────────────────────────────────────
+async function renderCost(container) {
+  let partA;
+  if (currentAccount === 'claude-vscode') {
+    const res = await window.electronAPI.readClaudeCodeUsage();
+    if (res && res.error) {
+      partA = `<div class="cost-sub">Could not read Claude Code token data: ${res.error}</div>`;
+    } else {
+      const cutoff = windowCutoffMs();
+      const toks = (res.entries || []).filter(e =>
+        cutoff == null || new Date(e.timestamp).getTime() >= cutoff);
+      const c = summarizeCost(toks);
+      const rows = Object.keys(c.byModel).map(fam => {
+        const v = c.byModel[fam];
+        return `<tr><td>${fam}</td><td>${fmtTokens(v.tokens)}</td><td>${fmtMoney(v.cost)}</td></tr>`;
+      }).join('');
+      partA = `
+        <div class="cost-headline">≈ ${fmtMoney(c.total)} of API usage · ${windowLabel()}</div>
+        <div class="cost-sub">estimate — what this usage would cost on the pay-as-you-go API</div>
+        ${rows ? `<table class="cost-table"><thead><tr><th>Model</th><th>Tokens</th><th>Cost</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="empty">No token data in this window.</div>'}
+        ${c.cacheSavings > 0 ? `<div class="cost-sub">cache reads saved ≈ ${fmtMoney(c.cacheSavings)} vs uncached</div>` : ''}
+        ${c.unpriced ? `<div class="cost-sub">unpriced: ${c.unpriced} turns (unknown model)</div>` : ''}
+      `;
+    }
+  } else {
+    partA = `<div class="cost-sub">Token-level cost isn't available for this account — Codex and Claude Desktop expose only rate-limit %.</div>`;
+  }
+
+  container.innerHTML = `<div class="section-head">Cost (estimates)</div>${partA}<div id="cost-compare"></div>`;
+  await renderCostCompare(container.querySelector('#cost-compare'));
+}
+
+async function renderCostCompare(el) {
+  if (!el) return;
+
+  const settings = await window.electronAPI.getSettings();
+  const planPrices = (settings && settings.planPrices) || {};
+  const cutoff = windowCutoffMs();
+
+  // Per-account subscription value over the selected window.
+  const rows = [];
+  for (const acct of VALID_ACCOUNTS) {
+    let snaps = await window.electronAPI.readUsageLog(acct, 0);
+    if (cutoff != null) snaps = snaps.filter(s => new Date(s.ts).getTime() >= cutoff);
+    const price = planPrices[acct];
+    rows.push({ acct, price, sv: subscriptionValue(snaps, price, '5h') });
+  }
+
+  // Best (lowest) value in each money column, among rows that have it.
+  const bestOf = (key) => {
+    const vals = rows.map(r => r.sv && r.sv[key]).filter(v => v != null && v > 0);
+    return vals.length ? Math.min(...vals) : null;
+  };
+  const bestHr = bestOf('perActiveHour');
+  const bestWin = bestOf('perWindow');
+  const cell = (v, best) => v == null ? '—'
+    : `<span class="${best != null && v === best ? 'best-value' : ''}">${fmtMoney(v)}</span>`;
+
+  const tbody = rows.map(r => {
+    const sv = r.sv;
+    return `<tr>
+      <td>${ACCOUNT_LABELS[r.acct]}</td>
+      <td><input class="price-input" data-account="${r.acct}" type="number" min="0" step="1"
+            value="${r.price != null ? r.price : ''}" placeholder="—"> /mo</td>
+      <td>${sv ? sv.activeHours.toFixed(1) + 'h' : '—'}</td>
+      <td>${sv ? sv.windows : '—'}</td>
+      <td>${sv ? cell(sv.perActiveHour, bestHr) : '—'}</td>
+      <td>${sv ? cell(sv.perWindow, bestWin) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  // Claude Code value ratio: API-equivalent $ ÷ attributed subscription cost.
+  let ratioLine = '';
+  const cc = rows.find(r => r.acct === 'claude-vscode');
+  if (cc && cc.sv && cc.sv.attributedCost > 0) {
+    const res = await window.electronAPI.readClaudeCodeUsage();
+    const toks = (res && res.entries || []).filter(e =>
+      cutoff == null || new Date(e.timestamp).getTime() >= cutoff);
+    const total = summarizeCost(toks).total;
+    if (total > 0) {
+      const ratio = total / cc.sv.attributedCost;
+      ratioLine = `<div class="cost-headline">≈ ${ratio.toFixed(1)}× the subscription's worth in API-equivalent value <span class="cost-sub">(Claude Code)</span></div>`;
+    }
+  }
+
+  el.innerHTML = `
+    <div class="eff-sub">Subscription value — ${windowLabel()}</div>
+    ${ratioLine}
+    <table class="cost-table">
+      <thead><tr><th>Account</th><th>Plan</th><th>Active</th><th>Windows</th><th>$/active-hr</th><th>$/window</th></tr></thead>
+      <tbody>${tbody}</tbody>
+    </table>
+    <div class="cost-sub">Subscription cost prorated over the data span (price × span ÷ 30 days). Figures are estimates and get noisier with little history.</div>
+  `;
+
+  el.querySelectorAll('.price-input').forEach(inp => {
+    inp.addEventListener('change', () => {
+      const prices = {};
+      el.querySelectorAll('.price-input').forEach(i => {
+        const v = parseFloat(i.value);
+        if (!isNaN(v) && v > 0) prices[i.dataset.account] = v;
+      });
+      window.electronAPI.saveSettings({ planPrices: prices });
+      renderCostCompare(el);
+    });
+  });
+}
+
 // ── Main render ────────────────────────────────────────────────────────────
 async function renderAll() {
   const body = document.getElementById('body');
@@ -716,12 +838,14 @@ async function renderAll() {
   // Build sections
   const statsEl = document.createElement('div');
   const effEl   = document.createElement('div');
+  const costEl  = document.createElement('div');
   const chartEl = document.createElement('div');
   const tableEl = document.createElement('div');
 
   body.innerHTML = '';
   body.appendChild(statsEl);
   body.appendChild(effEl);
+  body.appendChild(costEl);
   body.appendChild(chartEl);
   body.appendChild(tableEl);
 
@@ -730,6 +854,7 @@ async function renderAll() {
 
   renderStats(entries, statsEl);
   renderEfficiency(allEntries, effEl);
+  await renderCost(costEl);
   renderChart(entries, chartEl);
   renderTable(entries, tableEl);
 }

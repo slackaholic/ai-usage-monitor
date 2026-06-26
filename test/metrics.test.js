@@ -185,3 +185,58 @@ test('monthBurnGrid marks hasData for logged days including zero-burn days', () 
   assert.equal(june.find(r => r.hasData).hours.reduce((a, b) => a + b, 0), 0);
   assert.equal(monthBurnGrid(snaps, '5h', 2026, 4).filter(r => r.hasData).length, 0); // May: none
 });
+
+const { entryCost, summarizeCost, activeMs, subscriptionValue } = require('../metrics.js');
+
+const approx = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
+
+test('entryCost prices each component by model family', () => {
+  approx(entryCost({ model: 'claude-opus-4-8', input_tokens: 1_000_000 }), 5);
+  approx(entryCost({ model: 'claude-opus-4-8', output_tokens: 1_000_000 }), 25);
+  approx(entryCost({ model: 'claude-opus-4-8', cache_creation: 1_000_000 }), 6.25); // 5 × 1.25
+  approx(entryCost({ model: 'claude-opus-4-8', cache_read: 1_000_000 }), 0.5);      // 5 × 0.1
+  approx(entryCost({ model: 'claude-sonnet-4-6', output_tokens: 1_000_000 }), 15);
+  assert.equal(entryCost({ model: 'something-unknown', input_tokens: 1_000_000 }), null);
+});
+
+test('summarizeCost aggregates totals, families, unpriced, and cache savings', () => {
+  const entries = [
+    { model: 'claude-opus-4-8', input_tokens: 1_000_000 },                 // $5  Opus
+    { model: 'claude-sonnet-4-6', output_tokens: 1_000_000 },              // $15 Sonnet
+    { model: 'unknown', input_tokens: 1_000_000 },                        // unpriced
+    { model: 'claude-opus-4-8', cache_read: 1_000_000 },                   // $0.5 Opus; saves 5×0.9
+  ];
+  const s = summarizeCost(entries);
+  approx(s.total, 20.5);
+  assert.equal(s.unpriced, 1);
+  approx(s.cacheSavings, 4.5);
+  approx(s.byModel.Opus.cost, 5.5);
+  assert.equal(s.byModel.Opus.tokens, 2_000_000);
+  approx(s.byModel.Sonnet.cost, 15);
+});
+
+test('activeMs sums active drops and excludes idle gaps and resets', () => {
+  const snaps = [
+    { ts: '2026-06-25T09:00:00Z', '5h': 100 },
+    { ts: '2026-06-25T09:05:00Z', '5h': 90 },  // active 5min
+    { ts: '2026-06-25T11:00:00Z', '5h': 80 },  // 115min gap → idle, excluded
+    { ts: '2026-06-25T11:05:00Z', '5h': 70 },  // active 5min
+    { ts: '2026-06-25T11:10:00Z', '5h': 100 }, // reset → excluded
+  ];
+  assert.equal(activeMs(snaps, '5h'), 600_000); // 2 × 5min
+});
+
+test('subscriptionValue prorates monthly price over the data span', () => {
+  const snaps = [
+    { ts: '2026-06-01T00:00:00Z', '5h': 100 },
+    { ts: '2026-06-01T00:05:00Z', '5h': 90 },  // active 5min
+    { ts: '2026-06-02T00:00:00Z', '5h': 80 },  // ~24h gap → idle
+  ];
+  const v = subscriptionValue(snaps, 30, '5h'); // span 24h, price $30/mo
+  approx(v.attributedCost, 1);                   // 30 × (1 day / 30 days)
+  approx(v.activeHours, 5 / 60);
+  approx(v.perActiveHour, 12);
+  assert.equal(v.windows, 2);                    // long gap splits the cycle
+  assert.equal(subscriptionValue(snaps, 0, '5h'), null);          // no price
+  assert.equal(subscriptionValue([snaps[0]], 30, '5h'), null);    // < 2 points
+});
