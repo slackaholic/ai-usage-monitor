@@ -51,6 +51,7 @@ function fmtRate(r) {
   return r > 0.05 ? r.toFixed(1) + '%/hr' : '0%/hr';
 }
 
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 function fmtMoney(n) { return '$' + (n || 0).toFixed(2); }
 function fmtTokens(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -651,9 +652,9 @@ function monthGridHtml(grid) {
 
   const rows = grid.map(r => { // chronological: 1st of month at top, last at bottom
     const cells = r.hours.map((v, h) => {
-      if (!r.hasData) return `<span class="heat-cell nodata" title="${r.date} — no data"></span>`;
+      if (!r.hasData) return `<span class="heat-cell nodata" title="${fmtMonthDay(r.date)} — no data"></span>`;
       const a = (v / max).toFixed(2);
-      return `<span class="heat-cell" title="${r.date} ${h}:00 — ${v.toFixed(0)}% burned" style="background:rgba(168,85,247,${a})"></span>`;
+      return `<span class="heat-cell" title="${fmtMonthDay(r.date)} ${h}:00 — ${v.toFixed(0)}% burned" style="background:rgba(168,85,247,${a})"></span>`;
     }).join('');
     return `<div class="month-row${r.hasData ? '' : ' nodata-row'}"><span class="month-date">${fmtMonthDay(r.date)}</span>${cells}</div>`;
   }).join('');
@@ -702,14 +703,15 @@ async function renderCost(container) {
   let partA;
   if (currentAccount === 'claude-vscode') {
     const res = await window.electronAPI.readClaudeCodeUsage();
-    if (res && res.error) {
-      partA = `<div class="cost-sub">Could not read Claude Code token data: ${res.error}</div>`;
+    if (!res || res.error) {
+      partA = `<div class="cost-sub">Could not read Claude Code token data: ${esc((res && res.error) || 'unknown error')}</div>`;
     } else {
       const cutoff = windowCutoffMs();
       const toks = (res.entries || []).filter(e =>
         cutoff == null || new Date(e.timestamp).getTime() >= cutoff);
       const c = summarizeCost(toks);
-      const rows = Object.keys(c.byModel).map(fam => {
+      // Stable family order (Opus → Sonnet → Haiku → Fable), not first-seen.
+      const rows = Object.keys(FAMILY_PRICES).filter(fam => c.byModel[fam]).map(fam => {
         const v = c.byModel[fam];
         return `<tr><td>${fam}</td><td>${fmtTokens(v.tokens)}</td><td>${fmtMoney(v.cost)}</td></tr>`;
       }).join('');
