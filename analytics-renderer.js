@@ -746,8 +746,9 @@ async function renderCostCompare(el) {
   for (const acct of VALID_ACCOUNTS) {
     let snaps = await window.electronAPI.readUsageLog(acct, 0);
     if (cutoff != null) snaps = snaps.filter(s => new Date(s.ts).getTime() >= cutoff);
-    const price = planPrices[acct];
-    rows.push({ acct, price, sv: subscriptionValue(snaps, price, '5h') });
+    const price = planPrices[acct]; // stored in USD
+    const priceDisp = price != null ? price * usdRate : price; // → display currency
+    rows.push({ acct, price, sv: subscriptionValue(snaps, priceDisp, '5h') });
   }
 
   // Best (lowest) value in each money column, among rows that have it.
@@ -764,7 +765,7 @@ async function renderCostCompare(el) {
     const sv = r.sv;
     return `<tr>
       <td>${ACCOUNT_LABELS[r.acct]}</td>
-      <td>${r.price != null ? fmtMoney(r.price) + '/mo' : '—'}</td>
+      <td>${r.price != null ? fmtMoneyUsd(r.price) + '/mo' : '—'}</td>
       <td>${sv ? sv.activeHours.toFixed(1) + 'h' : '—'}</td>
       <td>${sv ? sv.windows : '—'}</td>
       <td>${sv ? cell(sv.perActiveHour, bestHr) : '—'}</td>
@@ -793,7 +794,7 @@ async function renderCostCompare(el) {
       <thead><tr><th>Account</th><th>Plan</th><th>Active</th><th>Windows</th><th>${curSymbol}/active-hr</th><th>${curSymbol}/window</th></tr></thead>
       <tbody>${tbody}</tbody>
     </table>
-    <div class="cost-sub">Subscription cost prorated over the data span (price × span ÷ 30 days). Figures are estimates and get noisier with little history. Set plan prices in Settings (⚙).</div>
+    <div class="cost-sub">Plan prices are entered in USD (Settings ⚙) and shown here in your currency. Subscription cost is prorated over the data span (price × span ÷ 30 days). Figures are estimates and get noisier with little history.</div>
   `;
 }
 
