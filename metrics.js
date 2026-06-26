@@ -251,6 +251,23 @@ function subscriptionValue(snapshots, monthlyPrice, win) {
   };
 }
 
+// Convert a Codex `last_token_usage` object into the standard entry shape.
+// Codex input_tokens INCLUDES cached_input_tokens; OpenAI does not bill cache
+// writes (cache_creation = 0); output_tokens already includes reasoning tokens.
+function normalizeCodexTokenUsage(u, model, timestamp) {
+  if (!u) return null;
+  const input = u.input_tokens || 0;
+  const cached = u.cached_input_tokens || 0;
+  return {
+    timestamp,
+    model: model || 'unknown',
+    input_tokens: Math.max(0, input - cached),
+    output_tokens: u.output_tokens || 0,
+    cache_creation: 0,
+    cache_read: cached,
+  };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
 }

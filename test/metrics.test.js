@@ -310,3 +310,26 @@ test('sum of costByDay within a month equals costByMonth for that month', () => 
 test('costByMonth returns {} for empty input', () => {
   assert.deepEqual(costByMonth([]), {});
 });
+
+const { normalizeCodexTokenUsage, entryCost: _ec } = require('../metrics.js');
+
+test('normalizeCodexTokenUsage splits cached input and zeroes cache_creation', () => {
+  const u = { input_tokens: 76414, cached_input_tokens: 75648, output_tokens: 704,
+              reasoning_output_tokens: 458, total_tokens: 77118 };
+  const e = normalizeCodexTokenUsage(u, 'gpt-5.5', '2026-06-25T12:46:39.043Z');
+  assert.equal(e.timestamp, '2026-06-25T12:46:39.043Z');
+  assert.equal(e.model, 'gpt-5.5');
+  assert.equal(e.input_tokens, 766);   // 76414 - 75648
+  assert.equal(e.cache_read, 75648);
+  assert.equal(e.cache_creation, 0);
+  assert.equal(e.output_tokens, 704);
+  assert.ok(_ec(e) > 0);               // priceable via gpt-5.5
+});
+
+test('normalizeCodexTokenUsage handles missing fields and falsy input', () => {
+  assert.equal(normalizeCodexTokenUsage(null, 'gpt-5.5', 't'), null);
+  const e = normalizeCodexTokenUsage({}, undefined, 't');
+  assert.equal(e.input_tokens, 0);
+  assert.equal(e.cache_read, 0);
+  assert.equal(e.model, 'unknown');
+});
