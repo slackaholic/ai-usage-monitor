@@ -712,7 +712,54 @@ const TOKEN_SOURCE_LABEL = {
   'codex':         'Codex token data',
 };
 
-function renderCostOverTime(el, entries) { /* implemented in next task */ }
+// Per-day / per-month API-equivalent cost. Independent of the time-window
+// dropdown (uses full history); figures labeled "last 30 days" / "this month".
+function renderCostOverTime(el, entries) {
+  if (!el) return;
+  if (!entries || !entries.length) { el.innerHTML = ''; return; }
+
+  const byDay = costByDay(entries);      // { 'YYYY-MM-DD': usd }
+  const byMonth = costByMonth(entries);  // { 'YYYY-MM': usd }
+
+  // Build the last 30 local calendar days, oldest → newest.
+  const today = new Date();
+  const days = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    days.push({ key, usd: byDay[key] || 0 });
+  }
+  const total30 = days.reduce((a, d) => a + d.usd, 0);
+  const avgPerDay = total30 / 30;
+  const projected = avgPerDay * 30;
+  const maxUsd = Math.max(0, ...days.map(d => d.usd));
+
+  const bars = days.map(d => {
+    const h = maxUsd > 0 ? Math.max(2, Math.round((d.usd / maxUsd) * 100)) : 2;
+    const isMax = maxUsd > 0 && d.usd === maxUsd;
+    const color = isMax ? 'var(--amber)' : 'var(--green)';
+    return `<div class="peak-bar" title="${esc(d.key)} · ${fmtMoneyUsd(d.usd)}" style="height:${h}%;background:${color}"></div>`;
+  }).join('');
+
+  // Last 3 local calendar months, oldest → newest; current month marked.
+  const monthRows = [];
+  const curMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+  for (let i = 2; i >= 0; i--) {
+    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const label = d.toLocaleString(undefined, { month: 'short', year: 'numeric' });
+    const suffix = key === curMonthKey ? ' (so far)' : '';
+    monthRows.push(`<tr><td>${esc(label)}${suffix}</td><td>${fmtMoneyUsd(byMonth[key] || 0)}</td></tr>`);
+  }
+
+  el.innerHTML = `
+    <div class="cost-rate">≈ ${fmtMoneyUsd(avgPerDay)}/day · ~${fmtMoneyUsd(projected)}/mo at this pace</div>
+    <div class="cost-sub">estimate from the last 30 days of token usage</div>
+    <div class="eff-cap">Cost per day · last 30 days</div>
+    <div class="peak-bars">${bars}</div>
+    <table class="cost-table"><thead><tr><th>Month</th><th>Cost</th></tr></thead><tbody>${monthRows.join('')}</tbody></table>
+  `;
+}
 
 async function renderCost(container) {
   let partA = '';
