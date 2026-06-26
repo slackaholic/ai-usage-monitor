@@ -702,18 +702,33 @@ function renderMonthSection() {
 }
 
 // ── Cost (estimates) ───────────────────────────────────────────────────────
+// Accounts with exact local token logs we can price.
+const TOKEN_LOADERS = {
+  'claude-vscode': () => window.electronAPI.readClaudeCodeUsage(),
+  'codex':         () => window.electronAPI.readCodexUsage(),
+};
+const TOKEN_SOURCE_LABEL = {
+  'claude-vscode': 'Claude Code token data',
+  'codex':         'Codex token data',
+};
+
+function renderCostOverTime(el, entries) { /* implemented in next task */ }
+
 async function renderCost(container) {
-  let partA;
-  if (currentAccount === 'claude-vscode') {
-    const res = await window.electronAPI.readClaudeCodeUsage();
+  let partA = '';
+  let overTimeEntries = null; // full (unfiltered) entries for the over-time block
+  const loader = TOKEN_LOADERS[currentAccount];
+
+  if (loader) {
+    const res = await loader();
     if (!res || res.error) {
-      partA = `<div class="cost-sub">Could not read Claude Code token data: ${esc((res && res.error) || 'unknown error')}</div>`;
+      partA = `<div class="cost-sub">Could not read ${esc(TOKEN_SOURCE_LABEL[currentAccount])}: ${esc((res && res.error) || 'unknown error')}</div>`;
     } else {
+      const all = res.entries || [];
+      overTimeEntries = all;
       const cutoff = windowCutoffMs();
-      const toks = (res.entries || []).filter(e =>
-        cutoff == null || new Date(e.timestamp).getTime() >= cutoff);
+      const toks = all.filter(e => cutoff == null || new Date(e.timestamp).getTime() >= cutoff);
       const c = summarizeCost(toks);
-      // Stable family order (Opus → Sonnet → Haiku → Fable), not first-seen.
       const rows = Object.keys(FAMILY_PRICES).filter(fam => c.byModel[fam]).map(fam => {
         const v = c.byModel[fam];
         return `<tr><td>${fam}</td><td>${fmtTokens(v.tokens)}</td><td>${fmtMoneyUsd(v.cost)}</td></tr>`;
@@ -727,10 +742,11 @@ async function renderCost(container) {
       `;
     }
   } else {
-    partA = `<div class="cost-sub">Token-level cost isn't available for this account — Codex and Claude Desktop expose only rate-limit %.</div>`;
+    partA = `<div class="cost-sub">Token-level cost isn't available for this account — Claude Desktop exposes only rate-limit %.</div>`;
   }
 
-  container.innerHTML = `<div class="section-head">Cost (estimates)</div>${partA}<div id="cost-compare"></div>`;
+  container.innerHTML = `<div class="section-head">Cost (estimates)</div>${partA}<div id="cost-over-time"></div><div id="cost-compare"></div>`;
+  renderCostOverTime(container.querySelector('#cost-over-time'), overTimeEntries);
   await renderCostCompare(container.querySelector('#cost-compare'));
 }
 
