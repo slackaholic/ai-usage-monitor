@@ -182,6 +182,21 @@ function summarizeCost(entries) {
   return { total, byModel, unpriced, cacheSavings };
 }
 
+// Token-volume breakdown (counts only, no pricing). Cache reads dominate
+// volume in long sessions but are heavily discounted against cost/limits — this
+// makes that split visible.
+function tokenMix(entries) {
+  const out = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 };
+  for (const e of (entries || [])) {
+    out.input += e.input_tokens || 0;
+    out.output += e.output_tokens || 0;
+    out.cacheWrite += e.cache_creation || 0;
+    out.cacheRead += e.cache_read || 0;
+  }
+  out.total = out.input + out.output + out.cacheWrite + out.cacheRead;
+  return out;
+}
+
 // Local-calendar-day key 'YYYY-MM-DD' from an ISO timestamp. Uses new Date(arg)
 // (allowed) — never Date.now()/argless new Date().
 function dayKey(ts) {
@@ -270,5 +285,5 @@ function normalizeCodexTokenUsage(u, model, timestamp) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
 }
