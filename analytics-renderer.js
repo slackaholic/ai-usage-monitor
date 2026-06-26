@@ -761,6 +761,32 @@ function renderCostOverTime(el, entries) {
   `;
 }
 
+// Compact "token mix" block: counts + thin proportion bar + takeaway. Returns
+// '' when there are no tokens in the window.
+function tokenMixHtml(entries) {
+  const mix = tokenMix(entries);
+  if (!mix.total) return '';
+  const segs = [
+    { label: 'fresh input', v: mix.input,      color: 'var(--green)' },
+    { label: 'output',      v: mix.output,     color: 'var(--accent)' },
+    { label: 'cache write', v: mix.cacheWrite, color: 'var(--amber)' },
+    { label: 'cache read',  v: mix.cacheRead,  color: 'var(--text-mid)' },
+  ];
+  const pct = v => Math.round((v / mix.total) * 100);
+  const bar = segs.filter(s => s.v > 0).map(s =>
+    `<div class="token-mix-seg" title="${esc(s.label)}: ${fmtTokens(s.v)} (${pct(s.v)}%)" style="width:${(s.v / mix.total) * 100}%;background:${s.color}"></div>`
+  ).join('');
+  const takeaway = mix.cacheRead > 0
+    ? `<div class="cost-sub">cache reads = ${pct(mix.cacheRead)}% of tokens but weigh ~10% — why heavy sessions barely move the limit.</div>`
+    : '';
+  return `
+    <div class="eff-cap">Token mix · ${windowLabel()}</div>
+    <div class="cost-sub">fresh input ${fmtTokens(mix.input)} · output ${fmtTokens(mix.output)} · cache write ${fmtTokens(mix.cacheWrite)} · cache read ${fmtTokens(mix.cacheRead)}</div>
+    <div class="token-mix-bar">${bar}</div>
+    ${takeaway}
+  `;
+}
+
 async function renderCost(container) {
   let partA = '';
   let overTimeEntries = null; // full (unfiltered) entries for the over-time block
@@ -784,6 +810,7 @@ async function renderCost(container) {
         <div class="cost-headline">≈ ${fmtMoneyUsd(c.total)} of API usage · ${windowLabel()}</div>
         <div class="cost-sub">estimate — what this usage would cost on the pay-as-you-go API</div>
         ${rows ? `<table class="cost-table"><thead><tr><th>Model</th><th>Tokens</th><th>Cost</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="empty">No token data in this window.</div>'}
+        ${rows ? tokenMixHtml(toks) : ''}
         ${c.cacheSavings > 0 ? `<div class="cost-sub">cache reads saved ≈ ${fmtMoneyUsd(c.cacheSavings)} vs uncached</div>` : ''}
         ${c.unpriced ? `<div class="cost-sub">unpriced: ${c.unpriced} turns (unknown model)</div>` : ''}
       `;
