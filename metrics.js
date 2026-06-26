@@ -143,12 +143,13 @@ function modelFamily(model) {
   if (m.includes('sonnet')) return 'Sonnet';
   if (m.includes('haiku')) return 'Haiku';
   if (m.includes('fable')) return 'Fable';
-  // OpenAI / Codex — check longer/cheaper slugs first so they win.
-  if (m.includes('nano')) return 'GPT-5.4-nano';
-  if (m.includes('mini')) return 'GPT-5.4-mini';
+  // OpenAI / Codex — match only the known gpt-5.4/5.5 slugs; unknown gpt variants
+  // (e.g. gpt-5-mini, gpt-4o-mini, codex-auto-review) stay unpriced rather than guessed.
+  if (m.includes('5.4-nano')) return 'GPT-5.4-nano';
+  if (m.includes('5.4-mini')) return 'GPT-5.4-mini';
   if (m.includes('gpt-5.5')) return 'GPT-5.5';
   if (m.includes('gpt-5.4')) return 'GPT-5.4';
-  return null; // includes gpt-5.3-codex-spark and any unknown model
+  return null;
 }
 
 function entryCost(e) {

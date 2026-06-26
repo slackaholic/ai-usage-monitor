@@ -250,6 +250,16 @@ test('modelFamily maps OpenAI slugs, longest-match first', () => {
   assert.equal(modelFamily('opus-4-8'), 'Opus');           // existing still works
 });
 
+test('modelFamily leaves unknown gpt variants unpriced (not guessed)', () => {
+  assert.equal(modelFamily('gpt-5-mini'), null);
+  assert.equal(modelFamily('gpt-4o-mini'), null);
+  assert.equal(modelFamily('gpt-5-nano'), null);
+  assert.equal(modelFamily('codex-auto-review'), null);
+  // known gpt-5.4 variants still priced
+  assert.equal(modelFamily('gpt-5.4-mini'), 'GPT-5.4-mini');
+  assert.equal(modelFamily('gpt-5.4-nano'), 'GPT-5.4-nano');
+});
+
 test('entryCost prices a normalized OpenAI entry (cache read at 10%)', () => {
   // non-cached input 1M @2.5, output 1M @15, cache_read 1M @ 2.5*0.1
   const e = { model: 'gpt-5.4', input_tokens: 1_000_000, output_tokens: 1_000_000,
