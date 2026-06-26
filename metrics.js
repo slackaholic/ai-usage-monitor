@@ -122,6 +122,83 @@ function monthBurnGrid(snapshots, win, year, month) {
   return rows;
 }
 
+// ── Cost (estimates) ───────────────────────────────────────────────────────
+const FAMILY_PRICES = {
+  Opus:   { in: 5,  out: 25 },
+  Sonnet: { in: 3,  out: 15 },
+  Haiku:  { in: 1,  out: 5  },
+  Fable:  { in: 10, out: 50 },
+};
+const CACHE_WRITE_MULT = 1.25;          // 5-minute ephemeral cache write
+const CACHE_READ_MULT = 0.1;            // cache read
+const MONTH_MS = 30 * 86_400_000;
+
+function modelFamily(model) {
+  const m = (model || '').toLowerCase();
+  if (m.includes('opus')) return 'Opus';
+  if (m.includes('sonnet')) return 'Sonnet';
+  if (m.includes('haiku')) return 'Haiku';
+  if (m.includes('fable')) return 'Fable';
+  return null;
+}
+
+function entryCost(e) {
+  const fam = modelFamily(e.model);
+  if (!fam) return null;
+  const p = FAMILY_PRICES[fam];
+  return (
+    (e.input_tokens || 0) * p.in +
+    (e.output_tokens || 0) * p.out +
+    (e.cache_creation || 0) * p.in * CACHE_WRITE_MULT +
+    (e.cache_read || 0) * p.in * CACHE_READ_MULT
+  ) / 1_000_000;
+}
+
+function summarizeCost(entries) {
+  const byModel = {};
+  let total = 0, unpriced = 0, cacheSavings = 0;
+  for (const e of entries) {
+    const fam = modelFamily(e.model);
+    if (!fam) { unpriced++; continue; }
+    const p = FAMILY_PRICES[fam];
+    const cost = entryCost(e);
+    total += cost;
+    cacheSavings += (e.cache_read || 0) * p.in * (1 - CACHE_READ_MULT) / 1_000_000;
+    if (!byModel[fam]) byModel[fam] = { tokens: 0, cost: 0 };
+    byModel[fam].tokens += (e.input_tokens || 0) + (e.output_tokens || 0)
+      + (e.cache_creation || 0) + (e.cache_read || 0);
+    byModel[fam].cost += cost;
+  }
+  return { total, byModel, unpriced, cacheSavings };
+}
+
+function activeMs(snapshots, win) {
+  const pts = snapshots.filter(s => s && s[win] != null);
+  let ms = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
+    const drop = pts[i - 1][win] - pts[i][win];
+    if (drop > 0 && dt < ACTIVE_GAP_MAX) ms += dt;
+  }
+  return ms;
+}
+
+function subscriptionValue(snapshots, monthlyPrice, win) {
+  const pts = snapshots.filter(s => s && s[win] != null);
+  if (pts.length < 2 || !monthlyPrice) return null;
+  const spanMs = new Date(pts[pts.length - 1].ts) - new Date(pts[0].ts);
+  const activeHours = activeMs(snapshots, win) / 3_600_000;
+  const windows = segmentCycles(snapshots, win).length;
+  const attributedCost = monthlyPrice * (spanMs / MONTH_MS);
+  return {
+    activeHours,
+    windows,
+    attributedCost,
+    perActiveHour: activeHours > 0 ? attributedCost / activeHours : null,
+    perWindow: windows > 0 ? attributedCost / windows : null,
+  };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS };
 }
