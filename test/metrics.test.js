@@ -280,3 +280,33 @@ test('costByDay returns {} for empty input', () => {
   assert.deepEqual(costByDay([]), {});
   assert.deepEqual(costByDay(undefined), {});
 });
+
+const { costByMonth } = require('../metrics.js');
+
+test('costByMonth aggregates days within a month and separates months', () => {
+  const entries = [
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-05-31T10:00:00' }, // 15 (May)
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-01T10:00:00' }, // 15 (Jun)
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-20T10:00:00' }, // 15 (Jun)
+  ];
+  const by = costByMonth(entries);
+  assert.ok(Math.abs(by['2026-05'] - 15) < 1e-9);
+  assert.ok(Math.abs(by['2026-06'] - 30) < 1e-9);
+});
+
+test('sum of costByDay within a month equals costByMonth for that month', () => {
+  const entries = [
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-01T10:00:00' },
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-02T10:00:00' },
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-02T18:00:00' },
+  ];
+  const days = costByDay(entries);
+  const monthSumFromDays = Object.entries(days)
+    .filter(([k]) => k.startsWith('2026-06'))
+    .reduce((a, [, v]) => a + v, 0);
+  assert.ok(Math.abs(monthSumFromDays - costByMonth(entries)['2026-06']) < 1e-9);
+});
+
+test('costByMonth returns {} for empty input', () => {
+  assert.deepEqual(costByMonth([]), {});
+});

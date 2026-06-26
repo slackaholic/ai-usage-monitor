@@ -203,6 +203,27 @@ function costByDay(entries) {
   return out;
 }
 
+// Local-calendar-month key 'YYYY-MM' from an ISO timestamp. Uses new Date(arg)
+// (allowed) — never Date.now()/argless new Date().
+function monthKey(ts) {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  return `${d.getFullYear()}-${m}`;
+}
+
+function costByMonth(entries) {
+  const out = {};
+  for (const e of (entries || [])) {
+    const c = entryCost(e);
+    if (c == null) continue;
+    const k = monthKey(e.timestamp);
+    if (!k) continue;
+    out[k] = (out[k] || 0) + c;
+  }
+  return out;
+}
+
 function activeMs(snapshots, win) {
   const pts = snapshots.filter(s => s && s[win] != null);
   let ms = 0;
@@ -231,5 +252,5 @@ function subscriptionValue(snapshots, monthlyPrice, win) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, costByDay, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily };
 }
