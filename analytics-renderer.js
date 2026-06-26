@@ -572,6 +572,7 @@ function buildEffWindow(entries, win) {
     <div class="eff-hist">${histLine}</div>
     <div id="eff-peaks-${win}" class="eff-peaks"></div>
     <div id="eff-heat-${win}" class="eff-heat"></div>
+    ${win === '5h' ? `<details class="eff-month"><summary>Burn by hour — last 30 days</summary><div id="eff-month-5h"></div></details>` : ''}
   `;
 }
 
@@ -584,6 +585,8 @@ function renderEfficiency(entries, container) {
     renderPeakBars(container.querySelector(`#eff-peaks-${win}`), summarize(completed).peaks);
     renderHourHeatmap(container.querySelector(`#eff-heat-${win}`), hourlyBurn(entries, win));
   });
+
+  renderMonthHeatmap(container.querySelector('#eff-month-5h'), dailyHourlyBurn(entries, '5h', 30));
 }
 
 function renderPeakBars(el, peaks) {
@@ -605,6 +608,33 @@ function renderHourHeatmap(el, hours) {
     return `<div class="heat-cell" title="${h}:00 — ${v.toFixed(0)}% burned" style="background:rgba(168,85,247,${a})">${h % 6 === 0 ? h : ''}</div>`;
   }).join('');
   el.innerHTML = `<div class="eff-cap">Burn by hour of day</div><div class="heat-row">${cells}</div>`;
+}
+
+function fmtMonthDay(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function renderMonthHeatmap(el, grid) {
+  if (!el) return;
+  if (!grid.length) { el.innerHTML = '<div class="empty">No data yet.</div>'; return; }
+
+  const max = Math.max(1, ...grid.flatMap(r => r.hours));
+
+  const ruler = `<div class="month-row month-ruler"><span class="month-date"></span>${
+    Array.from({ length: 24 }, (_, h) => `<span class="month-hcol">${h % 6 === 0 ? h : ''}</span>`).join('')
+  }</div>`;
+
+  const rows = [...grid].reverse().map(r => { // newest first
+    const cells = r.hours.map((v, h) => {
+      if (!r.hasData) return `<span class="heat-cell nodata" title="${r.date} — no data"></span>`;
+      const a = (v / max).toFixed(2);
+      return `<span class="heat-cell" title="${r.date} ${h}:00 — ${v.toFixed(0)}% burned" style="background:rgba(168,85,247,${a})"></span>`;
+    }).join('');
+    return `<div class="month-row${r.hasData ? '' : ' nodata-row'}"><span class="month-date">${fmtMonthDay(r.date)}</span>${cells}</div>`;
+  }).join('');
+
+  el.innerHTML = `<div class="eff-cap">Burn by hour — last 30 days (newest first)</div>${ruler}${rows}`;
 }
 
 // ── Main render ────────────────────────────────────────────────────────────

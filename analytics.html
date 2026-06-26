@@ -246,6 +246,14 @@
     .peak-bar { flex: 1; min-width: 2px; border-radius: 1px 1px 0 0; }
     .heat-row { display: flex; gap: 2px; }
     .heat-cell { flex: 1; height: 20px; border-radius: 2px; font-size: 8px; color: rgba(255,255,255,.5); display: flex; align-items: center; justify-content: center; }
+    .eff-month { margin: 8px 0 4px; }
+    .eff-month > summary { cursor: pointer; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-mid); padding: 4px 0; }
+    .month-row { display: flex; gap: 2px; align-items: center; margin-bottom: 2px; }
+    .month-date { flex: 0 0 44px; font-size: 9px; color: var(--text-mid); text-align: right; padding-right: 4px; }
+    .month-row .heat-cell { flex: 1; height: 12px; border-radius: 2px; }
+    .month-ruler .month-hcol { flex: 1; font-size: 8px; color: var(--text-mid); text-align: left; }
+    .heat-cell.nodata { background: transparent; box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
+    .nodata-row .month-date { opacity: .4; }
   </style>
 </head>
 <body>
