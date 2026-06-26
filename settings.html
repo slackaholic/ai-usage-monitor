@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Settings</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a22; --text: #e6e8ee; --text-mid: #8b90a0;
+    --accent: #a78bfa; --accent-med: #6d4fd0; --border: rgba(255,255,255,.1);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif; font-size: 12px; padding: 14px 16px 24px; }
+  h1 { font-size: 15px; margin: 0 0 12px; }
+  .section { margin-bottom: 18px; }
+  .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--accent); margin-bottom: 8px; }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .row label { width: 120px; flex-shrink: 0; color: var(--text); }
+  input[type="text"], input[type="number"], select {
+    flex: 1; background: rgba(255,255,255,.06); border: 1px solid var(--border);
+    color: var(--text); border-radius: 4px; padding: 3px 6px; font-size: 12px; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .suffix { color: var(--text-mid); width: 38px; }
+  .btn { background: rgba(167,139,250,.15); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 5px 9px; font-size: 12px; cursor: pointer; }
+  .btn:hover { background: var(--accent-med); color: #fff; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .note { font-size: 10px; color: var(--text-mid); margin-top: 6px; }
+  #login-status { font-size: 10px; color: var(--accent); margin-top: 6px; min-height: 12px; }
+</style>
+</head>
+<body>
+  <h1>Settings</h1>
+
+  <div class="section">
+    <div class="section-title">Display</div>
+    <div class="row"><label>Opacity</label>
+      <input type="range" id="opacity" min="20" max="100" step="1" value="100">
+      <span class="suffix" id="opacity-val">100%</span></div>
+    <div class="row"><label>Auto-refresh</label>
+      <select id="refresh">
+        <option value="60">1 min</option>
+        <option value="120">2 min</option>
+        <option value="300">5 min</option>
+        <option value="600">10 min</option>
+      </select></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Currency</div>
+    <div class="row"><label>Symbol</label><input type="text" id="cur-symbol" maxlength="3" value="£"></div>
+    <div class="row"><label>USD → currency</label><input type="number" id="cur-rate" min="0" step="0.01" value="0.79"></div>
+    <div class="note">API-equivalent cost is computed in USD and shown as USD × this rate. Plan prices below are entered in your currency.</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Subscriptions (plan price /mo)</div>
+    <div class="row"><label>Codex</label><input type="number" id="price-codex" min="0" step="1" placeholder="—"></div>
+    <div class="row"><label>Claude Desktop</label><input type="number" id="price-claude-desktop" min="0" step="1" placeholder="—"></div>
+    <div class="row"><label>Claude Code</label><input type="number" id="price-claude-vscode" min="0" step="1" placeholder="—"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Account label overrides</div>
+    <div class="row"><label>Codex</label><input type="text" id="ov-codex" placeholder="auto-detected"></div>
+    <div class="row"><label>Claude Desktop</label><input type="text" id="ov-claude" placeholder="auto-detected"></div>
+    <div class="row"><label>Claude Code</label><input type="text" id="ov-claude2" placeholder="auto-detected"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Login</div>
+    <div class="btn-row">
+      <button class="btn" id="btn-show-claude">Login — Claude Desktop</button>
+      <button class="btn" id="btn-show-codex">Login — Codex</button>
+    </div>
+    <div class="btn-row" style="margin-top:6px">
+      <button class="btn" id="btn-import-claude">⤵ Import Claude session</button>
+      <button class="btn" id="btn-logoff-claude">⏻ Log off Claude</button>
+    </div>
+    <div class="note">Email-only Claude account? Sign into Claude Desktop, then Import.</div>
+    <div id="login-status"></div>
+  </div>
+
+  <script src="settings-renderer.js"></script>
+</body>
+</html>

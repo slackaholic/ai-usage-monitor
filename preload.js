@@ -31,6 +31,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openAnalytics: (account) => ipcRenderer.send('open-analytics', account),
   onSwitchAnalyticsTab: (cb) => ipcRenderer.on('switch-analytics-tab', (_, account) => cb(account)),
 
+  // Settings window
+  openSettings: () => ipcRenderer.send('open-settings'),
+  onSettingsChanged: (cb) => ipcRenderer.on('settings-changed', () => cb()),
+
   // Usage history log
   appendUsageLog: (entry) => ipcRenderer.send('append-usage-log', entry),
   readUsageLog: (account, limit) => ipcRenderer.invoke('read-usage-log', account, limit),
