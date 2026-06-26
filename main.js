@@ -5,6 +5,7 @@ const fs = require('fs');
 
 let mainWindow;
 let analyticsWindow = null;
+let settingsWindow = null;
 let tray;
 let isAlwaysOnTop = false;
 let codexWindow = null;
@@ -67,8 +68,30 @@ ipcMain.on('open-analytics', (_, account) => {
   analyticsWindow.on('closed', () => { analyticsWindow = null; });
 });
 
+ipcMain.on('open-settings', () => {
+  if (settingsWindow && !settingsWindow.isDestroyed()) { settingsWindow.focus(); return; }
+  settingsWindow = new BrowserWindow({
+    width: 400,
+    height: 580,
+    minWidth: 340,
+    minHeight: 320,
+    title: 'AI Usage Monitor — Settings',
+    icon: path.join(__dirname, 'icon.png'),
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+  settingsWindow.loadFile('settings.html');
+  settingsWindow.on('closed', () => { settingsWindow = null; });
+});
+
 ipcMain.handle('get-settings', () => loadSettings());
-ipcMain.on('save-settings', (_, patch) => saveSettings(patch));
+ipcMain.on('save-settings', (_, patch) => {
+  saveSettings(patch);
+  BrowserWindow.getAllWindows().forEach(w => w.webContents.send('settings-changed'));
+});
 ipcMain.on('set-opacity', (_, val) => {
   const clamped = Math.max(0.2, Math.min(1, val));
   mainWindow.setOpacity(clamped);
