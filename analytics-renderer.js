@@ -635,7 +635,7 @@ function monthGridHtml(grid) {
     Array.from({ length: 24 }, (_, h) => `<span class="month-hcol">${h % 6 === 0 ? h : ''}</span>`).join('')
   }</div>`;
 
-  const rows = [...grid].reverse().map(r => { // newest day on top
+  const rows = grid.map(r => { // chronological: 1st of month at top, last at bottom
     const cells = r.hours.map((v, h) => {
       if (!r.hasData) return `<span class="heat-cell nodata" title="${r.date} — no data"></span>`;
       const a = (v / max).toFixed(2);
