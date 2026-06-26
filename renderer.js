@@ -10,24 +10,9 @@ function applyAccountLabel(key, autoValue) {
 }
 
 document.getElementById('btn-settings').addEventListener('click', () => {
-  const sp = document.getElementById('settings-panel');
-  sp.classList.toggle('open');
-  resizeToFit();
-  sp.addEventListener('transitionend', resizeToFit, { once: true });
+  window.electronAPI.openSettings();
 });
 
-document.getElementById('settings-save-btn').addEventListener('click', () => {
-  accountOverrides.codex   = document.getElementById('override-codex').value.trim();
-  accountOverrides.claude  = document.getElementById('override-claude').value.trim();
-  accountOverrides.claude2 = document.getElementById('override-claude2').value.trim();
-  window.electronAPI.saveSettings({ accountOverrides });
-  applyAccountLabel('codex',   null);
-  applyAccountLabel('claude',  null);
-  applyAccountLabel('claude2', null);
-  const sp = document.getElementById('settings-panel');
-  sp.classList.remove('open');
-  sp.addEventListener('transitionend', resizeToFit, { once: true });
-});
 
 // ── Theme ─────────────────────────────────────────────────────────────────
 function applyTheme(theme) {
@@ -521,12 +506,6 @@ function setCompact(val) {
 }
 document.getElementById('btn-compact').addEventListener('click', () => setCompact(!isCompact));
 
-// ── Opacity slider ─────────────────────────────────────────────────────────
-document.getElementById('opacity-slider').addEventListener('input', (e) => {
-  const pct = parseInt(e.target.value, 10);
-  document.getElementById('opacity-value').textContent = pct + '%';
-  window.electronAPI.setOpacity(pct / 100);
-});
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 function pctColor(pct) {
@@ -620,10 +599,8 @@ function fetchStop(prefix) {
 
 function resizeToFit() {
   requestAnimationFrame(() => {
-    const titlebar      = document.querySelector('.titlebar');
-    const opacityRow    = document.getElementById('opacity-row');
-    const settingsPanel = document.getElementById('settings-panel');
-    const content       = document.querySelector('.content');
+    const titlebar = document.querySelector('.titlebar');
+    const content  = document.querySelector('.content');
     if (!content) return;
 
     // Measure natural content height by finding the lowest visible child bottom.
@@ -640,10 +617,8 @@ function resizeToFit() {
     const padBot = parseFloat(getComputedStyle(content).paddingBottom) || 10;
     const contentH = maxBottom + padBot;
 
-    const titlebarH   = titlebar      ? titlebar.offsetHeight      : 36;
-    const opacityRowH = opacityRow    ? opacityRow.offsetHeight    : 0;
-    const settingsH   = settingsPanel ? settingsPanel.offsetHeight : 0;
-    window.electronAPI.resizeToFit(Math.ceil(contentH + titlebarH + opacityRowH + settingsH));
+    const titlebarH = titlebar ? titlebar.offsetHeight : 36;
+    window.electronAPI.resizeToFit(Math.ceil(contentH + titlebarH));
   });
 }
 
@@ -1022,9 +997,6 @@ function setRefreshInterval(seconds) {
   window.electronAPI.saveSettings({ refreshInterval: seconds });
 }
 
-document.getElementById('refresh-select').addEventListener('change', (e) => {
-  setRefreshInterval(parseInt(e.target.value, 10));
-});
 
 // ── UI wiring ──────────────────────────────────────────────────────────────
 document.getElementById('codex-load-btn').addEventListener('click', fetchCodexUsage);
@@ -1051,14 +1023,6 @@ async function borrowClaudeDesktopSession() {
   }
 }
 document.getElementById('btn-borrow-claude-session')?.addEventListener('click', borrowClaudeDesktopSession);
-document.getElementById('btn-borrow-claude-session-top')?.addEventListener('click', borrowClaudeDesktopSession);
-document.getElementById('btn-show-claude-window')?.addEventListener('click', () => {
-  window.electronAPI.showClaudeWebWindow();
-  showToast('Log in to claude.ai in that window, then close it and click ↻ on the Claude Desktop card.');
-});
-document.getElementById('btn-show-codex-window')?.addEventListener('click', () => {
-  window.electronAPI.showCodexWindow();
-});
 document.getElementById('claude-load-btn').addEventListener('click', fetchClaudeWebUsage);
 document.getElementById('claude-refresh').addEventListener('click', fetchClaudeWebUsage);
 async function logoffClaudeDesktop() {
@@ -1071,7 +1035,6 @@ async function logoffClaudeDesktop() {
   showToast('Logged off Claude Desktop — import or sign in to connect an account.');
 }
 document.getElementById('claude-signout-btn')?.addEventListener('click', logoffClaudeDesktop);
-document.getElementById('btn-logoff-claude-top')?.addEventListener('click', logoffClaudeDesktop);
 
 document.getElementById('claude2-refresh').addEventListener('click', fetchClaudeWebUsage2);
 
@@ -1098,24 +1061,16 @@ async function init() {
   let settings = {};
   try {
     settings = await window.electronAPI.getSettings();
-    if (settings.opacity != null) {
-      const pct = Math.round(Math.max(0.2, Math.min(1, settings.opacity)) * 100);
-      document.getElementById('opacity-slider').value = pct;
-      document.getElementById('opacity-value').textContent = pct + '%';
-    }
     if (settings.compact) setCompact(true);
     if (Array.isArray(settings.hiddenSections)) {
       settings.hiddenSections.forEach(id => hideSection(id));
     }
-    if (settings.refreshInterval) {
-      refreshSeconds = settings.refreshInterval;
-      document.getElementById('refresh-select').value = settings.refreshInterval;
-    }
+    if (settings.refreshInterval) refreshSeconds = settings.refreshInterval;
     if (settings.accountOverrides) {
       Object.assign(accountOverrides, settings.accountOverrides);
-      document.getElementById('override-codex').value   = accountOverrides.codex   || '';
-      document.getElementById('override-claude').value  = accountOverrides.claude  || '';
-      document.getElementById('override-claude2').value = accountOverrides.claude2 || '';
+      applyAccountLabel('codex', null);
+      applyAccountLabel('claude', null);
+      applyAccountLabel('claude2', null);
     }
     // Show last known values immediately while live fetch runs
     loadCachedData(settings);
@@ -1131,6 +1086,19 @@ async function init() {
   fetchCodexUsage();
 
   setRefreshInterval(refreshSeconds);
+
+  window.electronAPI.onSettingsChanged(async () => {
+    try {
+      const s = await window.electronAPI.getSettings();
+      if (s.accountOverrides) {
+        Object.assign(accountOverrides, s.accountOverrides);
+        applyAccountLabel('codex', null);
+        applyAccountLabel('claude', null);
+        applyAccountLabel('claude2', null);
+      }
+      if (s.refreshInterval && s.refreshInterval !== refreshSeconds) setRefreshInterval(s.refreshInterval);
+    } catch {}
+  });
 }
 
 init();
