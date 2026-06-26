@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI Usage Monitor</title>
+  <link rel="icon" href="./icon.png" type="image/png">
+  <style>
+    :root {
+      --bg:               #0f1117;
+      --surface:          #1a1d2e;
+      --surface2:         #0f1117;
+      --border:           #2d3148;
+      --border2:          #1e2235;
+      --text:             #e2e8f0;
+      --text-mid:         #94a3b8;
+      --text-muted:       #64748b;
+      --text-dim:         #475569;
+      --text-faint:       #374151;
+      --accent:           #a78bfa;
+      --accent-deep:      #4c1d95;
+      --accent-med:       #7c3aed;
+      --accent-btn:       #c4b5fd;
+      --ctrl-bg:          #2d3148;
+      --ctrl-hover:       #3d4168;
+      --close-hover-bg:   #7f1d1d;
+      --close-hover-text: #fca5a5;
+      --pin-active-bg:    #4c1d95;
+      --pin-active-text:  #c4b5fd;
+      --badge-ok-text:    #34d399;   --badge-ok-bg:   #064e3b22;
+      --badge-warn-text:  #fbbf24;   --badge-warn-bg: #78350f22;
+      --badge-err-text:   #f87171;   --badge-err-bg:  #7f1d1d22;
+      --toast-bg:         #1a1d2e;
+      --toast-border:     #4c1d95;
+      --toast-text:       #c4b5fd;
+    }
+    body.light {
+      --bg:               #f1f5f9;
+      --surface:          #ffffff;
+      --surface2:         #f8fafc;
+      --border:           #cbd5e1;
+      --border2:          #e2e8f0;
+      --text:             #1e293b;
+      --text-mid:         #475569;
+      --text-muted:       #64748b;
+      --text-dim:         #64748b;
+      --text-faint:       #94a3b8;
+      --accent:           #6d28d9;
+      --accent-deep:      #5b21b6;
+      --accent-med:       #7c3aed;
+      --accent-btn:       #ede9fe;
+      --ctrl-bg:          #e2e8f0;
+      --ctrl-hover:       #cbd5e1;
+      --close-hover-bg:   #fee2e2;
+      --close-hover-text: #dc2626;
+      --pin-active-bg:    #7c3aed;
+      --pin-active-text:  #ffffff;
+      --badge-ok-text:    #059669;   --badge-ok-bg:   #d1fae511;
+      --badge-warn-text:  #d97706;   --badge-warn-bg: #fef3c711;
+      --badge-err-text:   #dc2626;   --badge-err-bg:  #fee2e211;
+      --toast-bg:         #ffffff;
+      --toast-border:     #7c3aed;
+      --toast-text:       #5b21b6;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    /* ── Titlebar ─────────────────────────────────────────────────────────── */
+    .titlebar {
+      -webkit-app-region: drag;
+      background: var(--surface);
+      padding: 7px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .titlebar-title { font-size: 12px; font-weight: 600; color: var(--accent); letter-spacing: 0.5px; }
+    .titlebar-controls { -webkit-app-region: no-drag; display: flex; gap: 5px; }
+    .ctrl-btn {
+      width: 24px; height: 20px; border: none; border-radius: 4px;
+      cursor: pointer; font-size: 11px; transition: background 0.15s;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--ctrl-bg); color: var(--text-mid);
+    }
+    #btn-pin.active { background: var(--pin-active-bg); color: var(--pin-active-text); }
+    #btn-compact.active { background: var(--pin-active-bg); color: var(--pin-active-text); }
+    .ctrl-btn:hover { background: var(--ctrl-hover); }
+    #btn-close:hover { background: var(--close-hover-bg); color: var(--close-hover-text); }
+
+    #opacity-slider { flex: 1; height: 3px; cursor: pointer; accent-color: var(--accent); }
+    #opacity-value { font-size: 10px; color: var(--text-dim); width: 30px; text-align: right; }
+
+    /* ── Content ─────────────────────────────────────────────────────────── */
+    .content {
+      flex: 1; overflow-y: auto; padding: 8px 10px 10px;
+      display: flex; flex-direction: column; gap: 7px;
+    }
+    .content::-webkit-scrollbar { width: 4px; }
+    .content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* ── Compact view ────────────────────────────────────────────────────── */
+    #compact-view { display: none; }
+    .compact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .compact-stat {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 8px;
+    }
+    .compact-label { font-size: 10px; color: var(--text-mid); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; }
+    .compact-value { font-size: 17px; font-weight: 700; color: var(--accent); display: flex; align-items: baseline; gap: 3px; }
+
+    /* ── Section / cards ──────────────────────────────────────────────────── */
+    .section-label {
+      font-size: 9px; font-weight: 700; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 1px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .section-label::after { content: ''; flex: 1; height: 1px; background: var(--border2); }
+
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px;
+    }
+    .card-header {
+      display: flex; align-items: center;
+      justify-content: space-between; margin-bottom: 8px;
+    }
+    .card-title { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; }
+    .account-label { font-size: 10px; color: var(--text-muted); margin-top: 1px; min-height: 13px; }
+    .card-title.clickable { cursor: pointer; transition: color 0.15s; }
+    .card-title.clickable:hover { color: var(--accent); }
+    .ext-icon { font-size: 9px; opacity: 0; margin-left: 1px; transition: opacity 0.15s; }
+    .card-title.clickable:hover .ext-icon { opacity: 1; }
+    .badge.stale { color: var(--text-dim); font-style: italic; background: var(--surface2); }
+    .dot { width: 6px; height: 6px; border-radius: 50%; }
+    .dot-claude { background: #f97316; }
+    .dot-openai { background: #10b981; }
+
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .stats-grid.full { grid-template-columns: 1fr; }
+    .stat-box { background: var(--surface2); border-radius: 5px; padding: 6px 8px; }
+    .stat-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+    .stat-value { font-size: 14px; font-weight: 700; color: var(--text); display: flex; align-items: baseline; gap: 3px; }
+    .stat-value.accent { color: var(--accent); }
+    .stat-value.green { color: #34d399; }
+    [id$="-reset"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 9px; color: var(--text-dim); margin-top: 2px; }
+    .sublabel { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 5px; }
+
+    /* ── Trend arrows ─────────────────────────────────────────────────────── */
+    .trend { font-size: 10px; font-weight: 600; line-height: 1; }
+    .trend-up   { color: #34d399; }
+    .trend-down { color: #f87171; }
+    .trend-flat { color: var(--text-dim); }
+
+    /* ── Trend panel (collapsible) ───────────────────────────────────────── */
+    .trend-toggle-row {
+      display: flex; justify-content: flex-end; margin-top: 5px;
+    }
+    .trend-toggle-btn {
+      background: none; border: none; cursor: pointer;
+      font-size: 9px; color: var(--text-dim); padding: 0;
+      letter-spacing: .3px; text-transform: uppercase;
+    }
+    .trend-toggle-btn:hover { color: var(--accent); }
+    .trend-panel {
+      overflow: hidden; max-height: 0;
+      transition: max-height 0.3s ease;
+    }
+    .trend-panel.open { max-height: 120px; }
+    .trend-inner {
+      padding-top: 6px; border-top: 1px solid var(--border2); margin-top: 5px;
+    }
+    .trend-stats {
+      display: flex; gap: 14px; font-size: 10px; color: var(--text-muted); margin-bottom: 6px;
+    }
+    .trend-stats span b { font-weight: 600; }
+    .trend-spark { width: 100%; display: block; }
+    .trend-spark-labels {
+      display: flex; justify-content: space-between;
+      font-size: 9px; color: var(--text-faint); margin-top: 1px;
+    }
+
+    /* ── Progress bars ────────────────────────────────────────────────────── */
+    .progress-track { height: 3px; background: var(--border); border-radius: 2px; }
+    .progress-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
+
+    /* ── Badges ───────────────────────────────────────────────────────────── */
+    .badge {
+      font-size: 10px; padding: 2px 7px; border-radius: 20px;
+      background: var(--surface2); color: var(--text-muted);
+    }
+    .badge.ok   { color: var(--badge-ok-text);   background: var(--badge-ok-bg); }
+    .badge.warn { color: var(--badge-warn-text);  background: var(--badge-warn-bg); }
+    .badge.error{ color: var(--badge-err-text);   background: var(--badge-err-bg); }
+
+    .icon-btn {
+      width: 22px; height: 22px; border: none; border-radius: 4px;
+      background: transparent; color: var(--text-dim);
+      cursor: pointer; font-size: 14px; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      transition: color 0.15s; padding: 0;
+    }
+    .icon-btn:hover { color: var(--accent); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes badgePulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+    .icon-btn.spinning { animation: spin 0.9s linear infinite; }
+    .badge.pulsing { animation: badgePulse 1.1s ease-in-out infinite; }
+
+    .refresh-btn {
+      flex: 1; padding: 7px; background: var(--ctrl-bg);
+      border: none; border-radius: 6px; color: var(--text-mid);
+      font-size: 12px; cursor: pointer; transition: background 0.15s;
+    }
+    .refresh-btn:hover { background: var(--ctrl-hover); color: var(--text); }
+
+    .key-save-btn {
+      padding: 7px 12px; background: var(--accent-deep); border: none;
+      border-radius: 6px; color: var(--accent-btn); font-size: 12px;
+      cursor: pointer; transition: background 0.15s; white-space: nowrap;
+    }
+    .key-save-btn:hover { background: var(--accent-med); }
+
+    .note {
+      font-size: 11px; color: var(--text-muted); line-height: 1.5;
+      background: var(--surface2); border-radius: 6px; padding: 8px 10px;
+    }
+
+    .section-hide-btn {
+      background: none; border: none; cursor: pointer;
+      font-size: 11px; color: var(--text-dim); padding: 0 1px;
+      line-height: 1; flex-shrink: 0;
+    }
+    .section-hide-btn:hover { color: #f87171; }
+
+    #show-hidden-row {
+      display: none; text-align: center; padding: 2px 0 4px;
+    }
+    #show-all-btn {
+      background: none; border: none; cursor: pointer;
+      font-size: 9px; color: var(--text-dim); text-decoration: underline;
+      letter-spacing: .3px;
+    }
+    #show-all-btn:hover { color: var(--accent); }
+
+    /* ── Settings panel ───────────────────────────────────────────────────── */
+    #settings-panel {
+      max-height: 0; overflow: hidden;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      flex-shrink: 0; transition: max-height 0.3s ease;
+    }
+    #settings-panel.open { max-height: 85vh; overflow-y: auto; }
+    .settings-inner { padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+    .settings-section { display: flex; flex-direction: column; gap: 7px; }
+    .settings-title {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
+      color: var(--text-mid); padding-bottom: 5px;
+      border-bottom: 1px solid var(--border2);
+    }
+    .settings-row { display: flex; align-items: center; gap: 8px; }
+    .settings-row label { font-size: 11px; color: var(--text); width: 90px; flex-shrink: 0; }
+    .settings-row input[type="text"] {
+      flex: 1; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 10px;
+      padding: 4px 7px; outline: none; font-family: inherit;
+    }
+    .settings-row input[type="text"]:focus { border-color: var(--accent); }
+    .settings-row input[type="text"]::placeholder { color: var(--text-faint); }
+    .settings-row select {
+      flex: 1; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 10px;
+      padding: 3px 6px; outline: none; cursor: pointer; font-family: inherit;
+    }
+    .settings-row select:focus { border-color: var(--accent); }
+    .settings-win-btn {
+      flex: 1; padding: 5px 8px; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; color: var(--text); font-size: 11px;
+      cursor: pointer; transition: background 0.15s, color 0.15s; font-family: inherit; text-align: center;
+    }
+    .settings-win-btn:hover { background: var(--ctrl-hover); color: var(--text); border-color: var(--accent); }
+    #settings-save-btn {
+      width: 100%; background: var(--accent); color: #fff;
+      border: none; border-radius: 5px; font-size: 11px; padding: 6px 0;
+      cursor: pointer; font-family: inherit; font-weight: 600; letter-spacing: .3px;
+    }
+    #settings-save-btn:hover { opacity: 0.85; }
+
+    .sign-out-btn {
+      background: none; border: none; cursor: pointer;
+      font-size: 9px; color: var(--text-dim); padding: 0;
+      text-decoration: underline; letter-spacing: .2px;
+    }
+    .sign-out-btn:hover { color: #f87171; }
+
+    .last-updated { font-size: 10px; color: var(--text-faint); text-align: center; }
+
+    .toast {
+      position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+      background: var(--toast-bg); border: 1px solid var(--toast-border); color: var(--toast-text);
+      padding: 8px 18px; border-radius: 20px; font-size: 12px;
+      opacity: 0; transition: opacity 0.2s; pointer-events: none; white-space: nowrap;
+    }
+    .toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<div class="titlebar">
+  <div class="titlebar-title">
+    <img src="./icon.png" width="16" height="16" style="border-radius:3px;margin-right:6px;vertical-align:middle;display:inline-block" onerror="this.style.display='none'" />AI Usage Monitor</div>
+  <div class="titlebar-controls">
+    <button class="ctrl-btn" id="btn-compact" title="Compact view">⊟</button>
+    <button class="ctrl-btn" id="btn-settings" title="Settings">⚙</button>
+    <button class="ctrl-btn" id="btn-theme" title="Toggle Light/Dark">☀</button>
+    <button class="ctrl-btn" id="btn-pin" title="Toggle Always on Top">📌</button>
+    <button class="ctrl-btn" id="btn-minimize" title="Minimize">─</button>
+    <button class="ctrl-btn" id="btn-close" title="Quit">✕</button>
+  </div>
+</div>
+
+<div id="settings-panel">
+  <div class="settings-inner">
+
+    <div class="settings-section">
+      <div class="settings-title">Display</div>
+      <div class="settings-row">
+        <label>Opacity</label>
+        <input type="range" id="opacity-slider" min="20" max="100" value="100" step="1">
+        <span id="opacity-value">100%</span>
+      </div>
+      <div class="settings-row">
+        <label>Auto-refresh</label>
+        <select id="refresh-select" title="Auto-refresh interval">
+          <option value="60">1 min</option>
+          <option value="120" selected>2 min</option>
+          <option value="300">5 min</option>
+          <option value="600">10 min</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-title">Account label overrides</div>
+      <div class="settings-row">
+        <label>Codex</label>
+        <input type="text" id="override-codex" placeholder="auto-detected" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="settings-row">
+        <label>Claude Desktop</label>
+        <input type="text" id="override-claude" placeholder="auto-detected" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="settings-row">
+        <label>Claude Code</label>
+        <input type="text" id="override-claude2" placeholder="auto-detected" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-title">Login</div>
+      <div class="settings-row">
+        <button class="settings-win-btn" id="btn-show-claude-window">Login — Claude Desktop</button>
+        <button class="settings-win-btn" id="btn-show-codex-window">Login — Codex</button>
+      </div>
+      <div class="settings-row" style="margin-top:6px">
+        <button class="settings-win-btn" id="btn-borrow-claude-session-top" style="flex:1">⤵ Import Claude session</button>
+        <button class="settings-win-btn" id="btn-logoff-claude-top" style="flex:1">⏻ Log off Claude</button>
+      </div>
+      <div class="note" style="margin-top:4px">
+        Email-only Claude account? Sign into Claude Desktop, then Import.
+      </div>
+    </div>
+
+    <button id="settings-save-btn">Save</button>
+
+  </div>
+</div>
+
+<div class="content">
+
+  <!-- Compact view (shown when compacted) -->
+  <div id="compact-view">
+    <div class="compact-grid">
+      <div class="compact-stat" id="cs-codex-5h" style="display:none">
+        <div class="compact-label">Codex 5H</div>
+        <div class="compact-value"><span id="c-codex-5h">—</span><span class="trend" id="c-codex-5h-trend"></span></div>
+      </div>
+      <div class="compact-stat" id="cs-codex-wk" style="display:none">
+        <div class="compact-label">Codex Wk</div>
+        <div class="compact-value"><span id="c-codex-wk">—</span><span class="trend" id="c-codex-wk-trend"></span></div>
+      </div>
+      <div class="compact-stat" id="cs-claude-5h" style="display:none">
+        <div class="compact-label">Claude Desktop 5H</div>
+        <div class="compact-value"><span id="c-claude-5h">—</span><span class="trend" id="c-claude-5h-trend"></span></div>
+      </div>
+      <div class="compact-stat" id="cs-claude-wk" style="display:none">
+        <div class="compact-label">Claude Desktop Wk</div>
+        <div class="compact-value"><span id="c-claude-wk">—</span><span class="trend" id="c-claude-wk-trend"></span></div>
+      </div>
+      <div class="compact-stat" id="cs-claude2-5h" style="display:none">
+        <div class="compact-label">Claude VS Code 5H</div>
+        <div class="compact-value"><span id="c-claude2-5h">—</span><span class="trend" id="c-claude2-5h-trend"></span></div>
+      </div>
+      <div class="compact-stat" id="cs-claude2-wk" style="display:none">
+        <div class="compact-label">Claude VS Code Wk</div>
+        <div class="compact-value"><span id="c-claude2-wk">—</span><span class="trend" id="c-claude2-wk-trend"></span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Full view -->
+  <div id="full-view">
+
+    <!-- Codex -->
+    <div id="codex-section">
+    <div class="section-label">Codex (chatgpt.com)<button class="section-hide-btn" data-section="codex-section" title="Hide section">×</button></div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title clickable" data-url="https://chatgpt.com/codex/cloud/settings/analytics#usage"><div class="dot dot-openai"></div>Codex Analytics<span class="ext-icon">↗</span></div>
+          <div class="account-label" id="codex-account"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <button class="icon-btn" id="codex-refresh" title="Refresh Codex">↻</button>
+          <span class="badge" id="codex-badge">–</span>
+        </div>
+      </div>
+
+      <div id="codex-login-prompt">
+        <div class="note" style="margin-bottom:10px">
+          Reads directly from your <strong>chatgpt.com</strong> session —
+          no API key needed. Click below to open the login window once,
+          then usage loads automatically.
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="key-save-btn" style="flex:1" id="codex-login-btn">Open Login Window</button>
+          <button class="refresh-btn" style="flex:1" id="codex-load-btn">↻ Load Usage</button>
+        </div>
+      </div>
+
+      <div id="codex-data" style="display:none">
+        <div class="sublabel">Shared Agentic Limit</div>
+        <div class="stats-grid" style="margin-bottom:6px">
+          <div class="stat-box">
+            <div class="stat-label">5H Remaining</div>
+            <div class="stat-value accent"><span id="codex-5h-pct">—</span><span class="trend" id="codex-5h-trend"></span></div>
+            <div id="codex-5h-reset"></div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Weekly Remaining</div>
+            <div class="stat-value accent"><span id="codex-wk-pct">—</span><span class="trend" id="codex-wk-trend"></span></div>
+            <div id="codex-wk-reset"></div>
+          </div>
+        </div>
+        <div class="progress-track" style="margin-bottom:3px">
+          <div class="progress-fill" id="codex-5h-bar" style="width:0%;background:linear-gradient(90deg,#059669,#34d399)"></div>
+        </div>
+        <div class="progress-track" style="margin-bottom:6px">
+          <div class="progress-fill" id="codex-wk-bar" style="width:0%;background:linear-gradient(90deg,#dc2626,#f87171)"></div>
+        </div>
+
+        <div class="stats-grid full">
+          <div class="stat-box">
+            <div class="stat-label">Credits Remaining</div>
+            <div class="stat-value" id="codex-credits">—</div>
+          </div>
+        </div>
+
+        <div class="trend-toggle-row">
+          <button class="trend-toggle-btn" id="codex-trend-toggle" onclick="toggleTrend('codex')">Trend ▾</button>
+          <button class="trend-toggle-btn" style="margin-left:8px" onclick="window.electronAPI.openAnalytics('codex')">Analytics ↗</button>
+        </div>
+        <div class="trend-panel" id="codex-trend-panel">
+          <div class="trend-inner">
+            <div class="trend-stats">
+              <span>5H Δ: <b id="codex-5h-delta">—</b></span>
+              <span>Wk Δ: <b id="codex-wk-delta">—</b></span>
+              <span>Burn: <b id="codex-burn">—</b></span>
+              <span>Depletions: <b id="codex-depletions">—</b></span>
+            </div>
+            <svg class="trend-spark" id="codex-spark" height="40" viewBox="0 0 260 40" preserveAspectRatio="none"></svg>
+            <div class="trend-spark-labels"><span id="codex-spark-start">—</span><span id="codex-spark-end">now</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </div><!-- #codex-section -->
+
+    <!-- Claude (Desktop) -->
+    <div id="claude-section">
+    <div class="section-label">Claude (Desktop)<button class="section-hide-btn" data-section="claude-section" title="Hide section">×</button></div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title clickable" data-url="https://claude.ai/settings/usage"><div class="dot dot-claude"></div>claude.ai — Desktop<span class="ext-icon">↗</span></div>
+          <div class="account-label" id="claude-account"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <button class="icon-btn" id="claude-refresh" title="Refresh">↻</button>
+          <span class="badge" id="claude-badge">–</span>
+        </div>
+      </div>
+
+      <div id="claude-login-prompt">
+        <div class="note" style="margin-bottom:8px">
+          Reads from your <strong>claude.ai</strong> desktop session.
+          Open the login window once, then usage loads automatically.
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:5px">
+          <button class="key-save-btn" style="flex:1" id="claude-login-btn">Open Login Window</button>
+          <button class="refresh-btn" style="flex:1" id="claude-load-btn">↻ Load Usage</button>
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:5px">
+          <button class="key-save-btn" style="flex:1" id="btn-borrow-claude-session">⤵ Import from Claude Desktop app</button>
+        </div>
+        <div class="note" style="margin-bottom:5px">
+          Email-only account? Sign into the <strong>Claude Desktop app</strong>, then click Import — copies that session automatically (no codes or keys).
+        </div>
+        <div style="text-align:right">
+          <button class="sign-out-btn" id="claude-signout-btn">Sign out / switch account</button>
+        </div>
+      </div>
+
+      <div id="claude-data" style="display:none">
+        <div class="stats-grid" style="margin-bottom:6px">
+          <div class="stat-box">
+            <div class="stat-label">5H Remaining</div>
+            <div class="stat-value accent"><span id="claude-5h-pct">—</span><span class="trend" id="claude-5h-trend"></span></div>
+            <div id="claude-5h-reset"></div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Weekly Remaining</div>
+            <div class="stat-value accent"><span id="claude-wk-pct">—</span><span class="trend" id="claude-wk-trend"></span></div>
+            <div id="claude-wk-reset"></div>
+          </div>
+        </div>
+        <div class="progress-track" style="margin-bottom:3px">
+          <div class="progress-fill" id="claude-5h-bar" style="width:0%;background:linear-gradient(90deg,#059669,#34d399)"></div>
+        </div>
+        <div class="progress-track" style="margin-bottom:6px">
+          <div class="progress-fill" id="claude-wk-bar" style="width:0%;background:linear-gradient(90deg,#dc2626,#f87171)"></div>
+        </div>
+
+        <div class="sublabel">5H Tokens Used (local)</div>
+        <div class="stats-grid">
+          <div class="stat-box">
+            <div class="stat-label">Input</div>
+            <div class="stat-value" id="5h-input">—</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Output</div>
+            <div class="stat-value" id="5h-output">—</div>
+          </div>
+        </div>
+        <div class="stats-grid full" style="margin-top:5px">
+          <div class="stat-box">
+            <div class="stat-label">Messages (5h)</div>
+            <div class="stat-value" id="5h-msgs">—</div>
+          </div>
+        </div>
+
+        <div class="trend-toggle-row">
+          <button class="trend-toggle-btn" id="claude-trend-toggle" onclick="toggleTrend('claude')">Trend ▾</button>
+          <button class="trend-toggle-btn" style="margin-left:8px" onclick="window.electronAPI.openAnalytics('claude-desktop')">Analytics ↗</button>
+        </div>
+        <div class="trend-panel" id="claude-trend-panel">
+          <div class="trend-inner">
+            <div class="trend-stats">
+              <span>5H Δ: <b id="claude-5h-delta">—</b></span>
+              <span>Wk Δ: <b id="claude-wk-delta">—</b></span>
+              <span>Burn: <b id="claude-burn">—</b></span>
+              <span>Depletions: <b id="claude-depletions">—</b></span>
+            </div>
+            <svg class="trend-spark" id="claude-spark" height="40" viewBox="0 0 260 40" preserveAspectRatio="none"></svg>
+            <div class="trend-spark-labels"><span id="claude-spark-start">—</span><span id="claude-spark-end">now</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    </div><!-- #claude-section -->
+
+    <!-- Claude (VS Code) -->
+    <div id="claude2-section">
+    <div class="section-label">Claude (VS Code)<button class="section-hide-btn" data-section="claude2-section" title="Hide section">×</button></div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title clickable" data-url="https://claude.ai/settings/usage"><div class="dot dot-claude"></div>Claude Code<span class="ext-icon">↗</span></div>
+          <div class="account-label" id="claude2-account"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <button class="icon-btn" id="claude2-refresh" title="Refresh">↻</button>
+          <span class="badge" id="claude2-badge">–</span>
+        </div>
+      </div>
+
+      <div id="claude2-login-prompt" style="display:none">
+        <div class="note">Reads from <code>~/.claude/.credentials.json</code>. Run <code>claude login</code> in your terminal to authenticate.</div>
+      </div>
+
+      <div id="claude2-data" style="display:none">
+        <div class="stats-grid" style="margin-bottom:6px">
+          <div class="stat-box">
+            <div class="stat-label">5H Remaining</div>
+            <div class="stat-value accent"><span id="claude2-5h-pct">—</span><span class="trend" id="claude2-5h-trend"></span></div>
+            <div id="claude2-5h-reset"></div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Weekly Remaining</div>
+            <div class="stat-value accent"><span id="claude2-wk-pct">—</span><span class="trend" id="claude2-wk-trend"></span></div>
+            <div id="claude2-wk-reset"></div>
+          </div>
+        </div>
+        <div class="progress-track" style="margin-bottom:3px">
+          <div class="progress-fill" id="claude2-5h-bar" style="width:0%;background:linear-gradient(90deg,#059669,#34d399)"></div>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" id="claude2-wk-bar" style="width:0%;background:linear-gradient(90deg,#dc2626,#f87171)"></div>
+        </div>
+
+        <div class="trend-toggle-row">
+          <button class="trend-toggle-btn" id="claude2-trend-toggle" onclick="toggleTrend('claude2')">Trend ▾</button>
+          <button class="trend-toggle-btn" style="margin-left:8px" onclick="window.electronAPI.openAnalytics('claude-vscode')">Analytics ↗</button>
+        </div>
+        <div class="trend-panel" id="claude2-trend-panel">
+          <div class="trend-inner">
+            <div class="trend-stats">
+              <span>5H Δ: <b id="claude2-5h-delta">—</b></span>
+              <span>Wk Δ: <b id="claude2-wk-delta">—</b></span>
+              <span>Burn: <b id="claude2-burn">—</b></span>
+              <span>Depletions: <b id="claude2-depletions">—</b></span>
+            </div>
+            <svg class="trend-spark" id="claude2-spark" height="40" viewBox="0 0 260 40" preserveAspectRatio="none"></svg>
+            <div class="trend-spark-labels"><span id="claude2-spark-start">—</span><span id="claude2-spark-end">now</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    </div><!-- #claude2-section -->
+
+    <div id="show-hidden-row">
+      <button id="show-all-btn"><span id="hidden-count">0</span> section(s) hidden · Show all</button>
+    </div>
+
+    <div class="last-updated" id="last-updated"></div>
+
+  </div><!-- #full-view -->
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,695 @@
+'use strict';
+
+// ── State ──────────────────────────────────────────────────────────────────
+const VALID_ACCOUNTS = ['codex', 'claude-desktop', 'claude-vscode'];
+const initialAccount = new URLSearchParams(window.location.search).get('account');
+let currentAccount = VALID_ACCOUNTS.includes(initialAccount) ? initialAccount : 'codex';
+let windowHours    = 24;
+let rowLimit       = 200;
+
+// Token consumption multipliers relative to a 1× base (Sonnet-equivalent).
+// Claude Code (VS Code) uses Opus-class models which burn the 5h quota 20× faster
+// than Codex / Claude Desktop at equivalent wallclock usage.
+const PLAN_MULTIPLIERS = {
+  'codex':          1,
+  'claude-desktop': 1,
+  'claude-vscode':  20,
+};
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function fmtDuration(ms) {
+  if (ms < 0) return 'now';
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function fmtAgo(ts) {
+  const diff = Date.now() - new Date(ts).getTime();
+  if (diff < 60_000) return 'just now';
+  const h = Math.floor(diff / 3_600_000);
+  const m = Math.floor((diff % 3_600_000) / 60_000);
+  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h ago`;
+  return h > 0 ? `${h}h ${m}m ago` : `${m}m ago`;
+}
+
+function fmtTime(ts) {
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function fmtDate(ts) {
+  const d = new Date(ts);
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+    + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtRate(r) {
+  return r > 0.05 ? r.toFixed(1) + '%/hr' : '0%/hr';
+}
+
+// ── Burn stats ─────────────────────────────────────────────────────────────
+function computeBurnStats(entries) {
+  const pts = entries.filter(e => e['5h'] != null);
+  if (pts.length < 2) return { rateAll: 0, rateNow: 0, ratePeak: 0, ratePerMs: 0, depletesAt: null, sessions: 0 };
+
+  const first = pts[0], last = pts[pts.length - 1];
+  const spanMs = new Date(last.ts) - new Date(first.ts);
+
+  const dropAll = first['5h'] - last['5h'];
+  const rateAll = spanMs > 0 && dropAll > 0 ? dropAll / (spanMs / 3_600_000) : 0;
+
+  const cutoff30 = new Date(last.ts).getTime() - 30 * 60_000;
+  const recent   = pts.filter(e => new Date(e.ts).getTime() >= cutoff30);
+  let rateNow = 0;
+  if (recent.length >= 2) {
+    const rSpan = new Date(recent[recent.length - 1].ts) - new Date(recent[0].ts);
+    const rDrop = recent[0]['5h'] - recent[recent.length - 1]['5h'];
+    if (rSpan > 0 && rDrop > 0) rateNow = rDrop / (rSpan / 3_600_000);
+  }
+
+  let ratePeak = 0;
+  const WIN = 10 * 60_000;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const t0  = new Date(pts[i].ts).getTime();
+    const win = pts.filter(e => { const t = new Date(e.ts).getTime(); return t >= t0 && t <= t0 + WIN; });
+    if (win.length >= 2) {
+      const wMs   = new Date(win[win.length - 1].ts) - new Date(win[0].ts);
+      const wDrop = win[0]['5h'] - win[win.length - 1]['5h'];
+      if (wMs > 0 && wDrop > 0) ratePeak = Math.max(ratePeak, wDrop / (wMs / 3_600_000));
+    }
+  }
+
+  let sessions = 0;
+  let lastResetAt = null;
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i]['5h'] - pts[i - 1]['5h'] > 15) {
+      sessions++;
+      lastResetAt = new Date(pts[i].ts);
+    }
+  }
+  const nextResetEst = lastResetAt ? new Date(lastResetAt.getTime() + 5 * 3_600_000) : null;
+
+  // Session burn rate: only intervals where 5h was actively dropping AND poll gap < 15min.
+  // Excludes idle time so the rate reflects actual usage intensity, not diluted averages.
+  let sessionDrop = 0, sessionMs = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dt  = new Date(pts[i].ts).getTime() - new Date(pts[i - 1].ts).getTime();
+    const d5h = pts[i - 1]['5h'] - pts[i]['5h'];
+    if (d5h > 0 && dt < 15 * 60_000) {
+      sessionDrop += d5h;
+      sessionMs   += dt;
+    }
+  }
+  const rateSession = sessionMs > 0 ? sessionDrop / (sessionMs / 3_600_000) : 0;
+
+  // Depletion: prefer rateNow → rateSession → rateAll (most to least real-time)
+  const effectiveRate = rateNow > 0 ? rateNow : rateSession > 0 ? rateSession : rateAll;
+  const ratePerMs     = effectiveRate / 3_600_000;
+  let depletesAt = null;
+  if (effectiveRate > 0 && last['5h'] > 0) {
+    depletesAt = new Date(new Date(last.ts).getTime() + last['5h'] / ratePerMs);
+  }
+
+  // Weekly depletion — use session-only rate for weekly too (same idle-exclusion logic)
+  const wkPts = entries.filter(e => e['wk'] != null);
+  let depleteWkAt = null, rateSessionWk = 0, sessionMsWk = 0;
+  if (wkPts.length >= 2) {
+    let wkDrop = 0;
+    for (let i = 1; i < wkPts.length; i++) {
+      const dt  = new Date(wkPts[i].ts).getTime() - new Date(wkPts[i - 1].ts).getTime();
+      const dwk = wkPts[i - 1]['wk'] - wkPts[i]['wk'];
+      if (dwk > 0 && dt < 15 * 60_000) { wkDrop += dwk; sessionMsWk += dt; }
+    }
+    rateSessionWk = sessionMsWk > 0 ? wkDrop / (sessionMsWk / 3_600_000) : 0;
+    const wkLast = wkPts[wkPts.length - 1];
+    // Fall back to overall avg if no active drops detected (very slow-draining weekly)
+    if (rateSessionWk === 0) {
+      const wkFirst = wkPts[0];
+      const wkSpanMs = new Date(wkLast.ts) - new Date(wkFirst.ts);
+      const totalDrop = wkFirst['wk'] - wkLast['wk'];
+      rateSessionWk = wkSpanMs > 0 && totalDrop > 0 ? totalDrop / (wkSpanMs / 3_600_000) : 0;
+    }
+    if (rateSessionWk > 0 && wkLast['wk'] > 0) {
+      depleteWkAt = new Date(new Date(wkLast.ts).getTime() + (wkLast['wk'] / rateSessionWk) * 3_600_000);
+    }
+  }
+
+  return { rateAll, rateNow, ratePeak, rateSession, sessionMs, ratePerMs, depletesAt, depleteWkAt, sessions, lastResetAt, nextResetEst };
+}
+
+// ── Sparkline ──────────────────────────────────────────────────────────────
+function renderSparkline(svgEl, entries, ratePerMs) {
+  svgEl.innerHTML = '';
+  if (entries.length < 2) return;
+
+  const W = 760, H = 120, PAD = 4;
+  const ns = 'http://www.w3.org/2000/svg';
+  const mk = (tag, attrs) => {
+    const el = document.createElementNS(ns, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+    return el;
+  };
+
+  const ts0    = new Date(entries[0].ts).getTime();
+  const ts1    = new Date(entries[entries.length - 1].ts).getTime();
+  const tRange = ts1 - ts0 || 1;
+  const toX = t => PAD + ((new Date(t).getTime() - ts0) / tRange) * (W - PAD * 2);
+  const toY = v => PAD + (1 - v / 100) * (H - PAD * 2);
+
+  // Y-axis labels at 0 / 25 / 50 / 75 / 100%
+  for (const lvl of [0, 25, 50, 75, 100]) {
+    const y = toY(lvl).toFixed(1);
+    svgEl.appendChild(mk('line', {
+      x1: PAD, x2: W - PAD, y1: y, y2: y,
+      stroke: lvl === 0 || lvl === 100 ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.05)',
+      'stroke-dasharray': lvl === 50 ? '4,3' : '2,4',
+    }));
+    const label = mk('text', {
+      x: PAD + 2, y: (parseFloat(y) - 3).toFixed(1),
+      fill: 'rgba(255,255,255,0.2)', 'font-size': '8',
+    });
+    label.textContent = lvl + '%';
+    svgEl.appendChild(label);
+  }
+
+  // Session-reset markers
+  for (let i = 1; i < entries.length; i++) {
+    const a = entries[i - 1]['5h'], b = entries[i]['5h'];
+    if (a != null && b != null && b - a > 15) {
+      const x = toX(entries[i].ts).toFixed(1);
+      svgEl.appendChild(mk('line', {
+        x1: x, x2: x, y1: PAD, y2: H - PAD,
+        stroke: 'rgba(168,85,247,0.5)', 'stroke-dasharray': '3,3', 'stroke-width': '1.5',
+      }));
+      const lbl = mk('text', { x: (parseFloat(x) + 3).toFixed(1), y: (PAD + 10).toFixed(1), fill: 'rgba(168,85,247,0.7)', 'font-size': '8' });
+      lbl.textContent = 'reset';
+      svgEl.appendChild(lbl);
+    }
+  }
+
+  // Data lines
+  const mkLine = (field, color, width = '2') => {
+    const pts = entries.filter(e => e[field] != null);
+    if (pts.length < 2) return pts;
+    const d = pts.map((e, i) =>
+      `${i === 0 ? 'M' : 'L'}${toX(e.ts).toFixed(1)},${toY(e[field]).toFixed(1)}`
+    ).join(' ');
+    svgEl.appendChild(mk('path', { d, stroke: color, 'stroke-width': width, fill: 'none', 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    return pts;
+  };
+
+  const pts5h = mkLine('5h', 'var(--accent)', '2');
+  mkLine('wk', 'var(--green)', '2');
+
+  // Projection line
+  if (ratePerMs > 0 && pts5h.length >= 2) {
+    const last = pts5h[pts5h.length - 1];
+    if (last['5h'] > 0) {
+      const startX = toX(last.ts);
+      const startY = toY(last['5h']);
+      const slope  = ratePerMs * tRange * (H - PAD * 2) / (100 * (W - PAD * 2));
+      const deltaX = (H - PAD - startY) / slope;
+      const clampX = Math.min(W - PAD, startX + deltaX);
+      const clampY = startY + slope * (clampX - startX);
+      svgEl.appendChild(mk('line', {
+        x1: startX.toFixed(1), y1: startY.toFixed(1),
+        x2: clampX.toFixed(1), y2: clampY.toFixed(1),
+        stroke: 'var(--accent)', 'stroke-opacity': '0.3',
+        'stroke-dasharray': '6,4', 'stroke-width': '2',
+      }));
+    }
+  }
+
+  // Endpoint dot
+  if (pts5h.length > 0) {
+    const last = pts5h[pts5h.length - 1];
+    svgEl.appendChild(mk('circle', {
+      cx: toX(last.ts).toFixed(1), cy: toY(last['5h']).toFixed(1),
+      r: '4', fill: 'var(--accent)',
+    }));
+  }
+
+  // Depletion dots
+  for (const e of entries) {
+    if (!e.depleted) continue;
+    const x = toX(e.ts).toFixed(1);
+    svgEl.appendChild(mk('circle', {
+      cx: x, cy: (H - PAD).toFixed(1), r: '3.5', fill: 'var(--red)',
+    }));
+  }
+}
+
+// ── Stat cards ─────────────────────────────────────────────────────────────
+function renderStats(entries, container) {
+  if (!entries.length) {
+    container.innerHTML = '<div class="empty">No data in this window.</div>';
+    return;
+  }
+
+  const last   = entries[entries.length - 1];
+  const burn   = computeBurnStats(entries);
+  const dep5h  = entries.filter(e => e.depleted?.includes('5h')).length;
+  const depWk  = entries.filter(e => e.depleted?.includes('wk')).length;
+  // Count distinct sessions from logged sessionStart field (falls back to computed jump count)
+  const loggedSessions = new Set(entries.map(e => e.sessionStart).filter(Boolean)).size;
+  const sessionCount   = loggedSessions || burn.sessions;
+  const spanMs = new Date(last.ts) - new Date(entries[0].ts);
+  const mult   = PLAN_MULTIPLIERS[currentAccount] ?? 1;
+
+  const fmtDepleteTime = (d) => d
+    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (d - Date.now() < 0 ? ' (past)' : '')
+    : null;
+
+  const deplete5hStr = fmtDepleteTime(burn.depletesAt) ?? (burn.rateAll === 0 ? 'stable' : '—');
+  const depleteWkStr = fmtDepleteTime(burn.depleteWkAt);
+  const depleteWkFull = burn.depleteWkAt
+    ? burn.depleteWkAt.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+      + ' ' + burn.depleteWkAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+  // Show the sooner constraint as the primary value
+  const depleteSooner = burn.depletesAt && burn.depleteWkAt
+    ? (burn.depletesAt <= burn.depleteWkAt ? burn.depletesAt : burn.depleteWkAt)
+    : (burn.depletesAt ?? burn.depleteWkAt);
+  const depleteStr  = depleteSooner
+    ? depleteSooner.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (depleteSooner - Date.now() < 0 ? ' (past)' : '')
+    : burn.rateAll === 0 ? 'stable' : '—';
+  const depleteWhich = depleteSooner === burn.depleteWkAt && depleteSooner !== burn.depletesAt ? 'wk' : '5h';
+  const depleteSub = dep5h || depWk
+    ? `${dep5h}×5h ${depWk}×wk depletions`
+    : depleteStr === 'stable' ? 'no measurable drain'
+    : depleteWhich === 'wk'
+      ? `wk limit · 5h: ${deplete5hStr}`
+      : depleteWkFull
+        ? `5h limit · wk: ${depleteWkFull}`
+        : '5h limit · at current rate';
+
+
+  const used5h = last['5h'] != null ? (100 - last['5h']) + '%' : '—';
+  const used5hCls = last['5h'] != null ? (last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : '') : '';
+
+  // 5H reset — prefer exact API timestamp, fall back to log-jump estimate
+  const apiReset5h = [...entries].reverse().find(e => e.reset5hTs > 0)?.reset5hTs ?? null;
+  let next5hStr = '—', next5hSub = '—';
+  if (apiReset5h) {
+    const msUntil = apiReset5h - Date.now();
+    const timeStr = new Date(apiReset5h).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    next5hStr = timeStr;
+    next5hSub = msUntil > 0 ? `in ${fmtDuration(msUntil)} · from API` : 'reset passed — refresh';
+  } else if (burn.nextResetEst) {
+    const msUntil = burn.nextResetEst - Date.now();
+    if (msUntil > 0 && msUntil < 5.5 * 3_600_000) {
+      next5hStr = burn.nextResetEst.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      next5hSub = `in ${fmtDuration(msUntil)} · est.`;
+    }
+  }
+
+  // Weekly reset — from logged reset7dTs (all accounts)
+  const apiReset7d = [...entries].reverse().find(e => e.reset7dTs > 0)?.reset7dTs ?? null;
+  let next7dStr = '—', next7dSub = 'will appear after next poll';
+  if (apiReset7d) {
+    const msUntil = apiReset7d - Date.now();
+    const d = new Date(apiReset7d);
+    const dateStr = d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    next7dStr = dateStr;
+    next7dSub = msUntil > 0 ? `${timeStr} · in ${fmtDuration(msUntil)}` : 'reset passed — refresh';
+  }
+
+  // ── Weekly window analysis ────────────────────────────────────────────────
+  // Derive weekly period start from the logged reset timestamp — no calendar assumptions.
+  // Works correctly regardless of when the subscription started or was renewed.
+  const lastWeeklyResetMs = apiReset7d ? apiReset7d - 7 * 86_400_000 : null;
+
+  const thisWeekEntries = lastWeeklyResetMs
+    ? entries.filter(e => new Date(e.ts).getTime() >= lastWeeklyResetMs)
+    : entries;
+
+  const logCoversWeekStart = !!(lastWeeklyResetMs &&
+    entries.length > 0 && new Date(entries[0].ts).getTime() <= lastWeeklyResetMs);
+
+  // Count 5H windows elapsed this weekly period via log-detected >15pp upward jumps
+  const twPts = thisWeekEntries.filter(e => e['5h'] != null);
+  let windowsElapsed = twPts.length > 0 ? 1 : 0; // current partial window counts as 1
+  for (let i = 1; i < twPts.length; i++) {
+    if (twPts[i]['5h'] - twPts[i - 1]['5h'] > 15) windowsElapsed++;
+  }
+
+  // Weekly % consumed since start of period
+  const twFirstWk  = thisWeekEntries.find(e => e['wk'] != null)?.['wk'] ?? null;
+  const wkConsumed = twFirstWk != null && last['wk'] != null && twFirstWk > last['wk']
+    ? twFirstWk - last['wk'] : null;
+
+  // Average % cost per 5H window — requires ≥2 windows to be meaningful
+  const wkPerWindow = wkConsumed > 0 && windowsElapsed >= 2
+    ? wkConsumed / windowsElapsed : null;
+
+  // Projected windows remaining at current per-window pace
+  const windowsRemaining = wkPerWindow > 0 && last['wk'] != null
+    ? last['wk'] / wkPerWindow : null;
+
+  // When multiplier > 1, show effective token burn in sub-text for burn cards
+  const effSub = (rate, baseSub) => {
+    if (mult === 1 || rate <= 0) return baseSub;
+    return `${baseSub} · ${(rate * mult).toFixed(1)}%/hr equiv.`;
+  };
+
+  // Best available 5H reset reference: exact API timestamp → log-jump estimate → null
+  const reset5hRef = apiReset5h ?? burn.nextResetEst?.getTime() ?? null;
+
+  // Reset-aware color: green = will last to reset, amber = 30-90min early, red = >90min early
+  const gapColor = (depleteMs, resetMs, fallback = '') => {
+    if (!depleteMs || !resetMs) return fallback;
+    const gap = resetMs - depleteMs;
+    if (gap <= 30 * 60_000) return 'green';
+    if (gap <  90 * 60_000) return 'amber';
+    return 'red';
+  };
+  // Hypothetical depletion time for a given %/hr burn rate against current 5H remaining
+  const burnDeplete5hMs = (rate) =>
+    rate > 0 && last['5h'] > 0
+      ? new Date(last.ts).getTime() + (last['5h'] / rate) * 3_600_000
+      : null;
+  // Burn rate color: reset-aware when possible, rate-threshold fallback otherwise
+  const burnCls = (rate) => {
+    const cls = gapColor(burnDeplete5hMs(rate), reset5hRef);
+    if (cls) return cls;
+    if (rate <= 0) return '';
+    return rate < 15 ? 'green' : rate < 40 ? 'amber' : 'red';
+  };
+
+  const cards = [
+    // Row 1 — what you have
+    { label: '5H Remaining',
+      value: last['5h'] != null ? last['5h'] + '%' : '—',
+      sub: 'current',
+      cls: gapColor(burn.depletesAt?.getTime(), reset5hRef, last['5h'] < 20 ? 'red' : last['5h'] < 50 ? 'amber' : 'green') },
+    { label: 'Wk Windows Left',
+      value: windowsRemaining != null ? windowsRemaining.toFixed(1) : '—',
+      sub: wkPerWindow != null
+        ? `~${wkPerWindow.toFixed(1)}% wk/window · ${windowsElapsed} elapsed${logCoversWeekStart ? '' : ' · partial data'}`
+        : windowsElapsed >= 2
+          ? `${windowsElapsed} windows counted · insufficient wk change`
+          : 'need ≥2 windows to estimate',
+      cls: windowsRemaining == null ? '' : windowsRemaining >= 6 ? 'green' : windowsRemaining >= 3 ? 'amber' : 'red' },
+    { label: 'Weekly Remaining',
+      value: last['wk'] != null ? last['wk'] + '%' : '—',
+      sub: wkPerWindow != null
+        ? `~${wkPerWindow.toFixed(1)}% per window · ${windowsElapsed} elapsed`
+        : 'current',
+      cls: gapColor(burn.depleteWkAt?.getTime(), apiReset7d, last['wk'] < 20 ? 'red' : last['wk'] < 50 ? 'amber' : 'green') },
+    // Row 2 — how fast (burn rates; effective rate shown when multiplier >1)
+    { label: 'Burn Now',     value: burn.rateNow     > 0 ? fmtRate(burn.rateNow)     : '—',
+      sub: effSub(burn.rateNow, 'last 30 min'), cls: burnCls(burn.rateNow) },
+    { label: 'Session Burn', value: burn.rateSession > 0 ? fmtRate(burn.rateSession) : '—',
+      sub: burn.sessionMs > 0
+        ? effSub(burn.rateSession, `${(burn.sessionMs / 3_600_000).toFixed(1)}h active · ${sessionCount} session${sessionCount !== 1 ? 's' : ''}`)
+        : 'no active periods detected',
+      cls: burnCls(burn.rateSession) },
+    { label: 'Peak Burn',    value: burn.ratePeak    > 0 ? fmtRate(burn.ratePeak)    : '—',
+      sub: effSub(burn.ratePeak, '10-min window · burst'), cls: burnCls(burn.ratePeak) },
+    // Row 3 — what's next
+    { label: 'Depletes At',       value: depleteStr, sub: depleteSub, cls: (() => {
+        if (!depleteSooner || depleteStr === 'stable') return 'green';
+        const resetRef = depleteWhich === 'wk' ? apiReset7d : reset5hRef;
+        if (!resetRef) return depleteSooner - Date.now() < 3_600_000 ? 'red' : '';
+        const gapMs = resetRef - depleteSooner.getTime();
+        if (gapMs <= 30 * 60_000) return 'green';
+        if (gapMs < 90 * 60_000) return 'amber';
+        return 'red';
+      })() },
+    { label: 'Next 5H Reset ~',   value: next5hStr,  sub: next5hSub,  cls: '' },
+    { label: 'Next Weekly Reset', value: next7dStr,  sub: next7dSub,  cls: apiReset7d && apiReset7d - Date.now() < 86_400_000 ? 'amber' : '' },
+  ];
+
+  container.innerHTML = `
+    <div class="stat-grid">
+      ${cards.map(c => `
+        <div class="stat-card ${c.cls}">
+          <div class="label">${c.label}</div>
+          <div class="value">${c.value}</div>
+          <div class="sub">${c.sub}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+// ── Chart ──────────────────────────────────────────────────────────────────
+function renderChart(entries, container) {
+  const { ratePerMs } = computeBurnStats(entries);
+
+  container.innerHTML = `
+    <div class="section-head">Trend Chart</div>
+    <div class="chart-wrap" style="margin-top:8px">
+      <div class="chart-legend">
+        <span><span class="legend-dot" style="background:var(--accent)"></span>5H Remaining</span>
+        <span><span class="legend-dot" style="background:var(--green)"></span>Weekly Remaining</span>
+        <span><span class="legend-dot" style="background:rgba(168,85,247,0.5);border-radius:0;width:12px;height:2px;display:inline-block;vertical-align:middle;margin-right:4px"></span>Session reset</span>
+        <span><span class="legend-dot" style="background:var(--red)"></span>Depletion event</span>
+      </div>
+      <svg id="analytics-spark" width="100%" height="120" viewBox="0 0 760 120" preserveAspectRatio="none" style="display:block"></svg>
+      <div class="chart-labels">
+        <span id="chart-start">—</span>
+        <span id="chart-end">now</span>
+      </div>
+    </div>
+  `;
+
+  if (entries.length >= 2) {
+    const svg = container.querySelector('#analytics-spark');
+    renderSparkline(svg, entries, ratePerMs);
+    container.querySelector('#chart-start').textContent = fmtAgo(entries[0].ts);
+  } else {
+    container.querySelector('#analytics-spark').innerHTML = `<text x="380" y="65" text-anchor="middle" fill="rgba(255,255,255,0.2)" font-size="12">Not enough data</text>`;
+  }
+}
+
+// ── Log table ──────────────────────────────────────────────────────────────
+function renderTable(entries, container) {
+  const rows = [...entries].reverse(); // newest first
+
+  container.innerHTML = `
+    <div class="section-head">Log — ${rows.length} entries (newest first)</div>
+    <div class="log-table-wrap" style="margin-top:8px">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Ago</th>
+            <th>5H %</th>
+            <th>5H Δ</th>
+            <th>Wk %</th>
+            <th>Wk Δ</th>
+            <th>Events</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((e, i) => {
+            const next  = rows[i + 1]; // older entry
+            const d5h   = next && e['5h'] != null && next['5h'] != null ? e['5h'] - next['5h'] : null;
+            const dwk   = next && e['wk'] != null && next['wk'] != null ? e['wk'] - next['wk'] : null;
+            const isDep = e.depleted && e.depleted.length > 0;
+            const isReset5h = next && e['5h'] != null && next['5h'] != null && e['5h'] - next['5h'] > 15;
+            const rowCls = isDep ? 'depleted' : '';
+            const fmtD   = v => v == null ? '—' : (v >= 0 ? '+' : '') + v + '%';
+            const dClass = v => v == null ? '' : v > 0 ? 'green' : v < 0 ? 'red' : '';
+            const events = [];
+            if (isDep) events.push(...(e.depleted.map(f => `<span style="color:var(--red)">depleted:${f}</span>`)));
+            if (isReset5h) events.push(`<span style="color:var(--accent)">reset</span>`);
+            return `<tr class="${rowCls}">
+              <td class="mono">${fmtDate(e.ts)}</td>
+              <td style="color:var(--text-mid);font-size:10px">${fmtAgo(e.ts)}</td>
+              <td class="${e['5h'] != null ? 'accent' : ''}">${e['5h'] != null ? e['5h'] + '%' : '—'}</td>
+              <td class="${dClass(d5h)}">${fmtD(d5h)}</td>
+              <td class="${e['wk'] != null ? 'green' : ''}" style="color:${e['wk'] != null ? 'var(--green)' : ''}">${e['wk'] != null ? e['wk'] + '%' : '—'}</td>
+              <td class="${dClass(dwk)}">${fmtD(dwk)}</td>
+              <td style="font-size:10px">${events.join(' ') || ''}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ── Efficiency ─────────────────────────────────────────────────────────────
+function buildEffWindow(entries, win) {
+  const title = win === '5h' ? '5-Hour Window' : 'Weekly Window';
+  const cycles = segmentCycles(entries, win);
+  if (!cycles.length) {
+    return `<div class="eff-sub">${title}</div><div class="empty">No data yet.</div>`;
+  }
+
+  const current = cycleStats(cycles[cycles.length - 1], win);
+  const completedCycles = cycles.slice(0, -1);
+  const completed = completedCycles.map(c => cycleStats(c, win));
+  const lastDone = completed.length ? completed[completed.length - 1] : null;
+  const sum = summarize(completed);
+
+  // Confidence: gap between the last completed cycle's final poll and the reset
+  // that ended it (≈ the current cycle's first poll).
+  let confidenceMs = null;
+  if (lastDone && completedCycles.length) {
+    const lastEnd = completedCycles[completedCycles.length - 1].slice(-1)[0].ts;
+    confidenceMs = new Date(cycles[cycles.length - 1][0].ts) - new Date(lastEnd);
+  }
+
+  const grid = cards => `<div class="stat-grid">${cards.map(c => `
+    <div class="stat-card ${c.cls}"><div class="label">${c.label}</div>
+      <div class="value">${c.value}</div><div class="sub">${c.sub}</div></div>`).join('')}</div>`;
+
+  const liveCards = [
+    { label: 'Peak So Far', value: current.peakPct + '%', sub: 'this cycle',
+      cls: current.peakPct >= 90 ? 'red' : current.peakPct >= 70 ? 'amber' : 'green' },
+    { label: 'Headroom', value: current.headroomPct + '%', sub: 'unused so far', cls: '' },
+    { label: 'Status', value: current.blocked ? 'Blocked' : 'Running',
+      sub: current.blocked ? 'hit the limit' : 'within limit',
+      cls: current.blocked ? 'red' : 'green' },
+  ];
+
+  const scoreCards = lastDone ? [
+    { label: 'Last Peak', value: lastDone.peakPct + '%', sub: 'previous cycle', cls: '' },
+    { label: 'Left at Reset', value: lastDone.headroomPct + '%', sub: 'headroom', cls: '' },
+    { label: 'Blocked', value: lastDone.blocked ? 'Yes' : 'No',
+      sub: lastDone.blocked ? fmtDuration(lastDone.blockedMs) + ' stuck' : 'never ran out',
+      cls: lastDone.blocked ? 'red' : 'green' },
+  ] : [];
+
+  const histLine = sum.count
+    ? `${sum.blockedCount} of ${sum.count} completed cycles ran out`
+      + (sum.totalBlockedMs > 0 ? ` · ≈${fmtDuration(sum.totalBlockedMs)} blocked total` : '')
+    : 'No completed cycles yet.';
+
+  const confLine = confidenceMs != null && confidenceMs > 0
+    ? `<div class="eff-note">Scorecard based on a poll ${fmtDuration(confidenceMs)} before the next cycle began.</div>`
+    : '';
+
+  return `
+    <div class="eff-sub">${title} — Now</div>
+    ${grid(liveCards)}
+    ${scoreCards.length ? `<div class="eff-sub">${title} — Last Completed Cycle</div>${grid(scoreCards)}${confLine}` : ''}
+    <div class="eff-sub">${title} — History</div>
+    <div class="eff-hist">${histLine}</div>
+    <div id="eff-peaks-${win}" class="eff-peaks"></div>
+    <div id="eff-heat-${win}" class="eff-heat"></div>
+  `;
+}
+
+function renderEfficiency(entries, container) {
+  container.innerHTML = `<div class="section-head">Efficiency</div>`
+    + ['5h', 'wk'].map(win => buildEffWindow(entries, win)).join('');
+
+  ['5h', 'wk'].forEach(win => {
+    const completed = segmentCycles(entries, win).slice(0, -1).map(c => cycleStats(c, win));
+    renderPeakBars(container.querySelector(`#eff-peaks-${win}`), summarize(completed).peaks);
+    renderHourHeatmap(container.querySelector(`#eff-heat-${win}`), hourlyBurn(entries, win));
+  });
+}
+
+function renderPeakBars(el, peaks) {
+  if (!el) return;
+  if (!peaks.length) { el.innerHTML = '<div class="empty">No completed cycles yet.</div>'; return; }
+  const bars = peaks.map(p => {
+    const h = Math.max(2, Math.round(p.peakPct));
+    const color = p.peakPct >= 90 ? 'var(--red)' : p.peakPct >= 70 ? 'var(--amber)' : 'var(--green)';
+    return `<div class="peak-bar" title="${p.peakPct}% · ${fmtDate(p.ts)}" style="height:${h}%;background:${color}"></div>`;
+  }).join('');
+  el.innerHTML = `<div class="eff-cap">Peak usage per completed cycle</div><div class="peak-bars">${bars}</div>`;
+}
+
+function renderHourHeatmap(el, hours) {
+  if (!el) return;
+  const max = Math.max(1, ...hours);
+  const cells = hours.map((v, h) => {
+    const a = (v / max).toFixed(2);
+    return `<div class="heat-cell" title="${h}:00 — ${v.toFixed(0)}% burned" style="background:rgba(168,85,247,${a})">${h % 6 === 0 ? h : ''}</div>`;
+  }).join('');
+  el.innerHTML = `<div class="eff-cap">Burn by hour of day</div><div class="heat-row">${cells}</div>`;
+}
+
+// ── Main render ────────────────────────────────────────────────────────────
+async function renderAll() {
+  const body = document.getElementById('body');
+  body.innerHTML = '<div class="empty">Loading…</div>';
+
+  const limit = rowLimit === 0 ? 5000 : rowLimit;
+  let entries = await window.electronAPI.readUsageLog(currentAccount, limit);
+
+  // Filter by time window
+  if (windowHours > 0) {
+    const cutoff = Date.now() - windowHours * 3_600_000;
+    entries = entries.filter(e => new Date(e.ts).getTime() >= cutoff);
+  }
+
+  // Update header meta
+  const meta = document.getElementById('header-meta');
+  if (entries.length) {
+    const span = new Date(entries[entries.length - 1].ts) - new Date(entries[0].ts);
+    const sc = new Set(entries.map(e => e.sessionStart).filter(Boolean)).size;
+    const sessionMeta = sc > 0 ? ` · ${sc} session${sc !== 1 ? 's' : ''}` : '';
+    meta.textContent = `${entries.length} entries · ${fmtDuration(span)} window${sessionMeta} · last: ${fmtAgo(entries[entries.length - 1].ts)}`;
+  } else {
+    meta.textContent = 'No data';
+  }
+
+  if (!entries.length) {
+    body.innerHTML = '<div class="empty">No log entries found for this account and time window.</div>';
+    return;
+  }
+
+  // Build sections
+  const statsEl = document.createElement('div');
+  const effEl   = document.createElement('div');
+  const chartEl = document.createElement('div');
+  const tableEl = document.createElement('div');
+
+  body.innerHTML = '';
+  body.appendChild(statsEl);
+  body.appendChild(effEl);
+  body.appendChild(chartEl);
+  body.appendChild(tableEl);
+
+  // Efficiency reads the FULL log (all cycles), independent of the time-window filter.
+  const allEntries = await window.electronAPI.readUsageLog(currentAccount, 0);
+
+  renderStats(entries, statsEl);
+  renderEfficiency(allEntries, effEl);
+  renderChart(entries, chartEl);
+  renderTable(entries, tableEl);
+}
+
+// ── Switch tab helper ──────────────────────────────────────────────────────
+function switchTab(account) {
+  if (!VALID_ACCOUNTS.includes(account)) return;
+  currentAccount = account;
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.account === account);
+  });
+  renderAll();
+}
+
+// ── Wire up controls ───────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => switchTab(tab.dataset.account));
+});
+
+// Listen for tab-switch messages from main process (when window is already open)
+window.electronAPI.onSwitchAnalyticsTab(switchTab);
+
+document.getElementById('window-select').addEventListener('change', e => {
+  windowHours = parseInt(e.target.value, 10);
+  renderAll();
+});
+
+document.getElementById('rows-select').addEventListener('change', e => {
+  rowLimit = parseInt(e.target.value, 10);
+  renderAll();
+});
+
+document.getElementById('refresh-btn').addEventListener('click', renderAll);
+
+// Initial load — activate the correct tab before first render
+document.querySelectorAll('.tab').forEach(t => {
+  t.classList.toggle('active', t.dataset.account === currentAccount);
+});
+renderAll();
