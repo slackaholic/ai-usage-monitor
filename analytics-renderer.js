@@ -10,6 +10,8 @@ let rowLimit       = 200;
 let monthEntries = [];
 let displayYear = null;
 let displayMonth = null;
+let curSymbol = '£';
+let usdRate = 0.79;
 
 // Token consumption multipliers relative to a 1× base (Sonnet-equivalent).
 // Claude Code (VS Code) uses Opus-class models which burn the 5h quota 20× faster
@@ -52,7 +54,8 @@ function fmtRate(r) {
 }
 
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
-function fmtMoney(n) { return '$' + (n || 0).toFixed(2); }
+function fmtMoney(v) { return curSymbol + (v || 0).toFixed(2); }          // value already in display currency
+function fmtMoneyUsd(usd) { return curSymbol + ((usd || 0) * usdRate).toFixed(2); } // convert USD → display
 function fmtTokens(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
   if (n >= 1_000) return Math.round(n / 1_000) + 'K';
@@ -713,13 +716,13 @@ async function renderCost(container) {
       // Stable family order (Opus → Sonnet → Haiku → Fable), not first-seen.
       const rows = Object.keys(FAMILY_PRICES).filter(fam => c.byModel[fam]).map(fam => {
         const v = c.byModel[fam];
-        return `<tr><td>${fam}</td><td>${fmtTokens(v.tokens)}</td><td>${fmtMoney(v.cost)}</td></tr>`;
+        return `<tr><td>${fam}</td><td>${fmtTokens(v.tokens)}</td><td>${fmtMoneyUsd(v.cost)}</td></tr>`;
       }).join('');
       partA = `
-        <div class="cost-headline">≈ ${fmtMoney(c.total)} of API usage · ${windowLabel()}</div>
+        <div class="cost-headline">≈ ${fmtMoneyUsd(c.total)} of API usage · ${windowLabel()}</div>
         <div class="cost-sub">estimate — what this usage would cost on the pay-as-you-go API</div>
         ${rows ? `<table class="cost-table"><thead><tr><th>Model</th><th>Tokens</th><th>Cost</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="empty">No token data in this window.</div>'}
-        ${c.cacheSavings > 0 ? `<div class="cost-sub">cache reads saved ≈ ${fmtMoney(c.cacheSavings)} vs uncached</div>` : ''}
+        ${c.cacheSavings > 0 ? `<div class="cost-sub">cache reads saved ≈ ${fmtMoneyUsd(c.cacheSavings)} vs uncached</div>` : ''}
         ${c.unpriced ? `<div class="cost-sub">unpriced: ${c.unpriced} turns (unknown model)</div>` : ''}
       `;
     }
@@ -761,8 +764,7 @@ async function renderCostCompare(el) {
     const sv = r.sv;
     return `<tr>
       <td>${ACCOUNT_LABELS[r.acct]}</td>
-      <td><input class="price-input" data-account="${r.acct}" type="number" min="0" step="1"
-            value="${r.price != null ? r.price : ''}" placeholder="—"> /mo</td>
+      <td>${r.price != null ? fmtMoney(r.price) + '/mo' : '—'}</td>
       <td>${sv ? sv.activeHours.toFixed(1) + 'h' : '—'}</td>
       <td>${sv ? sv.windows : '—'}</td>
       <td>${sv ? cell(sv.perActiveHour, bestHr) : '—'}</td>
@@ -777,7 +779,7 @@ async function renderCostCompare(el) {
     const res = await window.electronAPI.readClaudeCodeUsage();
     const toks = (res && res.entries || []).filter(e =>
       cutoff == null || new Date(e.timestamp).getTime() >= cutoff);
-    const total = summarizeCost(toks).total;
+    const total = summarizeCost(toks).total * usdRate;
     if (total > 0) {
       const ratio = total / cc.sv.attributedCost;
       ratioLine = `<div class="cost-headline">≈ ${ratio.toFixed(1)}× the subscription's worth in API-equivalent value <span class="cost-sub">(Claude Code)</span></div>`;
@@ -788,29 +790,20 @@ async function renderCostCompare(el) {
     <div class="eff-sub">Subscription value — ${windowLabel()}</div>
     ${ratioLine}
     <table class="cost-table">
-      <thead><tr><th>Account</th><th>Plan</th><th>Active</th><th>Windows</th><th>$/active-hr</th><th>$/window</th></tr></thead>
+      <thead><tr><th>Account</th><th>Plan</th><th>Active</th><th>Windows</th><th>${curSymbol}/active-hr</th><th>${curSymbol}/window</th></tr></thead>
       <tbody>${tbody}</tbody>
     </table>
-    <div class="cost-sub">Subscription cost prorated over the data span (price × span ÷ 30 days). Figures are estimates and get noisier with little history.</div>
+    <div class="cost-sub">Subscription cost prorated over the data span (price × span ÷ 30 days). Figures are estimates and get noisier with little history. Set plan prices in Settings (⚙).</div>
   `;
-
-  el.querySelectorAll('.price-input').forEach(inp => {
-    inp.addEventListener('change', () => {
-      const prices = {};
-      el.querySelectorAll('.price-input').forEach(i => {
-        const v = parseFloat(i.value);
-        if (!isNaN(v) && v > 0) prices[i.dataset.account] = v;
-      });
-      window.electronAPI.saveSettings({ planPrices: prices });
-      renderCostCompare(el);
-    });
-  });
 }
 
 // ── Main render ────────────────────────────────────────────────────────────
 async function renderAll() {
   const body = document.getElementById('body');
   body.innerHTML = '<div class="empty">Loading…</div>';
+  const _cur = (await window.electronAPI.getSettings()) || {};
+  curSymbol = _cur.currencySymbol || '£';
+  usdRate = _cur.usdRate != null ? _cur.usdRate : 0.79;
 
   const limit = rowLimit === 0 ? 5000 : rowLimit;
   let entries = await window.electronAPI.readUsageLog(currentAccount, limit);
@@ -878,6 +871,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 // Listen for tab-switch messages from main process (when window is already open)
 window.electronAPI.onSwitchAnalyticsTab(switchTab);
+window.electronAPI.onSettingsChanged(() => renderAll());
 
 document.getElementById('window-select').addEventListener('change', e => {
   windowHours = parseInt(e.target.value, 10);
