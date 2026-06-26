@@ -6,6 +6,9 @@ const initialAccount = new URLSearchParams(window.location.search).get('account'
 let currentAccount = VALID_ACCOUNTS.includes(initialAccount) ? initialAccount : 'codex';
 let windowHours    = 24;
 let rowLimit       = 200;
+let monthEntries = [];
+let displayYear = null;
+let displayMonth = null;
 
 // Token consumption multipliers relative to a 1× base (Sonnet-equivalent).
 // Claude Code (VS Code) uses Opus-class models which burn the 5h quota 20× faster
@@ -572,7 +575,7 @@ function buildEffWindow(entries, win) {
     <div class="eff-hist">${histLine}</div>
     <div id="eff-peaks-${win}" class="eff-peaks"></div>
     <div id="eff-heat-${win}" class="eff-heat"></div>
-    ${win === '5h' ? `<details class="eff-month"><summary>Burn by hour — last 30 days</summary><div id="eff-month-5h"></div></details>` : ''}
+    ${win === '5h' ? `<details class="eff-month"><summary>Burn by hour heatmap</summary><div id="eff-month-5h"></div></details>` : ''}
   `;
 }
 
@@ -586,7 +589,17 @@ function renderEfficiency(entries, container) {
     renderHourHeatmap(container.querySelector(`#eff-heat-${win}`), hourlyBurn(entries, win));
   });
 
-  renderMonthHeatmap(container.querySelector('#eff-month-5h'), dailyHourlyBurn(entries, '5h', 30));
+  monthEntries = entries;
+  const mpts = entries.filter(s => s && s['5h'] != null);
+  if (mpts.length) {
+    const last = new Date(mpts[mpts.length - 1].ts);
+    displayYear = last.getFullYear();
+    displayMonth = last.getMonth();
+    renderMonthSection();
+  } else {
+    const monthEl = container.querySelector('#eff-month-5h');
+    if (monthEl) monthEl.innerHTML = '<div class="empty">No data yet.</div>';
+  }
 }
 
 function renderPeakBars(el, peaks) {
@@ -615,17 +628,14 @@ function fmtMonthDay(key) {
   return new Date(y, m - 1, d).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-function renderMonthHeatmap(el, grid) {
-  if (!el) return;
-  if (!grid.length) { el.innerHTML = '<div class="empty">No data yet.</div>'; return; }
-
+function monthGridHtml(grid) {
   const max = Math.max(1, ...grid.flatMap(r => r.hours));
 
   const ruler = `<div class="month-row month-ruler"><span class="month-date"></span>${
     Array.from({ length: 24 }, (_, h) => `<span class="month-hcol">${h % 6 === 0 ? h : ''}</span>`).join('')
   }</div>`;
 
-  const rows = [...grid].reverse().map(r => { // newest first
+  const rows = [...grid].reverse().map(r => { // newest day on top
     const cells = r.hours.map((v, h) => {
       if (!r.hasData) return `<span class="heat-cell nodata" title="${r.date} — no data"></span>`;
       const a = (v / max).toFixed(2);
@@ -634,7 +644,43 @@ function renderMonthHeatmap(el, grid) {
     return `<div class="month-row${r.hasData ? '' : ' nodata-row'}"><span class="month-date">${fmtMonthDay(r.date)}</span>${cells}</div>`;
   }).join('');
 
-  el.innerHTML = `<div class="eff-cap">Burn by hour — last 30 days (newest first)</div>${ruler}${rows}`;
+  return `${ruler}${rows}`;
+}
+
+function stepMonth(delta) {
+  const idx = displayYear * 12 + displayMonth + delta;
+  displayYear = Math.floor(idx / 12);
+  displayMonth = ((idx % 12) + 12) % 12;
+  renderMonthSection();
+}
+
+function renderMonthSection() {
+  const el = document.querySelector('#eff-month-5h');
+  if (!el) return;
+
+  const pts = monthEntries.filter(s => s && s['5h'] != null);
+  if (!pts.length) { el.innerHTML = '<div class="empty">No data yet.</div>'; return; }
+
+  const first = new Date(pts[0].ts), last = new Date(pts[pts.length - 1].ts);
+  const earliestIdx = first.getFullYear() * 12 + first.getMonth();
+  const latestIdx = last.getFullYear() * 12 + last.getMonth();
+  const curIdx = displayYear * 12 + displayMonth;
+  const canPrev = curIdx > earliestIdx;
+  const canNext = curIdx < latestIdx;
+
+  const label = new Date(displayYear, displayMonth, 1).toLocaleDateString([], { month: 'long', year: 'numeric' });
+  const bar = `<div class="month-nav">
+    <button class="month-btn month-prev"${canPrev ? '' : ' disabled'}>◀</button>
+    <span class="month-label">${label}</span>
+    <button class="month-btn month-next"${canNext ? '' : ' disabled'}>▶</button>
+  </div>`;
+
+  el.innerHTML = bar + monthGridHtml(monthBurnGrid(monthEntries, '5h', displayYear, displayMonth));
+
+  const prev = el.querySelector('.month-prev');
+  const next = el.querySelector('.month-next');
+  if (prev) prev.addEventListener('click', () => stepMonth(-1));
+  if (next) next.addEventListener('click', () => stepMonth(1));
 }
 
 // ── Main render ────────────────────────────────────────────────────────────

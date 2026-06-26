@@ -86,13 +86,15 @@ function localDayKey(d) {
   return `${y}-${m}-${day}`;
 }
 
-function dailyHourlyBurn(snapshots, win, days = 30) {
+function daysInMonth(year, month) {
+  return new Date(year, month + 1, 0).getDate();
+}
+
+function monthBurnGrid(snapshots, win, year, month) {
   const pts = snapshots.filter(s => s && s[win] != null);
-  if (pts.length === 0) return [];
 
   const burnByDay = {};        // dayKey -> number[24]
   const hasDataKeys = new Set();
-
   for (const p of pts) {
     hasDataKeys.add(localDayKey(new Date(p.ts)));
   }
@@ -107,14 +109,10 @@ function dailyHourlyBurn(snapshots, win, days = 30) {
     }
   }
 
-  // Anchor on the local midnight of the latest snapshot's day (data-derived, not Date.now()).
-  const last = new Date(pts[pts.length - 1].ts);
-  const anchor = new Date(last.getFullYear(), last.getMonth(), last.getDate());
-
   const rows = [];
-  for (let offset = days - 1; offset >= 0; offset--) {
-    const d = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - offset);
-    const key = localDayKey(d);
+  const n = daysInMonth(year, month);
+  for (let day = 1; day <= n; day++) {
+    const key = localDayKey(new Date(year, month, day));
     rows.push({
       date: key,
       hours: burnByDay[key] || new Array(24).fill(0),
@@ -125,5 +123,5 @@ function dailyHourlyBurn(snapshots, win, days = 30) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, dailyHourlyBurn };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid };
 }
