@@ -2,6 +2,7 @@
 
 // ── State ──────────────────────────────────────────────────────────────────
 const VALID_ACCOUNTS = ['codex', 'claude-desktop', 'claude-vscode'];
+const ACCOUNT_LABELS = { codex: 'Codex', 'claude-desktop': 'Claude Desktop', 'claude-vscode': 'Claude Code' };
 const initialAccount = new URLSearchParams(window.location.search).get('account');
 let currentAccount = VALID_ACCOUNTS.includes(initialAccount) ? initialAccount : 'codex';
 let windowHours    = 24;
@@ -730,7 +731,78 @@ async function renderCost(container) {
 
 async function renderCostCompare(el) {
   if (!el) return;
-  // Implemented in Task 3.
+
+  const settings = await window.electronAPI.getSettings();
+  const planPrices = (settings && settings.planPrices) || {};
+  const cutoff = windowCutoffMs();
+
+  // Per-account subscription value over the selected window.
+  const rows = [];
+  for (const acct of VALID_ACCOUNTS) {
+    let snaps = await window.electronAPI.readUsageLog(acct, 0);
+    if (cutoff != null) snaps = snaps.filter(s => new Date(s.ts).getTime() >= cutoff);
+    const price = planPrices[acct];
+    rows.push({ acct, price, sv: subscriptionValue(snaps, price, '5h') });
+  }
+
+  // Best (lowest) value in each money column, among rows that have it.
+  const bestOf = (key) => {
+    const vals = rows.map(r => r.sv && r.sv[key]).filter(v => v != null && v > 0);
+    return vals.length ? Math.min(...vals) : null;
+  };
+  const bestHr = bestOf('perActiveHour');
+  const bestWin = bestOf('perWindow');
+  const cell = (v, best) => v == null ? '—'
+    : `<span class="${best != null && v === best ? 'best-value' : ''}">${fmtMoney(v)}</span>`;
+
+  const tbody = rows.map(r => {
+    const sv = r.sv;
+    return `<tr>
+      <td>${ACCOUNT_LABELS[r.acct]}</td>
+      <td><input class="price-input" data-account="${r.acct}" type="number" min="0" step="1"
+            value="${r.price != null ? r.price : ''}" placeholder="—"> /mo</td>
+      <td>${sv ? sv.activeHours.toFixed(1) + 'h' : '—'}</td>
+      <td>${sv ? sv.windows : '—'}</td>
+      <td>${sv ? cell(sv.perActiveHour, bestHr) : '—'}</td>
+      <td>${sv ? cell(sv.perWindow, bestWin) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  // Claude Code value ratio: API-equivalent $ ÷ attributed subscription cost.
+  let ratioLine = '';
+  const cc = rows.find(r => r.acct === 'claude-vscode');
+  if (cc && cc.sv && cc.sv.attributedCost > 0) {
+    const res = await window.electronAPI.readClaudeCodeUsage();
+    const toks = (res && res.entries || []).filter(e =>
+      cutoff == null || new Date(e.timestamp).getTime() >= cutoff);
+    const total = summarizeCost(toks).total;
+    if (total > 0) {
+      const ratio = total / cc.sv.attributedCost;
+      ratioLine = `<div class="cost-headline">≈ ${ratio.toFixed(1)}× the subscription's worth in API-equivalent value <span class="cost-sub">(Claude Code)</span></div>`;
+    }
+  }
+
+  el.innerHTML = `
+    <div class="eff-sub">Subscription value — ${windowLabel()}</div>
+    ${ratioLine}
+    <table class="cost-table">
+      <thead><tr><th>Account</th><th>Plan</th><th>Active</th><th>Windows</th><th>$/active-hr</th><th>$/window</th></tr></thead>
+      <tbody>${tbody}</tbody>
+    </table>
+    <div class="cost-sub">Subscription cost prorated over the data span (price × span ÷ 30 days). Figures are estimates and get noisier with little history.</div>
+  `;
+
+  el.querySelectorAll('.price-input').forEach(inp => {
+    inp.addEventListener('change', () => {
+      const prices = {};
+      el.querySelectorAll('.price-input').forEach(i => {
+        const v = parseFloat(i.value);
+        if (!isNaN(v) && v > 0) prices[i.dataset.account] = v;
+      });
+      window.electronAPI.saveSettings({ planPrices: prices });
+      renderCostCompare(el);
+    });
+  });
 }
 
 // ── Main render ────────────────────────────────────────────────────────────
