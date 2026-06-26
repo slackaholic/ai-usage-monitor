@@ -128,6 +128,10 @@ const FAMILY_PRICES = {
   Sonnet: { in: 3,  out: 15 },
   Haiku:  { in: 1,  out: 5  },
   Fable:  { in: 10, out: 50 },
+  'GPT-5.5':      { in: 5,    out: 30   },
+  'GPT-5.4':      { in: 2.5,  out: 15   },
+  'GPT-5.4-mini': { in: 0.75, out: 4.5  },
+  'GPT-5.4-nano': { in: 0.2,  out: 1.25 },
 };
 const CACHE_WRITE_MULT = 1.25;          // 5-minute ephemeral cache write
 const CACHE_READ_MULT = 0.1;            // cache read
@@ -139,7 +143,12 @@ function modelFamily(model) {
   if (m.includes('sonnet')) return 'Sonnet';
   if (m.includes('haiku')) return 'Haiku';
   if (m.includes('fable')) return 'Fable';
-  return null;
+  // OpenAI / Codex — check longer/cheaper slugs first so they win.
+  if (m.includes('nano')) return 'GPT-5.4-nano';
+  if (m.includes('mini')) return 'GPT-5.4-mini';
+  if (m.includes('gpt-5.5')) return 'GPT-5.5';
+  if (m.includes('gpt-5.4')) return 'GPT-5.4';
+  return null; // includes gpt-5.3-codex-spark and any unknown model
 }
 
 function entryCost(e) {
@@ -200,5 +209,5 @@ function subscriptionValue(snapshots, monthlyPrice, win) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily };
 }

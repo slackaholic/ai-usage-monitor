@@ -186,7 +186,7 @@ test('monthBurnGrid marks hasData for logged days including zero-burn days', () 
   assert.equal(monthBurnGrid(snaps, '5h', 2026, 4).filter(r => r.hasData).length, 0); // May: none
 });
 
-const { entryCost, summarizeCost, activeMs, subscriptionValue } = require('../metrics.js');
+const { entryCost, summarizeCost, activeMs, subscriptionValue, modelFamily } = require('../metrics.js');
 
 const approx = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -239,4 +239,24 @@ test('subscriptionValue prorates monthly price over the data span', () => {
   assert.equal(v.windows, 2);                    // long gap splits the cycle
   assert.equal(subscriptionValue(snaps, 0, '5h'), null);          // no price
   assert.equal(subscriptionValue([snaps[0]], 30, '5h'), null);    // < 2 points
+});
+
+test('modelFamily maps OpenAI slugs, longest-match first', () => {
+  assert.equal(modelFamily('gpt-5.5'), 'GPT-5.5');
+  assert.equal(modelFamily('gpt-5.4'), 'GPT-5.4');
+  assert.equal(modelFamily('gpt-5.4-mini'), 'GPT-5.4-mini');
+  assert.equal(modelFamily('gpt-5.4-nano'), 'GPT-5.4-nano');
+  assert.equal(modelFamily('gpt-5.3-codex-spark'), null); // unpriced
+  assert.equal(modelFamily('opus-4-8'), 'Opus');           // existing still works
+});
+
+test('entryCost prices a normalized OpenAI entry (cache read at 10%)', () => {
+  // non-cached input 1M @2.5, output 1M @15, cache_read 1M @ 2.5*0.1
+  const e = { model: 'gpt-5.4', input_tokens: 1_000_000, output_tokens: 1_000_000,
+              cache_creation: 0, cache_read: 1_000_000 };
+  approx(entryCost(e), 17.75); // 2.5 + 15 + 0.25
+});
+
+test('entryCost returns null for unpriced spark model', () => {
+  assert.equal(entryCost({ model: 'gpt-5.3-codex-spark', output_tokens: 1_000_000 }), null);
 });
