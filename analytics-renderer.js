@@ -50,6 +50,19 @@ function fmtRate(r) {
   return r > 0.05 ? r.toFixed(1) + '%/hr' : '0%/hr';
 }
 
+function fmtMoney(n) { return '$' + (n || 0).toFixed(2); }
+function fmtTokens(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return Math.round(n / 1_000) + 'K';
+  return String(n || 0);
+}
+function windowCutoffMs() { return windowHours > 0 ? Date.now() - windowHours * 3_600_000 : null; }
+function windowLabel() {
+  if (windowHours === 0) return 'all time';
+  if (windowHours % 24 === 0) return `last ${windowHours / 24}d`;
+  return `last ${windowHours}h`;
+}
+
 // ── Burn stats ─────────────────────────────────────────────────────────────
 function computeBurnStats(entries) {
   const pts = entries.filter(e => e['5h'] != null);
@@ -683,6 +696,43 @@ function renderMonthSection() {
   if (next) next.addEventListener('click', () => stepMonth(1));
 }
 
+// ── Cost (estimates) ───────────────────────────────────────────────────────
+async function renderCost(container) {
+  let partA;
+  if (currentAccount === 'claude-vscode') {
+    const res = await window.electronAPI.readClaudeCodeUsage();
+    if (res && res.error) {
+      partA = `<div class="cost-sub">Could not read Claude Code token data: ${res.error}</div>`;
+    } else {
+      const cutoff = windowCutoffMs();
+      const toks = (res.entries || []).filter(e =>
+        cutoff == null || new Date(e.timestamp).getTime() >= cutoff);
+      const c = summarizeCost(toks);
+      const rows = Object.keys(c.byModel).map(fam => {
+        const v = c.byModel[fam];
+        return `<tr><td>${fam}</td><td>${fmtTokens(v.tokens)}</td><td>${fmtMoney(v.cost)}</td></tr>`;
+      }).join('');
+      partA = `
+        <div class="cost-headline">≈ ${fmtMoney(c.total)} of API usage · ${windowLabel()}</div>
+        <div class="cost-sub">estimate — what this usage would cost on the pay-as-you-go API</div>
+        ${rows ? `<table class="cost-table"><thead><tr><th>Model</th><th>Tokens</th><th>Cost</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="empty">No token data in this window.</div>'}
+        ${c.cacheSavings > 0 ? `<div class="cost-sub">cache reads saved ≈ ${fmtMoney(c.cacheSavings)} vs uncached</div>` : ''}
+        ${c.unpriced ? `<div class="cost-sub">unpriced: ${c.unpriced} turns (unknown model)</div>` : ''}
+      `;
+    }
+  } else {
+    partA = `<div class="cost-sub">Token-level cost isn't available for this account — Codex and Claude Desktop expose only rate-limit %.</div>`;
+  }
+
+  container.innerHTML = `<div class="section-head">Cost (estimates)</div>${partA}<div id="cost-compare"></div>`;
+  await renderCostCompare(container.querySelector('#cost-compare'));
+}
+
+async function renderCostCompare(el) {
+  if (!el) return;
+  // Implemented in Task 3.
+}
+
 // ── Main render ────────────────────────────────────────────────────────────
 async function renderAll() {
   const body = document.getElementById('body');
@@ -716,12 +766,14 @@ async function renderAll() {
   // Build sections
   const statsEl = document.createElement('div');
   const effEl   = document.createElement('div');
+  const costEl  = document.createElement('div');
   const chartEl = document.createElement('div');
   const tableEl = document.createElement('div');
 
   body.innerHTML = '';
   body.appendChild(statsEl);
   body.appendChild(effEl);
+  body.appendChild(costEl);
   body.appendChild(chartEl);
   body.appendChild(tableEl);
 
@@ -730,6 +782,7 @@ async function renderAll() {
 
   renderStats(entries, statsEl);
   renderEfficiency(allEntries, effEl);
+  await renderCost(costEl);
   renderChart(entries, chartEl);
   renderTable(entries, tableEl);
 }
