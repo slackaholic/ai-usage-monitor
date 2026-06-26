@@ -1,0 +1,19 @@
+name: tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # The metrics suite uses only Node's built-in test runner and standard
+      # library — no dependencies to install. (usage-log.jsonl is git-ignored,
+      # so the real-log smoke test self-skips in CI.)
+      - run: node --test
