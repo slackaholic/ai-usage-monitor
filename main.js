@@ -2,6 +2,7 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell } = require(
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { normalizeCodexTokenUsage } = require('./metrics.js');
 
 let mainWindow;
 let analyticsWindow = null;
@@ -148,6 +149,59 @@ ipcMain.handle('read-claude-code-usage', async () => {
             });
           }
         } catch {}
+      }
+    } catch {}
+  }
+
+  return { entries };
+});
+
+// Codex writes exact per-turn token usage to local session logs. Each turn emits
+// an event_msg with payload.type === 'token_count' (info.last_token_usage = the
+// per-turn delta); the active model comes from the preceding turn_context event.
+ipcMain.handle('read-codex-usage', async () => {
+  const sessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+
+  const jsonlFiles = [];
+  function scanDir(dir) {
+    try {
+      const dirents = fs.readdirSync(dir, { withFileTypes: true });
+      for (const d of dirents) {
+        const full = path.join(dir, d.name);
+        if (d.isDirectory()) scanDir(full);
+        else if (d.name.endsWith('.jsonl')) jsonlFiles.push(full);
+      }
+    } catch {}
+  }
+
+  try {
+    if (!fs.existsSync(sessionsDir)) return { entries: [] };
+    scanDir(sessionsDir);
+  } catch (e) {
+    return { error: e.message };
+  }
+
+  const entries = [];
+  for (const file of jsonlFiles) {
+    let currentModel = 'unknown';
+    try {
+      const content = fs.readFileSync(file, 'utf8');
+      for (const line of content.split('\n')) {
+        if (!line.trim()) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        if (obj.type === 'turn_context' && obj.payload && obj.payload.model) {
+          currentModel = obj.payload.model;
+        } else if (
+          obj.type === 'event_msg' &&
+          obj.payload && obj.payload.type === 'token_count' &&
+          obj.payload.info && obj.payload.info.last_token_usage &&
+          obj.timestamp
+        ) {
+          const e = normalizeCodexTokenUsage(
+            obj.payload.info.last_token_usage, currentModel, obj.timestamp);
+          if (e) entries.push(e);
+        }
       }
     } catch {}
   }

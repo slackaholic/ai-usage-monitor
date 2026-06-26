@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Claude Code local data
   readClaudeCodeUsage: () => ipcRenderer.invoke('read-claude-code-usage'),
+  readCodexUsage: () => ipcRenderer.invoke('read-codex-usage'),
 
   // Codex page scraper
   fetchCodexUsage: () => ipcRenderer.invoke('fetch-codex-usage'),
