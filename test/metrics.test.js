@@ -260,3 +260,23 @@ test('entryCost prices a normalized OpenAI entry (cache read at 10%)', () => {
 test('entryCost returns null for unpriced spark model', () => {
   assert.equal(entryCost({ model: 'gpt-5.3-codex-spark', output_tokens: 1_000_000 }), null);
 });
+
+const { costByDay } = require('../metrics.js');
+
+test('costByDay buckets cost by local calendar day, skipping unpriced', () => {
+  const entries = [
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-01T10:00:00' }, // 15
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-01T20:00:00' }, // 15
+    { model: 'gpt-5.4', output_tokens: 1_000_000, timestamp: '2026-06-02T09:00:00' }, // 15
+    { model: 'spark',   output_tokens: 9_000_000, timestamp: '2026-06-02T09:30:00' }, // unpriced
+  ];
+  const by = costByDay(entries);
+  assert.ok(Math.abs(by['2026-06-01'] - 30) < 1e-9);
+  assert.ok(Math.abs(by['2026-06-02'] - 15) < 1e-9);
+  assert.equal(Object.keys(by).length, 2);
+});
+
+test('costByDay returns {} for empty input', () => {
+  assert.deepEqual(costByDay([]), {});
+  assert.deepEqual(costByDay(undefined), {});
+});
