@@ -72,7 +72,7 @@ ipcMain.on('open-settings', () => {
   if (settingsWindow && !settingsWindow.isDestroyed()) { settingsWindow.focus(); return; }
   settingsWindow = new BrowserWindow({
     width: 400,
-    height: 580,
+    height: 700,
     minWidth: 340,
     minHeight: 320,
     title: 'AI Usage Monitor — Settings',
@@ -84,6 +84,14 @@ ipcMain.on('open-settings', () => {
     },
   });
   settingsWindow.loadFile('settings.html');
+  // Size the window to fit its content so everything is visible without scrolling.
+  settingsWindow.webContents.once('did-finish-load', async () => {
+    try {
+      const h = await settingsWindow.webContents.executeJavaScript('document.body.scrollHeight');
+      const [w] = settingsWindow.getContentSize();
+      settingsWindow.setContentSize(w, Math.min(Math.max(Math.ceil(h) + 4, 320), 1000));
+    } catch {}
+  });
   settingsWindow.on('closed', () => { settingsWindow = null; });
 });
 
