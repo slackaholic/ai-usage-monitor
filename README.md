@@ -45,7 +45,7 @@ npm install
 npm start
 ```
 
-On Windows you can also double-click **`launch.bat`** (opens a console) or **`launch.vbs`** (runs silently in the background). The `launch.vbs` path is hard-coded — edit it to match where you cloned the repo.
+On Windows you can also double-click **`launch.bat`** (opens a console) or **`launch.vbs`** (runs silently in the background). Both resolve their own folder, so they work wherever you put the repo.
 
 ### Connecting your accounts
 

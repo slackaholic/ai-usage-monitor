@@ -1,3 +1,4 @@
 Set objShell = CreateObject("WScript.Shell")
-objShell.CurrentDirectory = "C:\Users\Rommel Payba\.claude\sessions\ai-usage-monitor"
+Set objFSO = CreateObject("Scripting.FileSystemObject")
+objShell.CurrentDirectory = objFSO.GetParentFolderName(WScript.ScriptFullName)
 objShell.Run "npm start", 0, False
