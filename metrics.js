@@ -79,6 +79,51 @@ function hourlyBurn(snapshots, win) {
   return hours;
 }
 
+function localDayKey(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function dailyHourlyBurn(snapshots, win, days = 30) {
+  const pts = snapshots.filter(s => s && s[win] != null);
+  if (pts.length === 0) return [];
+
+  const burnByDay = {};        // dayKey -> number[24]
+  const hasDataKeys = new Set();
+
+  for (const p of pts) {
+    hasDataKeys.add(localDayKey(new Date(p.ts)));
+  }
+  for (let i = 1; i < pts.length; i++) {
+    const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
+    const drop = pts[i - 1][win] - pts[i][win];
+    if (drop > 0 && dt < ACTIVE_GAP_MAX) {
+      const prev = new Date(pts[i - 1].ts);
+      const key = localDayKey(prev);
+      if (!burnByDay[key]) burnByDay[key] = new Array(24).fill(0);
+      burnByDay[key][prev.getHours()] += drop;
+    }
+  }
+
+  // Anchor on the local midnight of the latest snapshot's day (data-derived, not Date.now()).
+  const last = new Date(pts[pts.length - 1].ts);
+  const anchor = new Date(last.getFullYear(), last.getMonth(), last.getDate());
+
+  const rows = [];
+  for (let offset = days - 1; offset >= 0; offset--) {
+    const d = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - offset);
+    const key = localDayKey(d);
+    rows.push({
+      date: key,
+      hours: burnByDay[key] || new Array(24).fill(0),
+      hasData: hasDataKeys.has(key),
+    });
+  }
+  return rows;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, dailyHourlyBurn };
 }

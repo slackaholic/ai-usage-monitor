@@ -152,3 +152,51 @@ test('real log: full pipeline yields sane stats and never throws', () => {
     }
   }
 });
+
+const { dailyHourlyBurn } = require('../metrics.js');
+
+test('dailyHourlyBurn buckets active drops per day, excludes idle gaps and resets', () => {
+  const snaps = [
+    { ts: '2026-06-10T12:00:00Z', '5h': 100 },
+    { ts: '2026-06-10T12:05:00Z', '5h': 90 },  // active drop 10 (day A)
+    { ts: '2026-06-12T12:00:00Z', '5h': 80 },  // 2-day gap → idle, excluded
+    { ts: '2026-06-12T12:05:00Z', '5h': 70 },  // active drop 10 (day B)
+    { ts: '2026-06-12T12:10:00Z', '5h': 100 }, // reset (negative) → excluded
+  ];
+  const grid = dailyHourlyBurn(snaps, '5h', 30);
+  assert.equal(grid.length, 30);
+  // TZ-independent: total burn across all rows/hours is the sum of the two active drops
+  const total = grid.reduce((a, r) => a + r.hours.reduce((x, y) => x + y, 0), 0);
+  assert.equal(total, 20);
+  // exactly two distinct days carry burn
+  const daysWithBurn = grid.filter(r => r.hours.some(v => v > 0)).length;
+  assert.equal(daysWithBurn, 2);
+});
+
+test('dailyHourlyBurn marks hasData for logged days including zero-burn days', () => {
+  const snaps = [
+    { ts: '2026-06-10T12:00:00Z', '5h': 50 },
+    { ts: '2026-06-10T12:05:00Z', '5h': 50 }, // same day, no drop
+  ];
+  const grid = dailyHourlyBurn(snaps, '5h', 30);
+  assert.equal(grid.length, 30);
+  assert.equal(grid.filter(r => r.hasData).length, 1);
+  assert.equal(grid.filter(r => !r.hasData).length, 29);
+  const logged = grid.find(r => r.hasData);
+  assert.equal(logged.hours.reduce((a, b) => a + b, 0), 0); // logged but zero burn
+});
+
+test('dailyHourlyBurn honors the days argument and chronological order', () => {
+  const snaps = [
+    { ts: '2026-06-10T12:00:00Z', '5h': 100 },
+    { ts: '2026-06-10T12:05:00Z', '5h': 90 },
+  ];
+  const grid = dailyHourlyBurn(snaps, '5h', 7);
+  assert.equal(grid.length, 7);
+  // oldest first: last row is the latest (anchor) day
+  assert.equal(grid[grid.length - 1].hasData, true);
+});
+
+test('dailyHourlyBurn returns [] for empty input', () => {
+  assert.deepEqual(dailyHourlyBurn([], '5h'), []);
+});
