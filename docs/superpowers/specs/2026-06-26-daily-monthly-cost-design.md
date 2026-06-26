@@ -1,129 +1,205 @@
-# Daily / Monthly API-Equivalent Cost — Design
+# Per-Day / Per-Month API-Equivalent Cost (Claude Code + Codex) — Design
 
 **Date:** 2026-06-26
 **Status:** Approved (design), pending implementation plan
-**Component:** AI Usage Monitor — `metrics.js`, analytics window (`analytics-renderer.js`)
+**Component:** AI Usage Monitor — `metrics.js`, `main.js` (IPC), `preload.js`,
+analytics window (`analytics-renderer.js`)
 
 ## Goal
 
-Extend the analytics **Cost** section to track API-equivalent cost over time, not
-just as a single window total. Show:
+Extend the analytics **Cost** section to track API-equivalent cost over time —
+per day and per month — and to do so for **both** token-logged accounts:
+
+- **Claude Code** (`claude-vscode`) — already has exact tokens via
+  `readClaudeCodeUsage`.
+- **Codex** (`codex`) — turns out to have **exact** per-turn tokens too, in its
+  local session logs (`~/.codex/sessions/**/*.jsonl`). So Codex gets the same
+  exact treatment, not a turn-count estimate.
+
+For each, show:
 
 - **Headline rates** — average per day and a projected per-month run-rate
   (e.g. `≈ £12/day · ~£360/mo at this pace`).
-- **Per-day breakdown** — a small bar list of per-calendar-day cost for the last
-  30 days.
-- **Per-month totals** — a compact table of the last 3 calendar months, with the
-  current month marked "(so far)".
+- **Per-day breakdown** — a small bar list of per-calendar-day cost, last 30 days.
+- **Per-month totals** — a compact table of the last 3 calendar months, current
+  month marked "(so far)".
 
-This is **Claude Code only** — it is the sole account with token-level data
-(`readClaudeCodeUsage`). Codex / Claude Desktop keep their existing "not
-available" note.
+The figure is **API-equivalent** cost — what the usage *would* cost on
+pay-as-you-go. For Codex, actual money spent is £0 (plan-included; the analytics
+page shows 0 credits used), so "API-equivalent" is the honest framing, identical
+to how Claude Code's cost is already labeled.
 
-## Context (existing)
+## Background — why local logs, not web scraping
 
-- `metrics.js` is a pure, currency-agnostic module (browser global + CommonJS
-  footer; no `Date.now()`/argless `new Date()`; no new deps). It already exposes
-  `entryCost(e)` → USD cost or `null` (unknown model family) and
-  `summarizeCost(entries)` → `{ total, byModel, unpriced, cacheSavings }`.
-- Token data comes from `readClaudeCodeUsage` →
-  `{ entries: [{ timestamp (ISO string), model, input_tokens, output_tokens,
-  cache_creation, cache_read }], error? }`.
-- `analytics-renderer.js` renders the Cost section: **Part A** (Claude-Code
-  per-window total + per-model rows + cache savings) and **Part B**
-  (`renderCostCompare`, subscription-value comparison). Currency conversion is at
-  display time only: `usdRate` (USD→display, default `0.79`) and `curSymbol`
-  (default `£`), via `fmtMoneyUsd(usd)` = `curSymbol + (usd*usdRate).toFixed(2)`.
-- The Cost section respects the time-window dropdown via `windowCutoffMs()`.
-- A peak-bar visual (`.peak-bars` / `.peak-bar`) already exists in the analytics
-  window (from the efficiency section) and is reused here.
+The Codex analytics web page (`chatgpt.com/codex/cloud/settings/analytics`)
+exposes only usage-limit %, a credits balance (0), and per-day **turn counts** by
+model — no dollars, no tokens. Estimating cost from turn counts × an assumed
+$/turn would be guesswork.
 
-## Metrics (pure additions to `metrics.js`)
+Instead, Codex CLI writes exact token usage locally (the approach the `ccusage`
+tool uses). Each turn emits an `event_msg` with `payload.type === "token_count"`:
 
-Two small pure functions that bucket per-turn `entryCost` (USD) by local date.
-Unpriced entries (`entryCost` → `null`) are skipped, consistent with
-`summarizeCost`.
+```json
+{"timestamp":"2026-06-25T12:46:39.043Z","type":"event_msg","payload":{
+  "type":"token_count","info":{
+    "total_token_usage":{"input_tokens":905530,"cached_input_tokens":857088,
+      "output_tokens":6065,"reasoning_output_tokens":1935,"total_tokens":911595},
+    "last_token_usage":{"input_tokens":76414,"cached_input_tokens":75648,
+      "output_tokens":704,"reasoning_output_tokens":458,"total_tokens":77118}}}}
+```
 
-- `costByDay(entries)` → `{ 'YYYY-MM-DD': usdCost }` keyed by **local** calendar
-  day. Only days with priced cost appear.
-- `costByMonth(entries)` → `{ 'YYYY-MM': usdCost }` keyed by **local** calendar
-  month. Only months with priced cost appear.
+- `last_token_usage` is the **per-turn delta** (summing all deltas reconstructs
+  the session total — no cumulative double-counting).
+- `input_tokens` **includes** `cached_input_tokens`; `output_tokens` **includes**
+  `reasoning_output_tokens` (verified: `input + output = total`).
+- The active model is carried by `turn_context` events (`"model":"gpt-5.5"`); a
+  session may switch models across turns.
 
-Both take **no reference date**, so they stay pure. The renderer supplies
-"today" / "last 30 days" / "this month" using `Date.now()` — this lives in the
-display layer, consistent with the existing `windowCutoffMs()`.
+## Cost model — OpenAI rates (USD per 1M tokens)
 
-Local-day/month keys are derived without `new Date(string)` ambiguity by parsing
-the ISO timestamp into a `Date` and reading local `getFullYear/getMonth/getDate`
-(zero-padded). A shared private helper formats the keys.
+From OpenAI's June 2026 pricing:
 
-### Unit tests (TDD, `node --test`)
+| Model | input | output | cached input |
+|---|---|---|---|
+| gpt-5.5 | 5.00 | 30.00 | 0.50 |
+| gpt-5.4 | 2.50 | 15.00 | 0.25 |
+| gpt-5.4-mini | 0.75 | 4.50 | 0.075 |
+| gpt-5.4-nano | 0.20 | 1.25 | 0.02 |
 
-- `costByDay`: buckets multiple entries on the same local day; separates
-  different days; skips unpriced (unknown-family) entries; empty input → `{}`.
-- `costByMonth`: aggregates days within a month; separates months; skips
-  unpriced; empty input → `{}`.
-- A multi-entry fixture where the sum of `costByDay` values for a month equals
-  the corresponding `costByMonth` value (cross-consistency).
+The cached-input rate is exactly 10% of input for every model — matching the
+existing `CACHE_READ_MULT = 0.1`. OpenAI does not separately bill cache writes,
+so `cache_creation` is 0 for Codex entries.
+
+`gpt-5.3-codex-spark` has no published rate → it is **unpriced** (`modelFamily`
+returns `null`), so its tokens appear in the existing "unpriced tokens" note
+rather than being guessed. (The user's account shows spark at ~100% remaining /
+negligible use.)
+
+## Metrics (`metrics.js`)
+
+Stays pure, currency-agnostic, no `Date.now()`. Changes:
+
+1. **Extend `FAMILY_PRICES`** with OpenAI families:
+   `'GPT-5.5': {in:5,out:30}`, `'GPT-5.4': {in:2.5,out:15}`,
+   `'GPT-5.4-mini': {in:0.75,out:4.5}`, `'GPT-5.4-nano': {in:0.2,out:1.25}`.
+2. **Extend `modelFamily(model)`** to map the gpt model slugs. Order matters —
+   check `nano`, then `mini`, then `5.4`, then `5.5` so the longer slugs win;
+   `spark`/unknown → `null`.
+3. `entryCost` / `summarizeCost` are **unchanged** — they already price
+   `input_tokens` + `output_tokens` + `cache_read × in × CACHE_READ_MULT`, which
+   is exactly right once Codex entries are normalized (below).
+4. **New pure functions** (TDD):
+   - `costByDay(entries)` → `{ 'YYYY-MM-DD': usdCost }`, keyed by **local** day,
+     summing `entryCost`; unpriced entries skipped (consistent with
+     `summarizeCost`).
+   - `costByMonth(entries)` → `{ 'YYYY-MM': usdCost }`, keyed by **local** month.
+   Both take **no reference date** (stay pure); the renderer supplies "today" /
+   "last 30 days" / "this month" via `Date.now()`. Local keys are derived by
+   reading `getFullYear/getMonth/getDate` (zero-padded) off a parsed `Date`,
+   via a shared private helper.
+
+### Unit tests (`node --test`)
+
+- `costByDay`: same-day entries combine; different days separate; unpriced
+  skipped; empty → `{}`.
+- `costByMonth`: days within a month aggregate; months separate; unpriced
+  skipped; empty → `{}`.
+- Cross-consistency: sum of `costByDay` for a month equals that month's
+  `costByMonth` value.
+- `entryCost` / `summarizeCost` price a normalized Codex (`GPT-5.5`) entry
+  correctly (input + cached-at-10% + output), and treat `spark`/unknown as
+  unpriced.
+
+## New IPC — `readCodexUsage` (`main.js` + `preload.js`)
+
+Mirrors `read-claude-code-usage`. Returns `{ entries: [...] }` or `{ error }`.
+
+- Scan `~/.codex/sessions/**/*.jsonl` recursively (same scanner pattern as the
+  Claude Code handler). The tree is date-partitioned (`YYYY/MM/DD/`), so an
+  optimization is to skip day-folders outside the needed range; for a first cut,
+  scan all and let the renderer filter by timestamp.
+- Per file, walk lines; maintain `currentModel` from the latest `turn_context`
+  (fallback `session_meta` model, else `'unknown'`).
+- For each `payload.type === 'token_count'` with `info.last_token_usage` (`u`)
+  and a line `timestamp`, push a **normalized** entry in the existing shape:
+  ```js
+  {
+    timestamp,                                   // ISO string
+    model: currentModel,
+    input_tokens: Math.max(0, u.input_tokens - u.cached_input_tokens),
+    output_tokens: u.output_tokens,              // already includes reasoning
+    cache_creation: 0,                           // OpenAI: no separate cache-write bill
+    cache_read: u.cached_input_tokens || 0,
+  }
+  ```
+  This shape is exactly what `entryCost` / `costByDay` / `costByMonth` consume —
+  no provider branching in the cost math.
+- `preload.js` exposes `readCodexUsage: () => ipcRenderer.invoke('read-codex-usage')`.
+- Errors (missing dir, parse failures) are swallowed per-file; a missing
+  sessions dir returns `{ entries: [] }`.
 
 ## Analytics rendering (`analytics-renderer.js`)
 
-A new **"Cost over time"** block appended inside Part A (after the cache-savings
-line), rendered **only** for `currentAccount === 'claude-vscode'`.
+The Cost section becomes **provider-agnostic**. Both `codex` and `claude-vscode`
+load token entries (via `readCodexUsage` / `readClaudeCodeUsage`), then share the
+same rendering: total API-equivalent cost (window-scoped), per-model rows, cache
+savings, and the new **"Cost over time"** block. Other accounts keep the existing
+"not available" note. The Codex "not available" note is **removed**.
 
-Unlike Part A's window-scoped total, this block is computed over the **full token
-log, independent of the time-window dropdown** — per-day/month tracking is
-meaningless at the default "last 24h". Each figure is explicitly labeled
-("last 30 days", "this month") so it does not read as conflicting with the
-window total above it.
+A small loader map selects the IPC by `currentAccount`; everything downstream
+(`summarizeCost`, formatting, the over-time block) is identical.
 
-Reuses the already-loaded `readClaudeCodeUsage` entries (no second IPC call):
-Part A already fetches them; pass the full (unfiltered) entries into the new
-block.
+### "Cost over time" block
 
-- **Headline rates:**
-  - `avgPerDay` = (sum of `costByDay` over the last 30 calendar days, including
-    days with no usage as 0) ÷ 30.
-  - `projectedPerMonth` = `avgPerDay × 30`.
-  - Rendered as `≈ {fmtMoneyUsd(avgPerDay)}/day · ~{fmtMoneyUsd(projected)}/mo
-    at this pace`, with an "estimate" qualifier.
-- **Per-day bars:** the last 30 calendar days in chronological order, one
-  `.peak-bar` each; height ∝ that day's USD cost; label/tooltip shows the date
-  and `fmtMoneyUsd(dayCost)`; the tallest (max-cost) day is labeled. Days with no
-  usage render as empty/zero bars so the 30-day axis is continuous.
-- **Per-month totals:** a compact table of the last 3 calendar months
-  (`Month · {fmtMoneyUsd(total)}`), newest last; the current month row suffixed
-  "(so far)". Months with no usage show `0`.
+Appended after the cache-savings line, for any token-logged account. Computed
+over the **full token log, independent of the time-window dropdown** (per-day/
+month tracking is meaningless at the default "last 24h"); each figure is labeled
+("last 30 days" / "this month") so it does not read as conflicting with the
+window-scoped total above it. Reuses the entries already fetched for Part A (no
+second IPC call) — pass the full, unfiltered entries in.
 
-All money is display currency via `fmtMoneyUsd` (values are USD). No new currency
-state — reuse `curSymbol` / `usdRate` already loaded in `renderAll`.
+- **Headline rates:** `avgPerDay` = (sum of `costByDay` over the last 30 calendar
+  days, missing days counted as 0) ÷ 30; `projectedPerMonth` = `avgPerDay × 30`.
+  Rendered `≈ {fmtMoneyUsd(avgPerDay)}/day · ~{fmtMoneyUsd(projected)}/mo at this
+  pace`, with an "estimate" qualifier.
+- **Per-day bars:** last 30 calendar days, chronological, one `.peak-bar` each
+  (reusing the existing efficiency-section bar visual); height ∝ that day's USD
+  cost; tooltip = date + `fmtMoneyUsd(dayCost)`; tallest day labeled; no-usage
+  days render as empty bars so the axis stays continuous.
+- **Per-month totals:** compact table of the last 3 calendar months
+  (`Month · {fmtMoneyUsd(total)}`), newest last; current month suffixed
+  "(so far)"; no-usage months show `0`.
+
+All money is display currency via the existing `fmtMoneyUsd(usd)` =
+`curSymbol + (usd*usdRate).toFixed(2)`. No new currency state.
 
 ## Cross-cutting
 
-- Live updates: the block re-renders through the existing
-  `onSettingsChanged(() => renderAll())` path (currency/rate changes apply
-  immediately). No new IPC or settings key.
-- `metrics.js` stays USD/pure — no currency, no `Date.now()`. All "now"-relative
-  logic and conversion are in the renderer.
-- HTML is escaped via the existing `esc()` helper; date keys are formatted, not
-  interpolated raw.
+- Live updates flow through the existing `onSettingsChanged(() => renderAll())`
+  path; no new IPC or settings key.
+- `metrics.js` stays USD/pure; conversion and all "now"-relative logic live in
+  the renderer (consistent with `windowCutoffMs`).
+- HTML escaped via the existing `esc()`; date keys formatted, not interpolated
+  raw.
 
 ## Testing
 
-- New `node --test` cases for `costByDay` / `costByMonth` (above); full existing
-  suite still passes.
+- New `node --test` cases above; full existing suite still passes.
 - `node --check` on changed JS.
-- Manual: open analytics on the Claude Code tab → Cost section shows headline
-  rates, a 30-day per-day bar list, and a 3-month totals table, all in `£`;
-  changing the currency rate in Settings updates them live; Codex / Claude
-  Desktop tabs are unaffected.
+- Manual: Claude Code **and** Codex tabs both show total cost, per-model rows,
+  and the over-time block (headline rates, 30-day bars, 3-month table) in `£`;
+  Codex figures are non-zero and sane vs. usage; changing the currency rate in
+  Settings updates both live; the "not available" note is gone for Codex but
+  remains for Claude Desktop.
 
 ## Out of scope
 
-- Per-day/month cost for Codex / Claude Desktop (no token data).
-- Tying this block to the time-window dropdown (it intentionally uses full
-  history).
-- Month-by-month navigation for the per-day bars (fixed last-30-days view);
-  the per-month table provides the longer-range view.
-- Forecasting beyond a flat 30-day run-rate (no trend/seasonality modeling).
-- Any change to the cost math in `entryCost` / `summarizeCost`.
+- Cost for Claude Desktop (no local token log).
+- Scraping the Codex web analytics page for cost (local logs are exact).
+- Pricing `gpt-5.3-codex-spark` (unpriced until a public rate exists).
+- Tying the over-time block to the time-window dropdown (intentionally full
+  history); month-by-month navigation for the per-day bars (fixed last-30-days).
+- Forecasting beyond a flat 30-day run-rate.
+- Reading `~/.codex/archived_sessions` (only the live `sessions/` tree; may be
+  added later if older months are needed).
+- Any change to `entryCost` / `summarizeCost` math.
