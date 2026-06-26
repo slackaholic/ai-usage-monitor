@@ -343,3 +343,27 @@ test('normalizeCodexTokenUsage handles missing fields and falsy input', () => {
   assert.equal(e.cache_read, 0);
   assert.equal(e.model, 'unknown');
 });
+
+const { tokenMix } = require('../metrics.js');
+
+test('tokenMix sums each field and computes total', () => {
+  const entries = [
+    { input_tokens: 10, output_tokens: 20, cache_creation: 5, cache_read: 100 },
+    { input_tokens: 1, output_tokens: 2, cache_creation: 0, cache_read: 50 },
+  ];
+  const m = tokenMix(entries);
+  assert.equal(m.input, 11);
+  assert.equal(m.output, 22);
+  assert.equal(m.cacheWrite, 5);
+  assert.equal(m.cacheRead, 150);
+  assert.equal(m.total, 11 + 22 + 5 + 150);
+});
+
+test('tokenMix handles empty/undefined input and missing fields', () => {
+  const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 };
+  assert.deepEqual(tokenMix([]), zero);
+  assert.deepEqual(tokenMix(undefined), zero);
+  const m = tokenMix([{ input_tokens: 7 }]);
+  assert.equal(m.input, 7);
+  assert.equal(m.total, 7);
+});
