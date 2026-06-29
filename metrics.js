@@ -11,7 +11,10 @@ const WINDOW_MS  = { '5h': 5 * 3_600_000, wk: 7 * 86_400_000 };
 function isBoundary(prev, cur, win) {
   const jumped   = (cur[win] - prev[win]) > RESET_JUMP_MIN;
   const rk       = RESET_KEY[win];
-  const advanced = prev[rk] > 0 && cur[rk] > 0 && (cur[rk] - prev[rk]) > RESET_ADVANCE_MIN;
+  const resetAdvanced = prev[rk] > 0 && cur[rk] > 0 && (cur[rk] - prev[rk]) > RESET_ADVANCE_MIN;
+  const recoveredOrHeld = cur[win] >= prev[win];
+  const stillFull = prev[win] === 100 && cur[win] === 100;
+  const advanced = resetAdvanced && recoveredOrHeld && !stillFull;
   const gapped   = (new Date(cur.ts) - new Date(prev.ts)) > WINDOW_MS[win];
   return jumped || advanced || gapped;
 }
@@ -64,6 +67,18 @@ function summarize(stats) {
     totalBlockedMs: blocked.reduce((a, s) => a + s.blockedMs, 0),
     peaks: stats.map(s => ({ ts: s.startTs, peakPct: s.peakPct })),
   };
+}
+
+function countDepletionEvents(snapshots, win) {
+  const pts = snapshots.filter(s => s && s[win] != null);
+  let count = 0;
+  let wasDepleted = false;
+  for (const p of pts) {
+    const isDepleted = !!(p.depleted && p.depleted.includes(win));
+    if (isDepleted && !wasDepleted) count++;
+    wasDepleted = isDepleted;
+  }
+  return count;
 }
 
 function hourlyBurn(snapshots, win) {
@@ -285,5 +300,5 @@ function normalizeCodexTokenUsage(u, model, timestamp) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
 }

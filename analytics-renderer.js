@@ -269,8 +269,8 @@ function renderStats(entries, container) {
 
   const last   = entries[entries.length - 1];
   const burn   = computeBurnStats(entries);
-  const dep5h  = entries.filter(e => e.depleted?.includes('5h')).length;
-  const depWk  = entries.filter(e => e.depleted?.includes('wk')).length;
+  const dep5h  = countDepletionEvents(entries, '5h');
+  const depWk  = countDepletionEvents(entries, 'wk');
   // Count distinct sessions from logged sessionStart field (falls back to computed jump count)
   const loggedSessions = new Set(entries.map(e => e.sessionStart).filter(Boolean)).size;
   const sessionCount   = loggedSessions || burn.sessions;

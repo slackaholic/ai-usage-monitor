@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { segmentCycles } = require('../metrics.js');
+const { segmentCycles, countDepletionEvents } = require('../metrics.js');
 
 test('segmentCycles splits on a large upward jump (reset by recovery)', () => {
   const snaps = [
@@ -25,6 +25,21 @@ test('segmentCycles splits a low-usage cycle via reset-timestamp advance', () =>
   const cycles = segmentCycles(snaps, '5h');
   assert.equal(cycles.length, 2);
   assert.equal(cycles[0].length, 2);
+});
+
+test('segmentCycles ignores rolling reset timestamps while the window remains full', () => {
+  const snaps = [
+    { ts: '2026-06-29T12:15:35Z', '5h': 0, reset5hTs: Date.parse('2026-06-29T12:17:08Z') },
+    { ts: '2026-06-29T12:17:35Z', '5h': 100, reset5hTs: Date.parse('2026-06-29T17:17:35Z') },
+    { ts: '2026-06-29T12:19:36Z', '5h': 100, reset5hTs: Date.parse('2026-06-29T17:19:36Z') },
+    { ts: '2026-06-29T12:21:36Z', '5h': 100, reset5hTs: Date.parse('2026-06-29T17:21:36Z') },
+    { ts: '2026-06-29T12:23:35Z', '5h': 100, reset5hTs: Date.parse('2026-06-29T17:23:35Z') },
+    { ts: '2026-06-29T12:27:36Z', '5h': 99, reset5hTs: Date.parse('2026-06-29T17:26:17Z') },
+  ];
+  const cycles = segmentCycles(snaps, '5h');
+  assert.equal(cycles.length, 2);
+  assert.equal(cycles[0].length, 1);
+  assert.equal(cycles[1].length, 5);
 });
 
 test('segmentCycles ignores snapshots missing the window field', () => {
@@ -81,6 +96,17 @@ test('cycleStats: cycle starting at 0 is NOT blocked (left-censored)', () => {
   assert.equal(s.blockedMs, 0);
   assert.equal(s.peakPct, 100);
   assert.equal(s.headroomPct, 0);
+});
+
+test('countDepletionEvents counts transitions into depletion, not every depleted poll', () => {
+  const snaps = [
+    { ts: '2026-06-25T00:00:00Z', '5h': 20 },
+    { ts: '2026-06-25T00:05:00Z', '5h': 0, depleted: ['5h'] },
+    { ts: '2026-06-25T00:10:00Z', '5h': 0, depleted: ['5h'] },
+    { ts: '2026-06-25T05:00:00Z', '5h': 100 },
+    { ts: '2026-06-25T05:30:00Z', '5h': 0, depleted: ['5h'] },
+  ];
+  assert.equal(countDepletionEvents(snaps, '5h'), 2);
 });
 
 test('segmentCycles splits on a gap longer than the window length', () => {
