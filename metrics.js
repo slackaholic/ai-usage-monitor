@@ -81,6 +81,86 @@ function countDepletionEvents(snapshots, win) {
   return count;
 }
 
+function latestResetTs(pts, key) {
+  for (let i = pts.length - 1; i >= 0; i--) {
+    if (pts[i][key] > 0) return pts[i][key];
+  }
+  return null;
+}
+
+function weeklyRunway(snapshots, currentPlanMultiplier) {
+  const pts = snapshots.filter(s => s && s.wk != null);
+  const multiplier = currentPlanMultiplier > 0 ? currentPlanMultiplier : 1;
+  const weeklyRemainingPct = pts.length ? pts[pts.length - 1].wk : null;
+  const weeklyResetTs = pts.length ? latestResetTs(pts, 'reset7dTs') : null;
+
+  const emptyProjection = (weeklyBurnRatePctPerHour, confidence) => ({
+    currentPlanMultiplier: multiplier,
+    weeklyRemainingPct,
+    weeklyResetTs,
+    weeklyBurnRatePctPerHour,
+    projectedDepleteTs: null,
+    gapMs: null,
+    projectedHeadroomAtResetPct: null,
+    requiredPlanMultiplier: null,
+    confidence,
+  });
+
+  if (pts.length < 2) return emptyProjection(0, 'none');
+
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  let activeDrop = 0;
+  let activeMs = 0;
+  let activeDrops = 0;
+
+  for (let i = 1; i < pts.length; i++) {
+    const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
+    const drop = pts[i - 1].wk - pts[i].wk;
+    if (drop > 0 && dt > 0 && dt < ACTIVE_GAP_MAX) {
+      activeDrop += drop;
+      activeMs += dt;
+      activeDrops++;
+    }
+  }
+
+  let weeklyBurnRatePctPerHour = activeMs > 0 ? activeDrop / (activeMs / 3_600_000) : 0;
+  let confidence = activeDrops >= 2 && activeMs >= 30 * 60_000 ? 'good'
+    : activeDrop > 0 ? 'limited'
+    : 'none';
+
+  if (weeklyBurnRatePctPerHour === 0) {
+    const spanMs = new Date(last.ts) - new Date(first.ts);
+    const totalDrop = first.wk - last.wk;
+    if (spanMs > 0 && totalDrop > 0) {
+      weeklyBurnRatePctPerHour = totalDrop / (spanMs / 3_600_000);
+      confidence = 'limited';
+    }
+  }
+
+  if (!weeklyResetTs || weeklyBurnRatePctPerHour <= 0 || last.wk <= 0) {
+    return emptyProjection(weeklyBurnRatePctPerHour, confidence);
+  }
+
+  const lastTs = new Date(last.ts).getTime();
+  const hoursUntilReset = (weeklyResetTs - lastTs) / 3_600_000;
+  const hoursUntilDepletion = last.wk / weeklyBurnRatePctPerHour;
+  const projectedDepleteTs = lastTs + hoursUntilDepletion * 3_600_000;
+  const projectedConsumptionByReset = weeklyBurnRatePctPerHour * hoursUntilReset;
+
+  return {
+    currentPlanMultiplier: multiplier,
+    weeklyRemainingPct: last.wk,
+    weeklyResetTs,
+    weeklyBurnRatePctPerHour,
+    projectedDepleteTs,
+    gapMs: weeklyResetTs - projectedDepleteTs,
+    projectedHeadroomAtResetPct: last.wk - projectedConsumptionByReset,
+    requiredPlanMultiplier: multiplier * projectedConsumptionByReset / last.wk,
+    confidence,
+  };
+}
+
 function hourlyBurn(snapshots, win) {
   const hours = new Array(24).fill(0);
   const pts = snapshots.filter(s => s && s[win] != null);
@@ -300,5 +380,5 @@ function normalizeCodexTokenUsage(u, model, timestamp) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
 }

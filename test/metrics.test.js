@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { segmentCycles, countDepletionEvents } = require('../metrics.js');
+const { segmentCycles, countDepletionEvents, weeklyRunway } = require('../metrics.js');
 
 test('segmentCycles splits on a large upward jump (reset by recovery)', () => {
   const snaps = [
@@ -109,6 +109,72 @@ test('countDepletionEvents counts transitions into depletion, not every depleted
   assert.equal(countDepletionEvents(snaps, '5h'), 2);
 });
 
+test('weeklyRunway projects weekly depletion before reset and required plan multiplier', () => {
+  const snaps = [
+    { ts: '2026-06-29T08:00:00Z', wk: 80, reset7dTs: Date.parse('2026-06-30T08:30:00Z') },
+    { ts: '2026-06-29T08:10:00Z', wk: 79, reset7dTs: Date.parse('2026-06-30T08:30:00Z') },
+    { ts: '2026-06-29T08:20:00Z', wk: 78, reset7dTs: Date.parse('2026-06-30T08:30:00Z') },
+    { ts: '2026-06-29T08:30:00Z', wk: 77, reset7dTs: Date.parse('2026-06-30T08:30:00Z') },
+  ];
+
+  const r = weeklyRunway(snaps, 5);
+
+  assert.equal(r.confidence, 'good');
+  assert.equal(r.currentPlanMultiplier, 5);
+  assert.equal(r.weeklyRemainingPct, 77);
+  assert.equal(r.weeklyResetTs, Date.parse('2026-06-30T08:30:00Z'));
+  assert.equal(r.weeklyBurnRatePctPerHour, 6);
+  assert.equal(r.projectedDepleteTs, Date.parse('2026-06-29T21:20:00Z'));
+  assert.equal(r.gapMs, 11 * 3_600_000 + 10 * 60_000);
+  assert.equal(r.projectedHeadroomAtResetPct, -67);
+  assert.ok(Math.abs(r.requiredPlanMultiplier - 9.35064935064935) < 1e-9);
+});
+
+test('weeklyRunway reports buffer and lower required multiplier when pace lasts to reset', () => {
+  const snaps = [
+    { ts: '2026-06-29T08:00:00Z', wk: 93, reset7dTs: Date.parse('2026-06-29T20:30:00Z') },
+    { ts: '2026-06-29T08:10:00Z', wk: 92, reset7dTs: Date.parse('2026-06-29T20:30:00Z') },
+    { ts: '2026-06-29T08:20:00Z', wk: 91, reset7dTs: Date.parse('2026-06-29T20:30:00Z') },
+    { ts: '2026-06-29T08:30:00Z', wk: 90, reset7dTs: Date.parse('2026-06-29T20:30:00Z') },
+  ];
+
+  const r = weeklyRunway(snaps, 5);
+
+  assert.equal(r.confidence, 'good');
+  assert.equal(r.weeklyBurnRatePctPerHour, 6);
+  assert.equal(r.projectedDepleteTs, Date.parse('2026-06-29T23:30:00Z'));
+  assert.equal(r.gapMs, -3 * 3_600_000);
+  assert.equal(r.projectedHeadroomAtResetPct, 18);
+  assert.equal(r.requiredPlanMultiplier, 4);
+});
+
+test('weeklyRunway uses limited confidence for short active evidence', () => {
+  const snaps = [
+    { ts: '2026-06-29T08:00:00Z', wk: 80, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:05:00Z', wk: 79, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+  ];
+
+  const r = weeklyRunway(snaps, 5);
+
+  assert.equal(r.confidence, 'limited');
+  assert.equal(r.weeklyBurnRatePctPerHour, 12);
+});
+
+test('weeklyRunway returns no-confidence state without weekly burn evidence', () => {
+  const snaps = [
+    { ts: '2026-06-29T08:00:00Z', wk: 80, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:30:00Z', wk: 80, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+  ];
+
+  const r = weeklyRunway(snaps, 5);
+
+  assert.equal(r.confidence, 'none');
+  assert.equal(r.weeklyBurnRatePctPerHour, 0);
+  assert.equal(r.projectedDepleteTs, null);
+  assert.equal(r.gapMs, null);
+  assert.equal(r.projectedHeadroomAtResetPct, null);
+  assert.equal(r.requiredPlanMultiplier, null);
+});
 test('segmentCycles splits on a gap longer than the window length', () => {
   const snaps = [
     { ts: '2026-06-25T00:00:00Z', '5h': 100 },
