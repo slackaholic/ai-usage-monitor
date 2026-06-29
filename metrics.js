@@ -83,14 +83,14 @@ function countDepletionEvents(snapshots, win) {
 
 function latestResetTs(pts, key) {
   for (let i = pts.length - 1; i >= 0; i--) {
-    if (pts[i][key] > 0) return pts[i][key];
+    if (Number.isFinite(pts[i][key]) && pts[i][key] > 0) return pts[i][key];
   }
   return null;
 }
 
 function weeklyRunway(snapshots, currentPlanMultiplier) {
   const pts = snapshots.filter(s => s && s.wk != null);
-  const multiplier = currentPlanMultiplier > 0 ? currentPlanMultiplier : 1;
+  const multiplier = Number.isFinite(currentPlanMultiplier) && currentPlanMultiplier > 0 ? currentPlanMultiplier : 1;
   const weeklyRemainingPct = pts.length ? pts[pts.length - 1].wk : null;
   const weeklyResetTs = pts.length ? latestResetTs(pts, 'reset7dTs') : null;
 
@@ -138,11 +138,11 @@ function weeklyRunway(snapshots, currentPlanMultiplier) {
     }
   }
 
-  if (!weeklyResetTs || weeklyBurnRatePctPerHour <= 0 || last.wk <= 0) {
+  const lastTs = new Date(last.ts).getTime();
+  if (!Number.isFinite(weeklyResetTs) || !Number.isFinite(lastTs) || weeklyResetTs <= lastTs || weeklyBurnRatePctPerHour <= 0 || last.wk <= 0) {
     return emptyProjection(weeklyBurnRatePctPerHour, confidence);
   }
 
-  const lastTs = new Date(last.ts).getTime();
   const hoursUntilReset = (weeklyResetTs - lastTs) / 3_600_000;
   const hoursUntilDepletion = last.wk / weeklyBurnRatePctPerHour;
   const projectedDepleteTs = lastTs + hoursUntilDepletion * 3_600_000;
