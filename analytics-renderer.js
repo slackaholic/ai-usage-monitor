@@ -924,19 +924,14 @@ async function renderAll() {
     return;
   }
 
-  // Build sections
+  // Build sections OFF-DOM. The previous content stays visible in `body` the
+  // whole time we fetch data and populate these detached elements, so the page
+  // never goes blank mid-rebuild (that blank interval was the flash).
   const statsEl = document.createElement('div');
   const effEl   = document.createElement('div');
   const costEl  = document.createElement('div');
   const chartEl = document.createElement('div');
   const tableEl = document.createElement('div');
-
-  body.innerHTML = '';
-  body.appendChild(statsEl);
-  body.appendChild(effEl);
-  body.appendChild(costEl);
-  body.appendChild(chartEl);
-  body.appendChild(tableEl);
 
   // Efficiency reads the FULL log (all cycles), independent of the time-window filter.
   const allEntries = await window.electronAPI.readUsageLog(currentAccount, 0);
@@ -947,6 +942,9 @@ async function renderAll() {
   renderChart(entries, chartEl);
   renderTable(entries, tableEl);
 
+  // Single atomic swap — every section is fully built above, so the visible
+  // content changes in one step with no empty frame in between.
+  body.replaceChildren(statsEl, effEl, costEl, chartEl, tableEl);
   body.scrollTop = prevScroll; // keep the reader's place across refreshes
 }
 
