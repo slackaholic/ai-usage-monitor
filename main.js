@@ -2,7 +2,7 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell } = require(
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { normalizeCodexTokenUsage } = require('./metrics.js');
+const { readClaudeCodeUsage, readCodexUsage } = require('./usage-reader.js');
 
 let mainWindow;
 let analyticsWindow = null;
@@ -97,9 +97,16 @@ ipcMain.on('open-settings', () => {
 });
 
 ipcMain.handle('get-settings', () => loadSettings());
+// Cache (`lastKnown`) and window-position (`x`/`y`) writes happen on every poll /
+// window drag. Persist them, but do NOT broadcast `settings-changed` for them —
+// otherwise the analytics window does a full (freezing) re-render on every poll.
+const SILENT_SETTINGS_KEYS = new Set(['lastKnown', 'x', 'y']);
 ipcMain.on('save-settings', (_, patch) => {
   saveSettings(patch);
-  BrowserWindow.getAllWindows().forEach(w => w.webContents.send('settings-changed'));
+  const meaningful = Object.keys(patch || {}).some(k => !SILENT_SETTINGS_KEYS.has(k));
+  if (meaningful) {
+    BrowserWindow.getAllWindows().forEach(w => w.webContents.send('settings-changed'));
+  }
 });
 ipcMain.on('set-opacity', (_, val) => {
   const clamped = Math.max(0.2, Math.min(1, val));
@@ -107,106 +114,15 @@ ipcMain.on('set-opacity', (_, val) => {
   saveSettings({ opacity: clamped });
 });
 
-// ── Claude Code local JSONL reader ─────────────────────────────────────────
+// ── Claude Code / Codex local JSONL readers (async + mtime-cached) ──────────
 ipcMain.handle('read-claude-code-usage', async () => {
-  const projectsDir = path.join(os.homedir(), '.claude', 'projects');
-
-  const jsonlFiles = [];
-  function scanDir(dir) {
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) scanDir(full);
-        else if (entry.name.endsWith('.jsonl')) jsonlFiles.push(full);
-      }
-    } catch {}
-  }
-
-  try {
-    scanDir(projectsDir);
-  } catch (e) {
-    return { error: e.message };
-  }
-
-  const entries = [];
-
-  for (const file of jsonlFiles) {
-    try {
-      const content = fs.readFileSync(file, 'utf8');
-      for (const line of content.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const obj = JSON.parse(line);
-          if (obj.type === 'assistant' && obj.message?.usage && obj.timestamp) {
-            entries.push({
-              timestamp: obj.timestamp,
-              model: obj.message.model || 'unknown',
-              input_tokens: obj.message.usage.input_tokens || 0,
-              output_tokens: obj.message.usage.output_tokens || 0,
-              cache_creation: obj.message.usage.cache_creation_input_tokens || 0,
-              cache_read: obj.message.usage.cache_read_input_tokens || 0,
-            });
-          }
-        } catch {}
-      }
-    } catch {}
-  }
-
-  return { entries };
+  try { return { entries: await readClaudeCodeUsage() }; }
+  catch (e) { return { error: e.message }; }
 });
 
-// Codex writes exact per-turn token usage to local session logs. Each turn emits
-// an event_msg with payload.type === 'token_count' (info.last_token_usage = the
-// per-turn delta); the active model comes from the preceding turn_context event.
 ipcMain.handle('read-codex-usage', async () => {
-  const sessionsDir = path.join(os.homedir(), '.codex', 'sessions');
-
-  const jsonlFiles = [];
-  function scanDir(dir) {
-    try {
-      const dirents = fs.readdirSync(dir, { withFileTypes: true });
-      for (const d of dirents) {
-        const full = path.join(dir, d.name);
-        if (d.isDirectory()) scanDir(full);
-        else if (d.name.endsWith('.jsonl')) jsonlFiles.push(full);
-      }
-    } catch {}
-  }
-
-  try {
-    if (!fs.existsSync(sessionsDir)) return { entries: [] };
-    scanDir(sessionsDir);
-  } catch (e) {
-    return { error: e.message };
-  }
-
-  const entries = [];
-  for (const file of jsonlFiles) {
-    let currentModel = 'unknown';
-    try {
-      const content = fs.readFileSync(file, 'utf8');
-      for (const line of content.split('\n')) {
-        if (!line.trim()) continue;
-        let obj;
-        try { obj = JSON.parse(line); } catch { continue; }
-        if (obj.type === 'turn_context' && obj.payload && obj.payload.model) {
-          currentModel = obj.payload.model;
-        } else if (
-          obj.type === 'event_msg' &&
-          obj.payload && obj.payload.type === 'token_count' &&
-          obj.payload.info && obj.payload.info.last_token_usage &&
-          obj.timestamp
-        ) {
-          const e = normalizeCodexTokenUsage(
-            obj.payload.info.last_token_usage, currentModel, obj.timestamp);
-          if (e) entries.push(e);
-        }
-      }
-    } catch {}
-  }
-
-  return { entries };
+  try { return { entries: await readCodexUsage() }; }
+  catch (e) { return { error: e.message }; }
 });
 
 // ── IPC: window control ────────────────────────────────────────────────────
