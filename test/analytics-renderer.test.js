@@ -67,6 +67,38 @@ function loadEfficiencyRenderer(documentStub) {
   return context;
 }
 
+function loadStatsRenderer(documentStub) {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'analytics-renderer.js'), 'utf8');
+  const start = source.indexOf('function fmtDuration');
+  const end = source.indexOf('function renderChart');
+  assert.ok(start >= 0 && end > start, 'expected stats renderer source markers');
+
+  const context = {
+    ...metrics,
+    document: documentStub,
+    Date,
+    Math,
+    Set,
+    Array,
+    String,
+    Number,
+    isFinite,
+    currentAccount: 'codex',
+    PLAN_MULTIPLIERS: { codex: 1, 'claude-desktop': 1, 'claude-vscode': 20 },
+    curSymbol: '$',
+    usdRate: 0.76,
+    windowHours: 24,
+    rowLimit: 200,
+    monthEntries: [],
+    displayYear: null,
+    displayMonth: null,
+    console,
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  return context;
+}
+
 test('renderEfficiency populates the detached month heatmap before the atomic swap', () => {
   const documentStub = { querySelector: () => null };
   const { renderEfficiency } = loadEfficiencyRenderer(documentStub);
@@ -84,4 +116,24 @@ test('renderEfficiency populates the detached month heatmap before the atomic sw
   assert.match(month.innerHTML, /month-nav/);
   assert.match(month.innerHTML, /Jun 10/);
   assert.match(month.innerHTML, /10% burned/);
+});
+
+test('renderStats shows neutral weekly runway and plan-fit cards', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
+  const container = new FakeElement();
+  const entries = [
+    { ts: '2026-06-29T08:00:00Z', '5h': 90, wk: 71.4, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:10:00Z', '5h': 80, wk: 70.7, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:20:00Z', '5h': 70, wk: 70, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+  ];
+
+  renderStats(entries, container, { planMultipliers: { codex: 5 } });
+
+  assert.match(container.innerHTML, /Weekly Runway/);
+  assert.match(container.innerHTML, /Reset Gap/);
+  assert.match(container.innerHTML, /Plan Fit/);
+  assert.match(container.innerHTML, /At Reset/);
+  assert.match(container.innerHTML, /5x/);
+  assert.match(container.innerHTML, /~7\.1x/);
+  assert.doesNotMatch(container.innerHTML.toLowerCase(), /upgrade/);
 });
