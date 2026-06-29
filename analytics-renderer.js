@@ -891,7 +891,10 @@ async function renderCostCompare(el) {
 // ── Main render ────────────────────────────────────────────────────────────
 async function renderAll() {
   const body = document.getElementById('body');
-  body.innerHTML = '<div class="empty">Loading…</div>';
+  const prevScroll = body.scrollTop;
+  // Only flash "Loading…" on the very first render; on refresh keep the current
+  // content visible until the rebuilt sections swap in (avoids flash + jump).
+  if (!body.firstChild) body.innerHTML = '<div class="empty">Loading…</div>';
   const _cur = (await window.electronAPI.getSettings()) || {};
   curSymbol = _cur.currencySymbol || '£';
   usdRate = _cur.usdRate != null ? _cur.usdRate : 0.79;
@@ -943,6 +946,8 @@ async function renderAll() {
   await renderCost(costEl);
   renderChart(entries, chartEl);
   renderTable(entries, tableEl);
+
+  body.scrollTop = prevScroll; // keep the reader's place across refreshes
 }
 
 // ── Switch tab helper ──────────────────────────────────────────────────────
