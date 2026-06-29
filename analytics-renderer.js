@@ -613,7 +613,7 @@ function renderEfficiency(entries, container) {
     const last = new Date(mpts[mpts.length - 1].ts);
     displayYear = last.getFullYear();
     displayMonth = last.getMonth();
-    renderMonthSection();
+    renderMonthSection(container);
   } else {
     const monthEl = container.querySelector('#eff-month-5h');
     if (monthEl) monthEl.innerHTML = '<div class="empty">No data yet.</div>';
@@ -672,8 +672,8 @@ function stepMonth(delta) {
   renderMonthSection();
 }
 
-function renderMonthSection() {
-  const el = document.querySelector('#eff-month-5h');
+function renderMonthSection(root = document) {
+  const el = root.querySelector('#eff-month-5h');
   if (!el) return;
 
   const pts = monthEntries.filter(s => s && s['5h'] != null);
