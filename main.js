@@ -97,9 +97,16 @@ ipcMain.on('open-settings', () => {
 });
 
 ipcMain.handle('get-settings', () => loadSettings());
+// Cache (`lastKnown`) and window-position (`x`/`y`) writes happen on every poll /
+// window drag. Persist them, but do NOT broadcast `settings-changed` for them —
+// otherwise the analytics window does a full (freezing) re-render on every poll.
+const SILENT_SETTINGS_KEYS = new Set(['lastKnown', 'x', 'y']);
 ipcMain.on('save-settings', (_, patch) => {
   saveSettings(patch);
-  BrowserWindow.getAllWindows().forEach(w => w.webContents.send('settings-changed'));
+  const meaningful = Object.keys(patch || {}).some(k => !SILENT_SETTINGS_KEYS.has(k));
+  if (meaningful) {
+    BrowserWindow.getAllWindows().forEach(w => w.webContents.send('settings-changed'));
+  }
 });
 ipcMain.on('set-opacity', (_, val) => {
   const clamped = Math.max(0.2, Math.min(1, val));
