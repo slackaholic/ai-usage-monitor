@@ -323,20 +323,20 @@ function renderStats(entries, container, settings = {}) {
   const runwayCards = !runwayHasProjection ? [
     { label: 'Weekly Runway', value: '-', sub: runway.confidence === 'limited' ? `${runwayEvidence} so far` : 'need weekly movement', cls: 'dim' },
     { label: 'Reset Gap', value: '-', sub: 'vs weekly reset', cls: 'dim' },
-    { label: 'Plan Fit', value: `${fmtMultiplier(configuredPlanMultiplier)} -> -`, sub: runway.confidence === 'limited' ? 'need steadier weekly sample' : 'current plan - pace required', cls: 'dim' },
+    { label: 'Plan Fit', value: `${fmtMultiplier(configuredPlanMultiplier)} -> -`, sub: runway.confidence === 'limited' ? 'waiting for steadier sample' : 'current plan - pace check', cls: 'dim' },
     { label: 'At Reset', value: '-', sub: 'projected weekly headroom', cls: 'dim' },
   ] : [
     {
       label: 'Weekly Runway',
       value: runway.gapMs > 0 ? fmtRunwayDate(runway.projectedDepleteTs) : 'Lasts to reset',
-      sub: `${runwayPace} - ${runwayEvidence}`,
+      sub: `based on ${runwayPace} - ${runwayEvidence}`,
       cls: runwayCls,
     },
     { label: 'Reset Gap', value: fmtGap(runway.gapMs), sub: 'vs weekly reset', cls: runwayCls },
     {
       label: 'Plan Fit',
       value: `${fmtMultiplier(runway.currentPlanMultiplier)} -> ~${fmtMultiplier(runway.requiredPlanMultiplier)}`,
-      sub: `current plan - ${runwayPace} required`,
+      sub: `if ${runwayPace} holds`,
       cls: runwayCls,
     },
     {

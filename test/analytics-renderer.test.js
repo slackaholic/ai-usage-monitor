@@ -134,9 +134,12 @@ test('renderStats shows neutral weekly runway and plan-fit cards', () => {
   assert.match(container.innerHTML, /Reset Gap/);
   assert.match(container.innerHTML, /Plan Fit/);
   assert.match(container.innerHTML, /At Reset/);
+  assert.match(container.innerHTML, /based on early pace/);
+  assert.match(container.innerHTML, /if early pace holds/);
   assert.match(container.innerHTML, /early pace/);
   assert.match(container.innerHTML, /30m sample/);
   assert.match(container.innerHTML, /5x/);
   assert.match(container.innerHTML, /~7x/);
+  assert.doesNotMatch(container.innerHTML.toLowerCase(), /required/);
   assert.doesNotMatch(container.innerHTML.toLowerCase(), /upgrade/);
 });
