@@ -232,6 +232,26 @@ test('weeklyRunway uses elapsed current-period pace for rounded weekly ticks', (
   assert.ok(r.requiredPlanMultiplier > 50 && r.requiredPlanMultiplier < 55);
 });
 
+test('weeklyRunway starts at observed weekly recovery when the reset arrives early', () => {
+  const reset = Date.parse('2026-07-07T07:04:00Z');
+  const snaps = [
+    { ts: '2026-07-01T07:00:00Z', wk: 70, reset7dTs: reset },
+    { ts: '2026-07-01T07:10:00Z', wk: 69, reset7dTs: reset },
+    { ts: '2026-07-01T07:20:00Z', wk: 68, reset7dTs: reset },
+    { ts: '2026-07-02T07:04:00Z', wk: 100, reset7dTs: reset },
+    { ts: '2026-07-02T07:14:00Z', wk: 99, reset7dTs: reset },
+    { ts: '2026-07-02T07:24:00Z', wk: 98, reset7dTs: reset },
+    { ts: '2026-07-02T07:34:00Z', wk: 97, reset7dTs: reset },
+  ];
+
+  const r = weeklyRunway(snaps, 5);
+
+  assert.equal(r.confidence, 'good');
+  assert.equal(r.weeklyRemainingPct, 97);
+  assert.equal(r.weeklyBurnRatePctPerHour, 6);
+  assert.ok(Math.abs(r.requiredPlanMultiplier - 36.95876288659794) < 1e-9);
+});
+
 test('weeklyRunway suppresses projection for a fresh weekly cycle with only rounded ticks', () => {
   const reset = Date.parse('2026-07-07T07:04:00Z');
   const previousReset = Date.parse('2026-06-30T07:00:00Z');

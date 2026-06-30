@@ -89,14 +89,16 @@ function latestResetTs(pts, key) {
 }
 
 function currentPeriodPoints(pts, win, resetTs) {
-  if (!Number.isFinite(resetTs)) return pts;
+  const cycles = segmentCycles(pts, win);
+  const latestCycle = cycles.length ? cycles[cycles.length - 1] : pts;
+  if (!Number.isFinite(resetTs)) return latestCycle;
   const periodStart = resetTs - WINDOW_MS[win];
-  if (!Number.isFinite(periodStart)) return pts;
-  const scoped = pts.filter(p => {
+  if (!Number.isFinite(periodStart)) return latestCycle;
+  const scoped = latestCycle.filter(p => {
     const t = new Date(p.ts).getTime();
     return Number.isFinite(t) && t >= periodStart && t <= resetTs;
   });
-  return scoped.length ? scoped : pts;
+  return scoped.length ? scoped : latestCycle;
 }
 
 function weeklyRunway(snapshots, currentPlanMultiplier) {
