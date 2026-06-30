@@ -211,6 +211,27 @@ test('weeklyRunway sanitizes non-finite plan multipliers', () => {
   assert.equal(r.currentPlanMultiplier, 1);
   assert.ok(Math.abs(r.requiredPlanMultiplier - 1.87012987012987) < 1e-9);
 });
+test('weeklyRunway uses elapsed current-period pace for rounded weekly ticks', () => {
+  const reset = Date.parse('2026-07-07T07:04:00Z');
+  const snaps = [
+    { ts: '2026-06-30T07:04:00Z', wk: 100, reset7dTs: reset },
+    { ts: '2026-06-30T07:06:00Z', wk: 99, reset7dTs: reset },
+    { ts: '2026-06-30T07:16:00Z', wk: 99, reset7dTs: reset },
+    { ts: '2026-06-30T07:18:00Z', wk: 98, reset7dTs: reset },
+    { ts: '2026-06-30T07:28:00Z', wk: 98, reset7dTs: reset },
+    { ts: '2026-06-30T07:30:00Z', wk: 97, reset7dTs: reset },
+    { ts: '2026-06-30T07:38:00Z', wk: 97, reset7dTs: reset },
+    { ts: '2026-06-30T07:40:00Z', wk: 96, reset7dTs: reset },
+    { ts: '2026-06-30T07:44:00Z', wk: 96, reset7dTs: reset },
+  ];
+
+  const r = weeklyRunway(snaps, 5);
+
+  assert.equal(r.confidence, 'good');
+  assert.equal(r.weeklyBurnRatePctPerHour, 6);
+  assert.ok(r.requiredPlanMultiplier > 50 && r.requiredPlanMultiplier < 55);
+});
+
 test('weeklyRunway suppresses projection for a fresh weekly cycle with only rounded ticks', () => {
   const reset = Date.parse('2026-07-07T07:04:00Z');
   const previousReset = Date.parse('2026-06-30T07:00:00Z');

@@ -122,33 +122,22 @@ function weeklyRunway(snapshots, currentPlanMultiplier) {
 
   const first = pts[0];
   const last = pts[pts.length - 1];
-  let activeDrop = 0;
-  let activeMs = 0;
   let activeDrops = 0;
 
   for (let i = 1; i < pts.length; i++) {
     const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
     const drop = pts[i - 1].wk - pts[i].wk;
-    if (drop > 0 && dt > 0 && dt < ACTIVE_GAP_MAX) {
-      activeDrop += drop;
-      activeMs += dt;
-      activeDrops++;
-    }
+    if (drop > 0 && dt > 0 && dt < ACTIVE_GAP_MAX) activeDrops++;
   }
 
-  let weeklyBurnRatePctPerHour = activeMs > 0 ? activeDrop / (activeMs / 3_600_000) : 0;
-  let confidence = activeDrops >= 2 && activeMs >= 30 * 60_000 ? 'good'
-    : activeDrop > 0 ? 'limited'
+  const spanMs = new Date(last.ts) - new Date(first.ts);
+  const totalDrop = first.wk - last.wk;
+  const weeklyBurnRatePctPerHour = spanMs > 0 && totalDrop > 0
+    ? totalDrop / (spanMs / 3_600_000)
+    : 0;
+  const confidence = activeDrops >= 2 && spanMs >= 30 * 60_000 ? 'good'
+    : totalDrop > 0 ? 'limited'
     : 'none';
-
-  if (weeklyBurnRatePctPerHour === 0) {
-    const spanMs = new Date(last.ts) - new Date(first.ts);
-    const totalDrop = first.wk - last.wk;
-    if (spanMs > 0 && totalDrop > 0) {
-      weeklyBurnRatePctPerHour = totalDrop / (spanMs / 3_600_000);
-      confidence = 'limited';
-    }
-  }
 
   const lastTs = new Date(last.ts).getTime();
   if (confidence !== 'good' || !Number.isFinite(weeklyResetTs) || !Number.isFinite(lastTs) || weeklyResetTs <= lastTs || weeklyBurnRatePctPerHour <= 0 || last.wk <= 0) {
