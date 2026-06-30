@@ -88,11 +88,23 @@ function latestResetTs(pts, key) {
   return null;
 }
 
+function currentPeriodPoints(pts, win, resetTs) {
+  if (!Number.isFinite(resetTs)) return pts;
+  const periodStart = resetTs - WINDOW_MS[win];
+  if (!Number.isFinite(periodStart)) return pts;
+  const scoped = pts.filter(p => {
+    const t = new Date(p.ts).getTime();
+    return Number.isFinite(t) && t >= periodStart && t <= resetTs;
+  });
+  return scoped.length ? scoped : pts;
+}
+
 function weeklyRunway(snapshots, currentPlanMultiplier) {
-  const pts = snapshots.filter(s => s && s.wk != null);
+  const allPts = snapshots.filter(s => s && s.wk != null);
   const multiplier = Number.isFinite(currentPlanMultiplier) && currentPlanMultiplier > 0 ? currentPlanMultiplier : 1;
-  const weeklyRemainingPct = pts.length ? pts[pts.length - 1].wk : null;
-  const weeklyResetTs = pts.length ? latestResetTs(pts, 'reset7dTs') : null;
+  const weeklyRemainingPct = allPts.length ? allPts[allPts.length - 1].wk : null;
+  const weeklyResetTs = allPts.length ? latestResetTs(allPts, 'reset7dTs') : null;
+  const pts = currentPeriodPoints(allPts, 'wk', weeklyResetTs);
 
   const emptyProjection = (weeklyBurnRatePctPerHour, confidence) => ({
     currentPlanMultiplier: multiplier,
@@ -139,7 +151,7 @@ function weeklyRunway(snapshots, currentPlanMultiplier) {
   }
 
   const lastTs = new Date(last.ts).getTime();
-  if (!Number.isFinite(weeklyResetTs) || !Number.isFinite(lastTs) || weeklyResetTs <= lastTs || weeklyBurnRatePctPerHour <= 0 || last.wk <= 0) {
+  if (confidence !== 'good' || !Number.isFinite(weeklyResetTs) || !Number.isFinite(lastTs) || weeklyResetTs <= lastTs || weeklyBurnRatePctPerHour <= 0 || last.wk <= 0) {
     return emptyProjection(weeklyBurnRatePctPerHour, confidence);
   }
 

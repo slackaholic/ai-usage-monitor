@@ -187,7 +187,7 @@ test('weeklyRunway preserves burn evidence but suppresses projection for stale r
 
   const r = weeklyRunway(snaps, 5);
 
-  assert.equal(r.confidence, 'good');
+  assert.equal(r.confidence, 'limited');
   assert.equal(r.currentPlanMultiplier, 5);
   assert.equal(r.weeklyRemainingPct, 77);
   assert.equal(r.weeklyResetTs, staleReset);
@@ -211,6 +211,31 @@ test('weeklyRunway sanitizes non-finite plan multipliers', () => {
   assert.equal(r.currentPlanMultiplier, 1);
   assert.ok(Math.abs(r.requiredPlanMultiplier - 1.87012987012987) < 1e-9);
 });
+test('weeklyRunway suppresses projection for a fresh weekly cycle with only rounded ticks', () => {
+  const reset = Date.parse('2026-07-07T07:04:00Z');
+  const previousReset = Date.parse('2026-06-30T07:00:00Z');
+  const snaps = [
+    { ts: '2026-06-29T10:00:00Z', wk: 70, reset7dTs: previousReset },
+    { ts: '2026-06-29T10:10:00Z', wk: 69, reset7dTs: previousReset },
+    { ts: '2026-06-29T10:20:00Z', wk: 68, reset7dTs: previousReset },
+    { ts: '2026-06-29T10:30:00Z', wk: 67, reset7dTs: previousReset },
+    { ts: '2026-06-29T10:40:00Z', wk: 66, reset7dTs: previousReset },
+    { ts: '2026-06-30T07:04:00Z', wk: 100, reset7dTs: reset },
+    { ts: '2026-06-30T07:06:00Z', wk: 99, reset7dTs: reset },
+    { ts: '2026-06-30T07:08:00Z', wk: 98, reset7dTs: reset },
+  ];
+
+  const r = weeklyRunway(snaps, 5);
+
+  assert.equal(r.confidence, 'limited');
+  assert.equal(r.weeklyRemainingPct, 98);
+  assert.equal(r.weeklyResetTs, reset);
+  assert.equal(r.projectedDepleteTs, null);
+  assert.equal(r.gapMs, null);
+  assert.equal(r.projectedHeadroomAtResetPct, null);
+  assert.equal(r.requiredPlanMultiplier, null);
+});
+
 test('segmentCycles splits on a gap longer than the window length', () => {
   const snaps = [
     { ts: '2026-06-25T00:00:00Z', '5h': 100 },

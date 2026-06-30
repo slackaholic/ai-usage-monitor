@@ -122,9 +122,10 @@ test('renderStats shows neutral weekly runway and plan-fit cards', () => {
   const { renderStats } = loadStatsRenderer({ querySelector: () => null });
   const container = new FakeElement();
   const entries = [
-    { ts: '2026-06-29T08:00:00Z', '5h': 90, wk: 71.4, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
-    { ts: '2026-06-29T08:10:00Z', '5h': 80, wk: 70.7, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
-    { ts: '2026-06-29T08:20:00Z', '5h': 70, wk: 70, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:00:00Z', '5h': 90, wk: 72.1, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:10:00Z', '5h': 80, wk: 71.4, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:20:00Z', '5h': 70, wk: 70.7, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:30:00Z', '5h': 60, wk: 70, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
   ];
 
   renderStats(entries, container, { planMultipliers: { codex: 5 } });
@@ -134,6 +135,6 @@ test('renderStats shows neutral weekly runway and plan-fit cards', () => {
   assert.match(container.innerHTML, /Plan Fit/);
   assert.match(container.innerHTML, /At Reset/);
   assert.match(container.innerHTML, /5x/);
-  assert.match(container.innerHTML, /~7\.1x/);
+  assert.match(container.innerHTML, /~7x/);
   assert.doesNotMatch(container.innerHTML.toLowerCase(), /upgrade/);
 });
