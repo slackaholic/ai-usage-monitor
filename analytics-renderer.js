@@ -66,6 +66,16 @@ function fmtGap(ms) {
   return ms > 0 ? `${label} short` : `${label} buffer`;
 }
 
+function fmtEvidenceSpan(ms) {
+  const n = Number(ms);
+  if (!isFinite(n) || n <= 0) return 'short sample';
+  const minutes = Math.max(1, Math.round(n / 60_000));
+  if (minutes < 60) return `${minutes}m sample`;
+  const hours = n / 3_600_000;
+  if (hours < 24) return `${hours < 10 ? hours.toFixed(1) : Math.round(hours)}h sample`;
+  const days = hours / 24;
+  return `${days < 10 ? days.toFixed(1) : Math.round(days)}d sample`;
+}
 function fmtMultiplier(v) {
   const n = Number(v);
   if (v == null || !isFinite(n)) return '-';
@@ -307,29 +317,32 @@ function renderStats(entries, container, settings = {}) {
     : runway.gapMs > 0 ? 'red'
     : runway.gapMs > -12 * 3_600_000 ? 'amber'
     : 'green';
-  const runwayCards = runway.confidence === 'none' || runway.gapMs == null ? [
-    { label: 'Weekly Runway', value: '-', sub: 'need weekly movement', cls: 'dim' },
+  const runwayHasProjection = runway.confidence !== 'none' && runway.gapMs != null;
+  const runwayEvidence = fmtEvidenceSpan(runway.evidenceMs);
+  const runwayPace = runway.evidenceMs > 0 && runway.evidenceMs < 12 * 3_600_000 ? 'early pace' : 'current pace';
+  const runwayCards = !runwayHasProjection ? [
+    { label: 'Weekly Runway', value: '-', sub: runway.confidence === 'limited' ? `${runwayEvidence} so far` : 'need weekly movement', cls: 'dim' },
     { label: 'Reset Gap', value: '-', sub: 'vs weekly reset', cls: 'dim' },
-    { label: 'Plan Fit', value: `${fmtMultiplier(configuredPlanMultiplier)} -> -`, sub: 'current plan - pace required', cls: 'dim' },
+    { label: 'Plan Fit', value: `${fmtMultiplier(configuredPlanMultiplier)} -> -`, sub: runway.confidence === 'limited' ? 'need steadier weekly sample' : 'current plan - pace required', cls: 'dim' },
     { label: 'At Reset', value: '-', sub: 'projected weekly headroom', cls: 'dim' },
   ] : [
     {
       label: 'Weekly Runway',
       value: runway.gapMs > 0 ? fmtRunwayDate(runway.projectedDepleteTs) : 'Lasts to reset',
-      sub: runway.gapMs > 0 ? 'projected weekly depletion' : 'at current pace',
+      sub: `${runwayPace} - ${runwayEvidence}`,
       cls: runwayCls,
     },
     { label: 'Reset Gap', value: fmtGap(runway.gapMs), sub: 'vs weekly reset', cls: runwayCls },
     {
       label: 'Plan Fit',
       value: `${fmtMultiplier(runway.currentPlanMultiplier)} -> ~${fmtMultiplier(runway.requiredPlanMultiplier)}`,
-      sub: 'current plan - pace required',
+      sub: `current plan - ${runwayPace} required`,
       cls: runwayCls,
     },
     {
       label: 'At Reset',
       value: Math.round(runway.projectedHeadroomAtResetPct) + '%',
-      sub: 'projected weekly headroom',
+      sub: `if ${runwayPace} holds`,
       cls: runwayCls,
     },
   ];

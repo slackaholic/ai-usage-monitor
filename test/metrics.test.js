@@ -123,6 +123,9 @@ test('weeklyRunway projects weekly depletion before reset and required plan mult
   assert.equal(r.currentPlanMultiplier, 5);
   assert.equal(r.weeklyRemainingPct, 77);
   assert.equal(r.weeklyResetTs, Date.parse('2026-06-30T08:30:00Z'));
+  assert.equal(r.evidenceMs, 30 * 60_000);
+  assert.equal(r.evidenceDropPct, 3);
+  assert.equal(r.activeDropCount, 3);
   assert.equal(r.weeklyBurnRatePctPerHour, 6);
   assert.equal(r.projectedDepleteTs, Date.parse('2026-06-29T21:20:00Z'));
   assert.equal(r.gapMs, 11 * 3_600_000 + 10 * 60_000);
@@ -228,6 +231,9 @@ test('weeklyRunway uses elapsed current-period pace for rounded weekly ticks', (
   const r = weeklyRunway(snaps, 5);
 
   assert.equal(r.confidence, 'good');
+  assert.equal(r.evidenceMs, 40 * 60_000);
+  assert.equal(r.evidenceDropPct, 4);
+  assert.equal(r.activeDropCount, 4);
   assert.equal(r.weeklyBurnRatePctPerHour, 6);
   assert.ok(r.requiredPlanMultiplier > 50 && r.requiredPlanMultiplier < 55);
 });
