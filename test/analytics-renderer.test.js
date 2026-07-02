@@ -210,6 +210,72 @@ test('renderStats shows neutral weekly runway and plan-fit cards', () => {
   assert.doesNotMatch(container.innerHTML.toLowerCase(), /upgrade/);
 });
 
+test('renderStats At Reset floors negative headroom and Plan Fit shows "won\'t fit" for a runaway pace', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null }); // codex, multiplier 5 below
+  const container = new FakeElement();
+  // Weekly quota at 19%, burning ~4.2%/hr, reset ~113h out → linear projection
+  // implies ~475% consumed: headroom −456% and required ~125x. Both must be clamped.
+  const reset = Date.parse('2026-07-04T01:30:00Z');
+  const entries = [
+    { ts: '2026-06-29T08:00:00Z', '5h': 30, wk: 21.1, reset7dTs: reset },
+    { ts: '2026-06-29T08:10:00Z', '5h': 25, wk: 20.4, reset7dTs: reset },
+    { ts: '2026-06-29T08:20:00Z', '5h': 20, wk: 19.7, reset7dTs: reset },
+    { ts: '2026-06-29T08:30:00Z', '5h': 15, wk: 19.0, reset7dTs: reset },
+  ];
+
+  renderStats(entries, container, { planMultipliers: { codex: 5 } });
+
+  // At Reset: floored, never a giant negative percent.
+  assert.match(container.innerHTML, /runs out before reset/);
+  assert.match(container.innerHTML, /<div class="value">0%<\/div>/);
+  assert.doesNotMatch(container.innerHTML, /-\d{2,}%/); // no −456% etc.
+  // Plan Fit: reframed, no runaway multiplier.
+  assert.match(container.innerHTML, /won't fit/);
+  assert.match(container.innerHTML, /pace far exceeds any plan/);
+  assert.doesNotMatch(container.innerHTML, /12\dx/); // no ~124x/125x/126x
+});
+
+test('renderStats At Reset stays positive and Plan Fit says it fits for a gentle pace', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
+  const container = new FakeElement();
+  // 70% left, burning ~0.6%/hr, reset 10h out → ~6% consumed: headroom +64%, required ~0.4x.
+  const reset = Date.parse('2026-06-29T18:30:00Z');
+  const entries = [
+    { ts: '2026-06-29T08:00:00Z', '5h': 90, wk: 70.3, reset7dTs: reset },
+    { ts: '2026-06-29T08:10:00Z', '5h': 89, wk: 70.2, reset7dTs: reset },
+    { ts: '2026-06-29T08:20:00Z', '5h': 88, wk: 70.1, reset7dTs: reset },
+    { ts: '2026-06-29T08:30:00Z', '5h': 87, wk: 70.0, reset7dTs: reset },
+  ];
+
+  renderStats(entries, container, { planMultipliers: { codex: 5 } });
+
+  assert.match(container.innerHTML, /current pace fits your plan/);
+  assert.doesNotMatch(container.innerHTML, /won't fit/);
+  assert.doesNotMatch(container.innerHTML, /runs out before reset/);
+  // At Reset shows a real positive percent, not 0% and not negative.
+  assert.doesNotMatch(container.innerHTML, /-\d+%/);
+});
+
+test('renderStats Plan Fit shows an upgrade target when required is above plan but under the ceiling', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
+  const container = new FakeElement();
+  // 70% left, ~4.2%/hr, reset next day (~23.5h) → ~99% consumed: required ~7x (≤ 15x ceiling).
+  const reset = Date.parse('2026-06-30T08:00:00Z');
+  const entries = [
+    { ts: '2026-06-29T08:00:00Z', '5h': 90, wk: 72.1, reset7dTs: reset },
+    { ts: '2026-06-29T08:10:00Z', '5h': 80, wk: 71.4, reset7dTs: reset },
+    { ts: '2026-06-29T08:20:00Z', '5h': 70, wk: 70.7, reset7dTs: reset },
+    { ts: '2026-06-29T08:30:00Z', '5h': 60, wk: 70.0, reset7dTs: reset },
+  ];
+
+  renderStats(entries, container, { planMultipliers: { codex: 5 } });
+
+  assert.match(container.innerHTML, /5x -&gt; ~7x|5x -> ~7x/);
+  assert.match(container.innerHTML, /if early pace holds/);
+  assert.doesNotMatch(container.innerHTML, /won't fit/);
+  assert.doesNotMatch(container.innerHTML, /fits your plan/);
+});
+
 test('planMultiplierFor: configured value wins; fallback is 5 for codex, 1 otherwise', () => {
   const { planMultiplierFor } = loadStatsRenderer({ querySelector: () => null });
 
