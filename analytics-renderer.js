@@ -735,7 +735,7 @@ function renderHourHeatmap(el, hours) {
   // the raw per-hour value is a running sum across all days/windows and can exceed
   // 100%, which is meaningless. Opacity stays value/max for the best visual contrast.
   const cells = hours.map((v, h) => {
-    if (v <= 0) return `<div class="heat-cell empty" title="${h}:00 — no burn"></div>`;
+    if (v <= 0) return `<div class="heat-cell zero" title="${h}:00 — no burn"></div>`;
     const a = (v / max).toFixed(2);
     const share = total > 0 ? Math.round((v / total) * 100) : 0;
     return `<div class="heat-cell" title="${h}:00 — ${share}% of your burn" style="background:rgba(168,85,247,${a})"></div>`;
