@@ -27,6 +27,32 @@ test('segmentCycles splits a low-usage cycle via reset-timestamp advance', () =>
   assert.equal(cycles[0].length, 2);
 });
 
+test('segmentCycles does NOT split on a sub-window reset-timestamp advance (partial re-anchor)', () => {
+  // Mirrors the observed Claude Desktop plan change: the weekly reset timestamp
+  // shifts +2.79d and remaining rises 12pp — NOT a real weekly reset (which is ~7d).
+  const base = Date.parse('2026-06-30T12:00:00Z');
+  const snaps = [
+    { ts: '2026-06-24T08:00:00Z', wk: 59, reset7dTs: base },
+    { ts: '2026-06-25T12:56:00Z', wk: 71, reset7dTs: base + 67 * 3_600_000 }, // +2.79d, +12pp
+    { ts: '2026-06-26T08:00:00Z', wk: 60, reset7dTs: base + 67 * 3_600_000 },
+  ];
+  const cycles = segmentCycles(snaps, 'wk');
+  assert.equal(cycles.length, 1); // stays one weekly period
+});
+
+test('segmentCycles still splits on a full-window reset-timestamp advance with recovery', () => {
+  // A real weekly reset advances reset7dTs ~7d; remaining recovers 90→100 (below the
+  // 15pp jump threshold), so only the timestamp advance can flag it.
+  const base = Date.parse('2026-06-23T12:00:00Z');
+  const snaps = [
+    { ts: '2026-06-29T08:00:00Z', wk: 90, reset7dTs: base },
+    { ts: '2026-06-30T12:05:00Z', wk: 100, reset7dTs: base + 7 * 86_400_000 }, // +7d, +10pp
+    { ts: '2026-06-30T12:15:00Z', wk: 99, reset7dTs: base + 7 * 86_400_000 },
+  ];
+  const cycles = segmentCycles(snaps, 'wk');
+  assert.equal(cycles.length, 2);
+});
+
 test('segmentCycles ignores rolling reset timestamps while the window remains full', () => {
   const snaps = [
     { ts: '2026-06-29T12:15:35Z', '5h': 0, reset5hTs: Date.parse('2026-06-29T12:17:08Z') },
@@ -298,15 +324,18 @@ const path = require('node:path');
 
 test('summarize aggregates block rate and peaks across cycles', () => {
   const stats = [
-    { startTs: 'a', peakPct: 60, blocked: false, blockedMs: 0 },
-    { startTs: 'b', peakPct: 100, blocked: true, blockedMs: 3_600_000 },
+    { startTs: 'a', endTs: 'a2', peakPct: 60, blocked: false, blockedMs: 0 },
+    { startTs: 'b', endTs: 'b2', peakPct: 100, blocked: true, blockedMs: 3_600_000 },
   ];
   const sum = summarize(stats);
   assert.equal(sum.count, 2);
   assert.equal(sum.blockedCount, 1);
   assert.equal(sum.blockRate, 0.5);
   assert.equal(sum.totalBlockedMs, 3_600_000);
-  assert.deepEqual(sum.peaks, [{ ts: 'a', peakPct: 60 }, { ts: 'b', peakPct: 100 }]);
+  assert.deepEqual(sum.peaks, [
+    { ts: 'a', endTs: 'a2', peakPct: 60 },
+    { ts: 'b', endTs: 'b2', peakPct: 100 },
+  ]);
 });
 
 test('summarize handles no completed cycles', () => {
