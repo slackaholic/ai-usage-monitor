@@ -67,7 +67,7 @@ function loadEfficiencyRenderer(documentStub) {
   return context;
 }
 
-function loadStatsRenderer(documentStub) {
+function loadStatsRenderer(documentStub, account = 'codex') {
   const source = fs.readFileSync(path.join(__dirname, '..', 'analytics-renderer.js'), 'utf8');
   const start = source.indexOf('function fmtDuration');
   const end = source.indexOf('function renderChart');
@@ -83,7 +83,7 @@ function loadStatsRenderer(documentStub) {
     String,
     Number,
     isFinite,
-    currentAccount: 'codex',
+    currentAccount: account,
     PLAN_MULTIPLIERS: { codex: 1, 'claude-desktop': 1, 'claude-vscode': 20 },
     curSymbol: '$',
     usdRate: 0.76,
@@ -142,4 +142,53 @@ test('renderStats shows neutral weekly runway and plan-fit cards', () => {
   assert.match(container.innerHTML, /~7x/);
   assert.doesNotMatch(container.innerHTML.toLowerCase(), /required/);
   assert.doesNotMatch(container.innerHTML.toLowerCase(), /upgrade/);
+});
+
+test('planMultiplierFor: configured value wins; fallback is 5 for codex, 1 otherwise', () => {
+  const { planMultiplierFor } = loadStatsRenderer({ querySelector: () => null });
+
+  // Configured value wins for every account.
+  assert.equal(planMultiplierFor({ planMultipliers: { 'claude-desktop': 5 } }, 'claude-desktop'), 5);
+  assert.equal(planMultiplierFor({ planMultipliers: { 'claude-vscode': 3 } }, 'claude-vscode'), 3);
+  assert.equal(planMultiplierFor({ planMultipliers: { codex: 8 } }, 'codex'), 8);
+
+  // Fallbacks when unset: codex 5, everything else 1 (claude-vscode no longer 20).
+  assert.equal(planMultiplierFor({}, 'codex'), 5);
+  assert.equal(planMultiplierFor({}, 'claude-desktop'), 1);
+  assert.equal(planMultiplierFor({}, 'claude-vscode'), 1);
+  assert.equal(planMultiplierFor(undefined, 'claude-desktop'), 1);
+});
+
+test('renderStats Plan Fit reflects the configured multiplier for Claude Desktop', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null }, 'claude-desktop');
+  const container = new FakeElement();
+  const entries = [
+    { ts: '2026-06-29T08:00:00Z', '5h': 90, wk: 72.1, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:10:00Z', '5h': 80, wk: 71.4, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:20:00Z', '5h': 70, wk: 70.7, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:30:00Z', '5h': 60, wk: 70, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+  ];
+
+  renderStats(entries, container, { planMultipliers: { 'claude-desktop': 5 } });
+
+  assert.match(container.innerHTML, /Plan Fit/);
+  // "current -> ~required": current is the configured 5x.
+  assert.match(container.innerHTML, /5x -&gt;|5x ->/);
+});
+
+test('renderStats Plan Fit falls back to 1x for an unset Claude Code (not 20x)', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null }, 'claude-vscode');
+  const container = new FakeElement();
+  const entries = [
+    { ts: '2026-06-29T08:00:00Z', '5h': 90, wk: 72.1, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:10:00Z', '5h': 80, wk: 71.4, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:20:00Z', '5h': 70, wk: 70.7, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+    { ts: '2026-06-29T08:30:00Z', '5h': 60, wk: 70, reset7dTs: Date.parse('2026-06-30T08:00:00Z') },
+  ];
+
+  renderStats(entries, container, {}); // no planMultipliers configured
+
+  assert.match(container.innerHTML, /Plan Fit/);
+  assert.match(container.innerHTML, /1x -&gt;|1x ->/);
+  assert.doesNotMatch(container.innerHTML, /20x -&gt;|20x ->/);
 });

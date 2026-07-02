@@ -86,7 +86,9 @@ function planMultiplierFor(settings, account) {
   const configured = Number(settings && settings.planMultipliers && settings.planMultipliers[account]);
   if (configured > 0 && isFinite(configured)) return configured;
   if (account === 'codex') return 5;
-  return PLAN_MULTIPLIERS[account] ?? 1;
+  // Plan CAPACITY defaults to base (1x) when unset — deliberately decoupled from
+  // PLAN_MULTIPLIERS (token-consumption burn rate). Set per account in Settings.
+  return 1;
 }
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 function fmtMoney(v) { return curSymbol + (v || 0).toFixed(2); }          // value already in display currency
