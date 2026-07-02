@@ -670,20 +670,22 @@ function buildEffWindow(entries, win) {
     <div class="eff-sub">${title} — History</div>
     <div class="eff-hist">${histLine}</div>
     <div id="eff-peaks-${win}" class="eff-peaks"></div>
-    <div id="eff-heat-${win}" class="eff-heat"></div>
     ${win === '5h' ? `<details class="eff-month"><summary>Burn by hour heatmap</summary><div id="eff-month-5h"></div></details>` : ''}
   `;
 }
 
 function renderEfficiency(entries, container) {
   container.innerHTML = `<div class="section-head">Efficiency</div>`
-    + ['5h', 'wk'].map(win => buildEffWindow(entries, win)).join('');
+    + ['5h', 'wk'].map(win => buildEffWindow(entries, win)).join('')
+    + `<div class="eff-sub">Time of Day — when you burn quota</div><div id="eff-hourofday" class="eff-heat"></div>`;
 
   ['5h', 'wk'].forEach(win => {
     const completed = segmentCycles(entries, win).slice(0, -1).map(c => cycleStats(c, win));
     renderPeakBars(container.querySelector(`#eff-peaks-${win}`), summarize(completed).peaks);
-    renderHourHeatmap(container.querySelector(`#eff-heat-${win}`), hourlyBurn(entries, win));
   });
+  // One time-of-day heatmap from the 5h meter (finest resolution). The weekly
+  // version was the same shape once normalized to a share, so it's shown once.
+  renderHourHeatmap(container.querySelector('#eff-hourofday'), hourlyBurn(entries, '5h'));
 
   monthEntries = entries;
   const mpts = entries.filter(s => s && s['5h'] != null);
@@ -728,17 +730,20 @@ function renderPeakBars(el, peaks) {
 function renderHourHeatmap(el, hours) {
   if (!el) return;
   const max = Math.max(1, ...hours);
-  // Every hour 0–23 is drawn; zero-burn hours get a faint outline so the full-day
-  // grid stays visible instead of collapsing to a few floating squares.
+  const total = hours.reduce((a, b) => a + b, 0);
+  // Each hour shows its SHARE of your total burn (sums to 100%, never exceeds it) —
+  // the raw per-hour value is a running sum across all days/windows and can exceed
+  // 100%, which is meaningless. Opacity stays value/max for the best visual contrast.
   const cells = hours.map((v, h) => {
     if (v <= 0) return `<div class="heat-cell empty" title="${h}:00 — no burn"></div>`;
     const a = (v / max).toFixed(2);
-    return `<div class="heat-cell" title="${h}:00 — ${v.toFixed(0)}% of quota burned" style="background:rgba(168,85,247,${a})"></div>`;
+    const share = total > 0 ? Math.round((v / total) * 100) : 0;
+    return `<div class="heat-cell" title="${h}:00 — ${share}% of your burn" style="background:rgba(168,85,247,${a})"></div>`;
   }).join('');
   // Hour labels live on their own axis row (0/6/12/18), aligned under the cells.
   const axis = hours.map((_, h) => `<span>${h % 6 === 0 ? h : ''}</span>`).join('');
   const legend = `<div class="heat-legend"><span>less</span><i class="grad"></i><span>more</span></div>`;
-  el.innerHTML = `<div class="eff-cap">Burn by hour of day <span class="eff-subtle">(share of quota used per clock hour, all days)</span></div>`
+  el.innerHTML = `<div class="eff-cap">Share of your total burn per clock hour <span class="eff-subtle">(all days)</span></div>`
     + `<div class="heat-row">${cells}</div>`
     + `<div class="hour-axis">${axis}</div>${legend}`;
 }

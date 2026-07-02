@@ -160,6 +160,27 @@ test('renderHourHeatmap renders all 24 hours, an axis, a legend, and marks empty
   assert.match(el.innerHTML, /hour-axis/);
   assert.match(el.innerHTML, /heat-legend/);
   assert.match(el.innerHTML, /class="heat-cell empty"/); // zero hours outlined
+  // per-hour number is a SHARE of total burn (30+50=80): 9→38%, 10→63%; never >100%
+  assert.match(el.innerHTML, /38% of your burn/);
+  assert.match(el.innerHTML, /63% of your burn/);
+  assert.doesNotMatch(el.innerHTML, /quota burned/); // old misleading label gone
+});
+
+test('renderEfficiency shows one time-of-day heatmap, not one per window', () => {
+  const documentStub = { querySelector: () => null };
+  const { renderEfficiency } = loadEfficiencyRenderer(documentStub);
+  const container = new FakeElement();
+  const entries = [
+    { ts: '2026-06-10T12:00:00Z', '5h': 100, wk: 100 },
+    { ts: '2026-06-10T12:05:00Z', '5h': 90, wk: 99 },
+    { ts: '2026-06-10T12:10:00Z', '5h': 100, wk: 100, reset5hTs: 1 },
+  ];
+
+  renderEfficiency(entries, container);
+
+  assert.ok(container.querySelector('#eff-hourofday'), 'single time-of-day container exists');
+  assert.equal(container.querySelector('#eff-heat-5h'), null, 'no per-5h heatmap');
+  assert.equal(container.querySelector('#eff-heat-wk'), null, 'no per-weekly heatmap');
 });
 
 test('renderStats shows neutral weekly runway and plan-fit cards', () => {
