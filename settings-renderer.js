@@ -1,6 +1,7 @@
 'use strict';
 
 const ACCOUNTS = ['codex', 'claude-desktop', 'claude-vscode'];
+const MULT_DEFAULTS = { 'codex': 5, 'claude-desktop': 1, 'claude-vscode': 1 };
 const status = (msg) => { document.getElementById('login-status').textContent = msg || ''; };
 
 async function loadSettings() {
@@ -17,6 +18,9 @@ async function loadSettings() {
   const pp = s.planPrices || {};
   ACCOUNTS.forEach(a => { document.getElementById('price-' + a).value = pp[a] != null ? pp[a] : ''; });
 
+  const pm = s.planMultipliers || {};
+  ACCOUNTS.forEach(a => { document.getElementById('mult-' + a).value = pm[a] != null ? pm[a] : MULT_DEFAULTS[a]; });
+
   const ov = s.accountOverrides || {};
   document.getElementById('ov-codex').value = ov.codex || '';
   document.getElementById('ov-claude').value = ov.claude || '';
@@ -30,6 +34,15 @@ function savePlanPrices() {
     if (!isNaN(v) && v > 0) planPrices[a] = v;
   });
   window.electronAPI.saveSettings({ planPrices });
+}
+
+function savePlanMultipliers() {
+  const planMultipliers = {};
+  ACCOUNTS.forEach(a => {
+    const v = parseFloat(document.getElementById('mult-' + a).value);
+    if (!isNaN(v) && v > 0) planMultipliers[a] = v;
+  });
+  window.electronAPI.saveSettings({ planMultipliers });
 }
 
 function saveOverrides() {
@@ -58,6 +71,7 @@ document.getElementById('cur-rate').addEventListener('change', e => {
   if (!isNaN(r) && r > 0) window.electronAPI.saveSettings({ usdRate: r });
 });
 ACCOUNTS.forEach(a => document.getElementById('price-' + a).addEventListener('change', savePlanPrices));
+ACCOUNTS.forEach(a => document.getElementById('mult-' + a).addEventListener('change', savePlanMultipliers));
 ['ov-codex', 'ov-claude', 'ov-claude2'].forEach(id =>
   document.getElementById(id).addEventListener('change', saveOverrides));
 

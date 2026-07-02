@@ -53,6 +53,43 @@ function fmtRate(r) {
   return r > 0.05 ? r.toFixed(1) + '%/hr' : '0%/hr';
 }
 
+function fmtRunwayDate(ts) {
+  if (!ts) return '-';
+  const d = new Date(ts);
+  return d.toLocaleDateString([], { weekday: 'short' })
+    + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtGap(ms) {
+  if (ms == null) return '-';
+  const label = fmtDuration(Math.abs(ms));
+  return ms > 0 ? `${label} short` : `${label} buffer`;
+}
+
+function fmtEvidenceSpan(ms) {
+  const n = Number(ms);
+  if (!isFinite(n) || n <= 0) return 'short sample';
+  const minutes = Math.max(1, Math.round(n / 60_000));
+  if (minutes < 60) return `${minutes}m sample`;
+  const hours = n / 3_600_000;
+  if (hours < 24) return `${hours < 10 ? hours.toFixed(1) : Math.round(hours)}h sample`;
+  const days = hours / 24;
+  return `${days < 10 ? days.toFixed(1) : Math.round(days)}d sample`;
+}
+function fmtMultiplier(v) {
+  const n = Number(v);
+  if (v == null || !isFinite(n)) return '-';
+  return (Math.round(n * 10) / 10).toFixed(1).replace(/\.0$/, '') + 'x';
+}
+
+function planMultiplierFor(settings, account) {
+  const configured = Number(settings && settings.planMultipliers && settings.planMultipliers[account]);
+  if (configured > 0 && isFinite(configured)) return configured;
+  if (account === 'codex') return 5;
+  // Plan CAPACITY defaults to base (1x) when unset — deliberately decoupled from
+  // PLAN_MULTIPLIERS (token-consumption burn rate). Set per account in Settings.
+  return 1;
+}
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 function fmtMoney(v) { return curSymbol + (v || 0).toFixed(2); }          // value already in display currency
 function fmtMoneyUsd(usd) { return curSymbol + ((usd || 0) * usdRate).toFixed(2); } // convert USD → display
@@ -261,7 +298,7 @@ function renderSparkline(svgEl, entries, ratePerMs) {
 }
 
 // ── Stat cards ─────────────────────────────────────────────────────────────
-function renderStats(entries, container) {
+function renderStats(entries, container, settings = {}) {
   if (!entries.length) {
     container.innerHTML = '<div class="empty">No data in this window.</div>';
     return;
@@ -276,7 +313,41 @@ function renderStats(entries, container) {
   const sessionCount   = loggedSessions || burn.sessions;
   const spanMs = new Date(last.ts) - new Date(entries[0].ts);
   const mult   = PLAN_MULTIPLIERS[currentAccount] ?? 1;
-
+  const configuredPlanMultiplier = planMultiplierFor(settings, currentAccount);
+  const runway = weeklyRunway(entries, configuredPlanMultiplier);
+  const runwayCls = runway.confidence === 'none' || runway.gapMs == null ? 'dim'
+    : runway.gapMs > 0 ? 'red'
+    : runway.gapMs > -12 * 3_600_000 ? 'amber'
+    : 'green';
+  const runwayHasProjection = runway.confidence !== 'none' && runway.gapMs != null;
+  const runwayEvidence = fmtEvidenceSpan(runway.evidenceMs);
+  const runwayPace = runway.evidenceMs > 0 && runway.evidenceMs < 12 * 3_600_000 ? 'early pace' : 'current pace';
+  const runwayCards = !runwayHasProjection ? [
+    { label: 'Weekly Runway', value: '-', sub: runway.confidence === 'limited' ? `${runwayEvidence} so far` : 'need weekly movement', cls: 'dim' },
+    { label: 'Reset Gap', value: '-', sub: 'vs weekly reset', cls: 'dim' },
+    { label: 'Plan Fit', value: `${fmtMultiplier(configuredPlanMultiplier)} -> -`, sub: runway.confidence === 'limited' ? 'waiting for steadier sample' : 'current plan - pace check', cls: 'dim' },
+    { label: 'At Reset', value: '-', sub: 'projected weekly headroom', cls: 'dim' },
+  ] : [
+    {
+      label: 'Weekly Runway',
+      value: runway.gapMs > 0 ? fmtRunwayDate(runway.projectedDepleteTs) : 'Lasts to reset',
+      sub: `based on ${runwayPace} - ${runwayEvidence}`,
+      cls: runwayCls,
+    },
+    { label: 'Reset Gap', value: fmtGap(runway.gapMs), sub: 'vs weekly reset', cls: runwayCls },
+    {
+      label: 'Plan Fit',
+      value: `${fmtMultiplier(runway.currentPlanMultiplier)} -> ~${fmtMultiplier(runway.requiredPlanMultiplier)}`,
+      sub: `if ${runwayPace} holds`,
+      cls: runwayCls,
+    },
+    {
+      label: 'At Reset',
+      value: Math.round(runway.projectedHeadroomAtResetPct) + '%',
+      sub: `if ${runwayPace} holds`,
+      cls: runwayCls,
+    },
+  ];
   const fmtDepleteTime = (d) => d
     ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (d - Date.now() < 0 ? ' (past)' : '')
     : null;
@@ -440,6 +511,7 @@ function renderStats(entries, container) {
       })() },
     { label: 'Next 5H Reset ~',   value: next5hStr,  sub: next5hSub,  cls: '' },
     { label: 'Next Weekly Reset', value: next7dStr,  sub: next7dSub,  cls: apiReset7d && apiReset7d - Date.now() < 86_400_000 ? 'amber' : '' },
+    ...runwayCards,
   ];
 
   container.innerHTML = `
@@ -936,7 +1008,7 @@ async function renderAll() {
   // Efficiency reads the FULL log (all cycles), independent of the time-window filter.
   const allEntries = await window.electronAPI.readUsageLog(currentAccount, 0);
 
-  renderStats(entries, statsEl);
+  renderStats(entries, statsEl, _cur);
   renderEfficiency(allEntries, effEl);
   await renderCost(costEl);
   renderChart(entries, chartEl);

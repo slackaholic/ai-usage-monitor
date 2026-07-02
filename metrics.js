@@ -81,6 +81,97 @@ function countDepletionEvents(snapshots, win) {
   return count;
 }
 
+function latestResetTs(pts, key) {
+  for (let i = pts.length - 1; i >= 0; i--) {
+    if (Number.isFinite(pts[i][key]) && pts[i][key] > 0) return pts[i][key];
+  }
+  return null;
+}
+
+function currentPeriodPoints(pts, win, resetTs) {
+  const cycles = segmentCycles(pts, win);
+  const latestCycle = cycles.length ? cycles[cycles.length - 1] : pts;
+  if (!Number.isFinite(resetTs)) return latestCycle;
+  const periodStart = resetTs - WINDOW_MS[win];
+  if (!Number.isFinite(periodStart)) return latestCycle;
+  const scoped = latestCycle.filter(p => {
+    const t = new Date(p.ts).getTime();
+    return Number.isFinite(t) && t >= periodStart && t <= resetTs;
+  });
+  return scoped.length ? scoped : latestCycle;
+}
+
+function weeklyRunway(snapshots, currentPlanMultiplier) {
+  const allPts = snapshots.filter(s => s && s.wk != null);
+  const multiplier = Number.isFinite(currentPlanMultiplier) && currentPlanMultiplier > 0 ? currentPlanMultiplier : 1;
+  const weeklyRemainingPct = allPts.length ? allPts[allPts.length - 1].wk : null;
+  const weeklyResetTs = allPts.length ? latestResetTs(allPts, 'reset7dTs') : null;
+  const pts = currentPeriodPoints(allPts, 'wk', weeklyResetTs);
+
+  const emptyProjection = (weeklyBurnRatePctPerHour, confidence, evidence = {}) => ({
+    currentPlanMultiplier: multiplier,
+    weeklyRemainingPct,
+    weeklyResetTs,
+    weeklyBurnRatePctPerHour,
+    evidenceMs: evidence.evidenceMs ?? 0,
+    evidenceDropPct: evidence.evidenceDropPct ?? 0,
+    activeDropCount: evidence.activeDropCount ?? 0,
+    projectedDepleteTs: null,
+    gapMs: null,
+    projectedHeadroomAtResetPct: null,
+    requiredPlanMultiplier: null,
+    confidence,
+  });
+
+  if (pts.length < 2) return emptyProjection(0, 'none');
+
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  let activeDrops = 0;
+
+  for (let i = 1; i < pts.length; i++) {
+    const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
+    const drop = pts[i - 1].wk - pts[i].wk;
+    if (drop > 0 && dt > 0 && dt < ACTIVE_GAP_MAX) activeDrops++;
+  }
+
+  const spanMs = new Date(last.ts) - new Date(first.ts);
+  const totalDrop = first.wk - last.wk;
+  const evidence = {
+    evidenceMs: spanMs > 0 ? spanMs : 0,
+    evidenceDropPct: totalDrop > 0 ? totalDrop : 0,
+    activeDropCount: activeDrops,
+  };
+  const weeklyBurnRatePctPerHour = spanMs > 0 && totalDrop > 0
+    ? totalDrop / (spanMs / 3_600_000)
+    : 0;
+  const confidence = activeDrops >= 2 && spanMs >= 30 * 60_000 ? 'good'
+    : totalDrop > 0 ? 'limited'
+    : 'none';
+
+  const lastTs = new Date(last.ts).getTime();
+  if (confidence !== 'good' || !Number.isFinite(weeklyResetTs) || !Number.isFinite(lastTs) || weeklyResetTs <= lastTs || weeklyBurnRatePctPerHour <= 0 || last.wk <= 0) {
+    return emptyProjection(weeklyBurnRatePctPerHour, confidence, evidence);
+  }
+
+  const hoursUntilReset = (weeklyResetTs - lastTs) / 3_600_000;
+  const hoursUntilDepletion = last.wk / weeklyBurnRatePctPerHour;
+  const projectedDepleteTs = lastTs + hoursUntilDepletion * 3_600_000;
+  const projectedConsumptionByReset = weeklyBurnRatePctPerHour * hoursUntilReset;
+
+  return {
+    currentPlanMultiplier: multiplier,
+    weeklyRemainingPct: last.wk,
+    weeklyResetTs,
+    weeklyBurnRatePctPerHour,
+    ...evidence,
+    projectedDepleteTs,
+    gapMs: weeklyResetTs - projectedDepleteTs,
+    projectedHeadroomAtResetPct: last.wk - projectedConsumptionByReset,
+    requiredPlanMultiplier: multiplier * projectedConsumptionByReset / last.wk,
+    confidence,
+  };
+}
 function hourlyBurn(snapshots, win) {
   const hours = new Array(24).fill(0);
   const pts = snapshots.filter(s => s && s[win] != null);
@@ -300,5 +391,5 @@ function normalizeCodexTokenUsage(u, model, timestamp) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
 }

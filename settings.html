@@ -63,6 +63,14 @@
   </div>
 
   <div class="section">
+    <div class="section-title">Plan capacity multiplier</div>
+    <div class="row"><label>Codex</label><input type="number" id="mult-codex" min="0.1" step="0.1" value="5"><span class="suffix">x</span></div>
+    <div class="row"><label>Claude Desktop</label><input type="number" id="mult-claude-desktop" min="0.1" step="0.1" value="1"><span class="suffix">x</span></div>
+    <div class="row"><label>Claude Code</label><input type="number" id="mult-claude-vscode" min="0.1" step="0.1" value="1"><span class="suffix">x</span></div>
+    <div class="note">Per account — drives the Analytics <b>Plan Fit</b> card (your plan tier vs. the pace your weekly usage would need). Set to your plan's capacity relative to base (1×).</div>
+  </div>
+
+  <div class="section">
     <div class="section-title">Account label overrides</div>
     <div class="row"><label>Codex</label><input type="text" id="ov-codex" placeholder="auto-detected"></div>
     <div class="row"><label>Claude Desktop</label><input type="text" id="ov-claude" placeholder="auto-detected"></div>
