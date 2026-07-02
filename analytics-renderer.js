@@ -322,6 +322,24 @@ function renderStats(entries, container, settings = {}) {
   const runwayHasProjection = runway.confidence !== 'none' && runway.gapMs != null;
   const runwayEvidence = fmtEvidenceSpan(runway.evidenceMs);
   const runwayPace = runway.evidenceMs > 0 && runway.evidenceMs < 12 * 3_600_000 ? 'early pace' : 'current pace';
+  // Clamp the projection cards for display (metrics.js stays truthful):
+  // weekly quota can't fall below 0%, and a short burst shouldn't imply a huge plan.
+  const cur = runway.currentPlanMultiplier;
+  const req = runway.requiredPlanMultiplier;
+  const planFitCeiling = cur * 3; // above 3× the current plan, no real plan fits
+  const headroomRaw = runway.projectedHeadroomAtResetPct;
+  const runsOutBeforeReset = headroomRaw != null && headroomRaw < 0;
+  let planFitValue, planFitSub;
+  if (req == null || req <= cur) {
+    planFitValue = fmtMultiplier(cur);
+    planFitSub = 'current pace fits your plan';
+  } else if (req <= planFitCeiling) {
+    planFitValue = `${fmtMultiplier(cur)} -> ~${fmtMultiplier(req)}`;
+    planFitSub = `if ${runwayPace} holds`;
+  } else {
+    planFitValue = `${fmtMultiplier(cur)} · won't fit`;
+    planFitSub = 'pace far exceeds any plan';
+  }
   const runwayCards = !runwayHasProjection ? [
     { label: 'Weekly Runway', value: '-', sub: runway.confidence === 'limited' ? `${runwayEvidence} so far` : 'need weekly movement', cls: 'dim' },
     { label: 'Reset Gap', value: '-', sub: 'vs weekly reset', cls: 'dim' },
@@ -337,14 +355,14 @@ function renderStats(entries, container, settings = {}) {
     { label: 'Reset Gap', value: fmtGap(runway.gapMs), sub: 'vs weekly reset', cls: runwayCls },
     {
       label: 'Plan Fit',
-      value: `${fmtMultiplier(runway.currentPlanMultiplier)} -> ~${fmtMultiplier(runway.requiredPlanMultiplier)}`,
-      sub: `if ${runwayPace} holds`,
+      value: planFitValue,
+      sub: planFitSub,
       cls: runwayCls,
     },
     {
       label: 'At Reset',
-      value: Math.round(runway.projectedHeadroomAtResetPct) + '%',
-      sub: `if ${runwayPace} holds`,
+      value: runsOutBeforeReset ? '0%' : Math.round(headroomRaw) + '%',
+      sub: runsOutBeforeReset ? 'runs out before reset' : `if ${runwayPace} holds`,
       cls: runwayCls,
     },
   ];
