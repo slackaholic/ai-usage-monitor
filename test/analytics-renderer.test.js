@@ -118,6 +118,37 @@ test('renderEfficiency populates the detached month heatmap before the atomic sw
   assert.match(month.innerHTML, /10% burned/);
 });
 
+test('renderPeakBars is self-describing: legend, threshold grid, time axis', () => {
+  const { renderPeakBars } = loadEfficiencyRenderer({ querySelector: () => null });
+  const el = new FakeElement();
+  renderPeakBars(el, [
+    { peakPct: 95, ts: '2026-06-29T08:00:00Z' },
+    { peakPct: 40, ts: '2026-06-29T13:00:00Z' },
+  ]);
+
+  assert.match(el.innerHTML, /peak-legend/);      // color legend present
+  assert.match(el.innerHTML, /ran out/);          // ≥90% meaning spelled out
+  assert.match(el.innerHTML, /peak-chart/);       // 0–100% frame
+  assert.equal((el.innerHTML.match(/peak-grid/g) || []).length, 2); // 70% + 90% lines
+  assert.match(el.innerHTML, /oldest/);
+  assert.match(el.innerHTML, /newest/);
+  assert.equal((el.innerHTML.match(/class="peak-bar"/g) || []).length, 2);
+});
+
+test('renderHourHeatmap renders all 24 hours, an axis, a legend, and marks empty hours', () => {
+  const { renderHourHeatmap } = loadEfficiencyRenderer({ querySelector: () => null });
+  const el = new FakeElement();
+  const hours = new Array(24).fill(0);
+  hours[9] = 30;
+  hours[10] = 50;
+  renderHourHeatmap(el, hours);
+
+  assert.equal((el.innerHTML.match(/class="heat-cell/g) || []).length, 24); // full day
+  assert.match(el.innerHTML, /hour-axis/);
+  assert.match(el.innerHTML, /heat-legend/);
+  assert.match(el.innerHTML, /class="heat-cell empty"/); // zero hours outlined
+});
+
 test('renderStats shows neutral weekly runway and plan-fit cards', () => {
   const { renderStats } = loadStatsRenderer({ querySelector: () => null });
   const container = new FakeElement();
