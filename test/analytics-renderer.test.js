@@ -135,6 +135,19 @@ test('renderPeakBars is self-describing: legend, threshold grid, time axis', () 
   assert.equal((el.innerHTML.match(/class="peak-bar"/g) || []).length, 2);
 });
 
+test('renderPeakBars labels bars with date ranges when few cycles carry endTs', () => {
+  const { renderPeakBars } = loadEfficiencyRenderer({ querySelector: () => null });
+  const el = new FakeElement();
+  renderPeakBars(el, [
+    { peakPct: 57, ts: '2026-06-24T08:00:00Z', endTs: '2026-06-30T10:59:00Z' },
+    { peakPct: 21, ts: '2026-06-30T11:01:00Z', endTs: '2026-07-02T13:11:00Z' },
+  ]);
+
+  assert.match(el.innerHTML, /peak-dates/);          // per-bar date labels
+  assert.doesNotMatch(el.innerHTML, />oldest</);      // not the generic axis
+  assert.equal((el.innerHTML.match(/class="peak-bar"/g) || []).length, 2);
+});
+
 test('renderHourHeatmap renders all 24 hours, an axis, a legend, and marks empty hours', () => {
   const { renderHourHeatmap } = loadEfficiencyRenderer({ querySelector: () => null });
   const el = new FakeElement();

@@ -648,10 +648,14 @@ function buildEffWindow(entries, win) {
       cls: lastDone.blocked ? 'red' : 'green' },
   ] : [];
 
+  const period = win === '5h' ? '5-hour cycle' : 'weekly period';
+  const periods = `${sum.count} past ${period}${sum.count !== 1 ? 's' : ''}`;
   const histLine = sum.count
-    ? `${sum.blockedCount} of ${sum.count} completed cycles ran out`
-      + (sum.totalBlockedMs > 0 ? ` · ≈${fmtDuration(sum.totalBlockedMs)} blocked total` : '')
-    : 'No completed cycles yet.';
+    ? (sum.blockedCount === 0
+        ? `${periods} · none hit the limit`
+        : `${sum.blockedCount} of ${periods} hit the limit`
+          + (sum.totalBlockedMs > 0 ? ` · ≈${fmtDuration(sum.totalBlockedMs)} blocked total` : ''))
+    : `No completed ${period}s yet.`;
 
   const confLine = confidenceMs != null && confidenceMs > 0
     ? `<div class="eff-note">Scorecard based on a poll ${fmtDuration(confidenceMs)} before the next cycle began.</div>`
@@ -695,22 +699,28 @@ function renderEfficiency(entries, container) {
 function renderPeakBars(el, peaks) {
   if (!el) return;
   if (!peaks.length) { el.innerHTML = '<div class="empty">No completed cycles yet.</div>'; return; }
+  const shortDate = (ts) => new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
+  const spanLabel = (p) => p.endTs ? `${shortDate(p.ts)}–${shortDate(p.endTs)}` : shortDate(p.ts);
   const bars = peaks.map(p => {
     const h = Math.max(2, Math.round(p.peakPct));
     const color = p.peakPct >= 90 ? 'var(--red)' : p.peakPct >= 70 ? 'var(--amber)' : 'var(--green)';
-    return `<div class="peak-bar" title="${p.peakPct}% · ${fmtDate(p.ts)}" style="height:${h}%;background:${color}"></div>`;
+    return `<div class="peak-bar" title="${p.peakPct}% peak · ${spanLabel(p)}" style="height:${h}%;background:${color}"></div>`;
   }).join('');
-  // Self-describing frame: 0–100% baseline, 70%/90% threshold lines, color legend,
-  // and an oldest→newest time axis. Bar height = the cycle's peak % of the limit.
+  // Self-describing frame: 0–100% baseline, 70%/90% threshold lines, color legend.
+  // Bar height = the cycle's peak % of the limit.
   const legend = `<div class="peak-legend">`
     + `<span><i class="sw green"></i>&lt;70%</span>`
     + `<span><i class="sw amber"></i>70–89%</span>`
     + `<span><i class="sw red"></i>≥90% ran out</span></div>`;
   const grids = `<div class="peak-grid" style="bottom:90%"><span>90</span></div>`
     + `<div class="peak-grid" style="bottom:70%"><span>70</span></div>`;
+  // Few cycles that carry a date span (the weekly case) → label each bar with its
+  // range; many bars (the 12-cycle 5-hour case) → a generic oldest→newest axis.
+  const axis = (peaks.length <= 4 && peaks.every(p => p.endTs))
+    ? `<div class="peak-dates">${peaks.map(p => `<span title="${spanLabel(p)}">${spanLabel(p)}</span>`).join('')}</div>`
+    : `<div class="peak-axis"><span>oldest</span><span>newest</span></div>`;
   el.innerHTML = `<div class="eff-cap">Peak usage per completed cycle</div>${legend}`
-    + `<div class="peak-chart">${grids}<div class="peak-bars">${bars}</div></div>`
-    + `<div class="peak-axis"><span>oldest</span><span>newest</span></div>`;
+    + `<div class="peak-chart">${grids}<div class="peak-bars">${bars}</div></div>${axis}`;
 }
 
 function renderHourHeatmap(el, hours) {

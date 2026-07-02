@@ -2,7 +2,9 @@
 
 // Tunable thresholds — calibrate once more data accumulates.
 const RESET_JUMP_MIN = 15;            // upward % jump counted as a window reset
-const RESET_ADVANCE_MIN = 60_000;     // forward jump (ms) in the reset timestamp counted as a reset
+const RESET_ADVANCE_FRAC = 0.5;       // reset-ts must jump ≥ this fraction of the window
+                                      // to count as a reset (a real reset advances ~1 window;
+                                      // a partial re-anchor / plan change advances less)
 const ACTIVE_GAP_MAX = 15 * 60_000;   // poll gap above this is idle, not consumption
 
 const RESET_KEY  = { '5h': 'reset5hTs', wk: 'reset7dTs' };
@@ -11,7 +13,8 @@ const WINDOW_MS  = { '5h': 5 * 3_600_000, wk: 7 * 86_400_000 };
 function isBoundary(prev, cur, win) {
   const jumped   = (cur[win] - prev[win]) > RESET_JUMP_MIN;
   const rk       = RESET_KEY[win];
-  const resetAdvanced = prev[rk] > 0 && cur[rk] > 0 && (cur[rk] - prev[rk]) > RESET_ADVANCE_MIN;
+  const resetAdvanced = prev[rk] > 0 && cur[rk] > 0
+    && (cur[rk] - prev[rk]) >= WINDOW_MS[win] * RESET_ADVANCE_FRAC;
   const recoveredOrHeld = cur[win] >= prev[win];
   const stillFull = prev[win] === 100 && cur[win] === 100;
   const advanced = resetAdvanced && recoveredOrHeld && !stillFull;
@@ -65,7 +68,7 @@ function summarize(stats) {
     blockedCount: blocked.length,
     blockRate: count ? blocked.length / count : 0,
     totalBlockedMs: blocked.reduce((a, s) => a + s.blockedMs, 0),
-    peaks: stats.map(s => ({ ts: s.startTs, peakPct: s.peakPct })),
+    peaks: stats.map(s => ({ ts: s.startTs, endTs: s.endTs, peakPct: s.peakPct })),
   };
 }
 
@@ -391,5 +394,5 @@ function normalizeCodexTokenUsage(u, model, timestamp) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_MIN, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_FRAC, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
 }
