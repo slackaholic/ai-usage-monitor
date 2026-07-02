@@ -632,7 +632,7 @@ function buildEffWindow(entries, win) {
       <div class="value">${c.value}</div><div class="sub">${c.sub}</div></div>`).join('')}</div>`;
 
   const liveCards = [
-    { label: 'Peak So Far', value: current.peakPct + '%', sub: 'this cycle',
+    { label: 'Peak So Far', value: current.peakPct + '%', sub: 'this period',
       cls: current.peakPct >= 90 ? 'red' : current.peakPct >= 70 ? 'amber' : 'green' },
     { label: 'Headroom', value: current.headroomPct + '%', sub: 'unused so far', cls: '' },
     { label: 'Status', value: current.blocked ? 'Blocked' : 'Running',
@@ -641,14 +641,16 @@ function buildEffWindow(entries, win) {
   ];
 
   const scoreCards = lastDone ? [
-    { label: 'Last Peak', value: lastDone.peakPct + '%', sub: 'previous cycle', cls: '' },
+    { label: 'Last Peak', value: lastDone.peakPct + '%', sub: 'previous period', cls: '' },
     { label: 'Left at Reset', value: lastDone.headroomPct + '%', sub: 'headroom', cls: '' },
     { label: 'Blocked', value: lastDone.blocked ? 'Yes' : 'No',
       sub: lastDone.blocked ? fmtDuration(lastDone.blockedMs) + ' stuck' : 'never ran out',
       cls: lastDone.blocked ? 'red' : 'green' },
   ] : [];
 
-  const period = win === '5h' ? '5-hour cycle' : 'weekly period';
+  // "usage period" is neutral for both windows (the section header already names the
+  // window) and honest about early resets, which make periods shorter than the label.
+  const period = 'usage period';
   const periods = `${sum.count} past ${period}${sum.count !== 1 ? 's' : ''}`;
   const histLine = sum.count
     ? (sum.blockedCount === 0
@@ -658,13 +660,13 @@ function buildEffWindow(entries, win) {
     : `No completed ${period}s yet.`;
 
   const confLine = confidenceMs != null && confidenceMs > 0
-    ? `<div class="eff-note">Scorecard based on a poll ${fmtDuration(confidenceMs)} before the next cycle began.</div>`
+    ? `<div class="eff-note">Scorecard based on a poll ${fmtDuration(confidenceMs)} before the next period began.</div>`
     : '';
 
   return `
     <div class="eff-sub">${title} — Now</div>
     ${grid(liveCards)}
-    ${scoreCards.length ? `<div class="eff-sub">${title} — Last Completed Cycle</div>${grid(scoreCards)}${confLine}` : ''}
+    ${scoreCards.length ? `<div class="eff-sub">${title} — Last Completed Period</div>${grid(scoreCards)}${confLine}` : ''}
     <div class="eff-sub">${title} — History</div>
     <div class="eff-hist">${histLine}</div>
     <div id="eff-peaks-${win}" class="eff-peaks"></div>
@@ -698,7 +700,7 @@ function renderEfficiency(entries, container) {
 
 function renderPeakBars(el, peaks) {
   if (!el) return;
-  if (!peaks.length) { el.innerHTML = '<div class="empty">No completed cycles yet.</div>'; return; }
+  if (!peaks.length) { el.innerHTML = '<div class="empty">No completed usage periods yet.</div>'; return; }
   const shortDate = (ts) => new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
   const spanLabel = (p) => p.endTs ? `${shortDate(p.ts)}–${shortDate(p.endTs)}` : shortDate(p.ts);
   const bars = peaks.map(p => {
@@ -719,7 +721,7 @@ function renderPeakBars(el, peaks) {
   const axis = (peaks.length <= 4 && peaks.every(p => p.endTs))
     ? `<div class="peak-dates">${peaks.map(p => `<span title="${spanLabel(p)}">${spanLabel(p)}</span>`).join('')}</div>`
     : `<div class="peak-axis"><span>oldest</span><span>newest</span></div>`;
-  el.innerHTML = `<div class="eff-cap">Peak usage per completed cycle</div>${legend}`
+  el.innerHTML = `<div class="eff-cap">Peak usage per period</div>${legend}`
     + `<div class="peak-chart">${grids}<div class="peak-bars">${bars}</div></div>${axis}`;
 }
 
