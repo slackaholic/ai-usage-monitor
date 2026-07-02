@@ -700,17 +700,35 @@ function renderPeakBars(el, peaks) {
     const color = p.peakPct >= 90 ? 'var(--red)' : p.peakPct >= 70 ? 'var(--amber)' : 'var(--green)';
     return `<div class="peak-bar" title="${p.peakPct}% · ${fmtDate(p.ts)}" style="height:${h}%;background:${color}"></div>`;
   }).join('');
-  el.innerHTML = `<div class="eff-cap">Peak usage per completed cycle</div><div class="peak-bars">${bars}</div>`;
+  // Self-describing frame: 0–100% baseline, 70%/90% threshold lines, color legend,
+  // and an oldest→newest time axis. Bar height = the cycle's peak % of the limit.
+  const legend = `<div class="peak-legend">`
+    + `<span><i class="sw green"></i>&lt;70%</span>`
+    + `<span><i class="sw amber"></i>70–89%</span>`
+    + `<span><i class="sw red"></i>≥90% ran out</span></div>`;
+  const grids = `<div class="peak-grid" style="bottom:90%"><span>90</span></div>`
+    + `<div class="peak-grid" style="bottom:70%"><span>70</span></div>`;
+  el.innerHTML = `<div class="eff-cap">Peak usage per completed cycle</div>${legend}`
+    + `<div class="peak-chart">${grids}<div class="peak-bars">${bars}</div></div>`
+    + `<div class="peak-axis"><span>oldest</span><span>newest</span></div>`;
 }
 
 function renderHourHeatmap(el, hours) {
   if (!el) return;
   const max = Math.max(1, ...hours);
+  // Every hour 0–23 is drawn; zero-burn hours get a faint outline so the full-day
+  // grid stays visible instead of collapsing to a few floating squares.
   const cells = hours.map((v, h) => {
+    if (v <= 0) return `<div class="heat-cell empty" title="${h}:00 — no burn"></div>`;
     const a = (v / max).toFixed(2);
-    return `<div class="heat-cell" title="${h}:00 — ${v.toFixed(0)}% burned" style="background:rgba(168,85,247,${a})">${h % 6 === 0 ? h : ''}</div>`;
+    return `<div class="heat-cell" title="${h}:00 — ${v.toFixed(0)}% of quota burned" style="background:rgba(168,85,247,${a})"></div>`;
   }).join('');
-  el.innerHTML = `<div class="eff-cap">Burn by hour of day</div><div class="heat-row">${cells}</div>`;
+  // Hour labels live on their own axis row (0/6/12/18), aligned under the cells.
+  const axis = hours.map((_, h) => `<span>${h % 6 === 0 ? h : ''}</span>`).join('');
+  const legend = `<div class="heat-legend"><span>less</span><i class="grad"></i><span>more</span></div>`;
+  el.innerHTML = `<div class="eff-cap">Burn by hour of day <span class="eff-subtle">(share of quota used per clock hour, all days)</span></div>`
+    + `<div class="heat-row">${cells}</div>`
+    + `<div class="hour-axis">${axis}</div>${legend}`;
 }
 
 function fmtMonthDay(key) {
