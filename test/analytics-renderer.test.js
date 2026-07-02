@@ -159,7 +159,8 @@ test('renderHourHeatmap renders all 24 hours, an axis, a legend, and marks empty
   assert.equal((el.innerHTML.match(/class="heat-cell/g) || []).length, 24); // full day
   assert.match(el.innerHTML, /hour-axis/);
   assert.match(el.innerHTML, /heat-legend/);
-  assert.match(el.innerHTML, /class="heat-cell empty"/); // zero hours outlined
+  assert.match(el.innerHTML, /class="heat-cell zero"/); // zero-burn hours (class must NOT be `empty` — collides with global .empty padding)
+  assert.doesNotMatch(el.innerHTML, /class="heat-cell empty"/);
   // per-hour number is a SHARE of total burn (30+50=80): 9→38%, 10→63%; never >100%
   assert.match(el.innerHTML, /38% of your burn/);
   assert.match(el.innerHTML, /63% of your burn/);
