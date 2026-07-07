@@ -849,13 +849,13 @@ async function fetchClaudeWebUsage2() {
   markUpdated();
 
   // Fetch email lazily if not already cached
-  const cachedEmail = (() => { try { return JSON.parse(localStorage.getItem('claude2-email') || 'null'); } catch { return null; } })();
+  const cachedEmail = (() => { try { return JSON.parse(localStorage.getItem('claude2-email-v2') || 'null'); } catch { return null; } })();
   if (cachedEmail) {
     applyAccountLabel('claude2', cachedEmail);
   } else {
     window.electronAPI.fetchClaudeCodeEmail().then(email => {
       if (email) {
-        localStorage.setItem('claude2-email', JSON.stringify(email));
+        localStorage.setItem('claude2-email-v2', JSON.stringify(email));
         applyAccountLabel('claude2', email);
       }
     });
@@ -981,7 +981,7 @@ function loadCachedData(settings) {
     const pct7d  = c.weeklyUsed  != null ? 100 - c.weeklyUsed  : c.pct7d  ?? null;
     renderClaudeCodeApiData({ pct5h, pct7d, reset5h: c.sessionReset ?? c.reset5h, reset7d: c.weeklyReset ?? c.reset7d, account: c.account }, true);
     setBadge('claude2-badge', 'Cached', 'stale');
-    try { const e = JSON.parse(localStorage.getItem('claude2-email') || 'null'); if (e) applyAccountLabel('claude2', e); } catch {}
+    try { const e = JSON.parse(localStorage.getItem('claude2-email-v2') || 'null'); if (e) applyAccountLabel('claude2', e); } catch {}
   }
 }
 
