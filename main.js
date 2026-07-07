@@ -509,6 +509,50 @@ async function refreshOAuthToken(refreshToken) {
   });
 }
 
+// Returns a valid Claude Code OAuth access token (refreshing + persisting if
+// within 5 min of expiry), or null when no credentials are present.
+async function getValidClaudeCodeToken() {
+  const creds = readCredentials();
+  if (!creds?.claudeAiOauth?.accessToken) return null;
+  let token = creds.claudeAiOauth.accessToken;
+  if (creds.claudeAiOauth.expiresAt < Date.now() + 300_000) {
+    const refreshed = await refreshOAuthToken(creds.claudeAiOauth.refreshToken);
+    if (refreshed?.access_token) {
+      token = refreshed.access_token;
+      const updated = { ...creds, claudeAiOauth: { ...creds.claudeAiOauth, accessToken: token, expiresAt: Date.now() + (refreshed.expires_in ?? 3600) * 1000 } };
+      try { fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(updated, null, 2)); } catch {}
+    }
+  }
+  return token;
+}
+
+// Fetches the account email tied to the OAuth token (the same account whose
+// usage the app reports). Returns '' on non-200, network error, or no email.
+function fetchClaudeCodeProfileEmail(token) {
+  const https = require('https');
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'api.anthropic.com', path: '/api/oauth/profile', method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'anthropic-version': '2023-06-01',
+        'anthropic-client-name': 'claude-code',
+      },
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        if (res.statusCode !== 200) { resolve(''); return; }
+        const m = data.match(/"(?:email|email_address)"\s*:\s*"([^"]+@[^"]+)"/i);
+        resolve(m ? m[1] : '');
+      });
+    });
+    req.on('error', () => resolve(''));
+    req.setTimeout(10000, () => { req.destroy(); resolve(''); });
+    req.end();
+  });
+}
+
 ipcMain.handle('fetch-claude-code-api-usage', async () => {
   const creds = readCredentials();
   if (!creds?.claudeAiOauth?.accessToken) return { error: 'no-credentials' };
@@ -518,17 +562,7 @@ ipcMain.handle('fetch-claude-code-api-usage', async () => {
   const sub  = creds.claudeAiOauth?.subscriptionType ?? '';
   const account = tier.replace('default_', '').replace(/_/g, ' ') || sub || 'Claude Code';
 
-  let token = creds.claudeAiOauth.accessToken;
-
-  // Refresh if within 5 minutes of expiry
-  if (creds.claudeAiOauth.expiresAt < Date.now() + 300_000) {
-    const refreshed = await refreshOAuthToken(creds.claudeAiOauth.refreshToken);
-    if (refreshed?.access_token) {
-      token = refreshed.access_token;
-      const updated = { ...creds, claudeAiOauth: { ...creds.claudeAiOauth, accessToken: token, expiresAt: Date.now() + (refreshed.expires_in ?? 3600) * 1000 } };
-      try { fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(updated, null, 2)); } catch {}
-    }
-  }
+  const token = await getValidClaudeCodeToken();
 
   const https = require('https');
   // Minimal inference probe — only to read rate-limit response headers
@@ -604,6 +638,14 @@ const EMAIL_ONLY_SCRIPT = `
 `;
 
 ipcMain.handle('fetch-claude-code-email', async () => {
+  // 1) OAuth profile — same token/account as the usage numbers.
+  const token = await getValidClaudeCodeToken();
+  if (token) {
+    const email = await fetchClaudeCodeProfileEmail(token);
+    if (email) return email;
+  }
+
+  // 2) Fallback: scrape a logged-in claude.ai browser session.
   const { session: electronSession } = require('electron');
 
   // Try each partition that might have an active claude.ai session
