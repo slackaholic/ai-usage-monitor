@@ -568,7 +568,10 @@ function renderStat(prefix, win, pct) {
   setPct(`${prefix}-${win}-pct`, pct);
   setBar(`${prefix}-${win}-bar`, pct);
   setPct(`c-${prefix}-${win}`, pct);
-  showCompactStat(`${prefix}-${win}`, pct != null);
+  // Keep the compact card in place; its value element already shows "—" for a
+  // null meter (setPct). A fully-absent/errored account never reaches renderStat
+  // (both-null / error early-returns in the fetchers), so no phantom cards.
+  showCompactStat(`${prefix}-${win}`, true);
 }
 
 // Build a usage-log entry with depletion flags + reset timestamps.

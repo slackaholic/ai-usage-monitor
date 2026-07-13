@@ -124,6 +124,16 @@ test('cycleStats: cycle starting at 0 is NOT blocked (left-censored)', () => {
   assert.equal(s.headroomPct, 0);
 });
 
+test('cycleStats clamps peakPct/headroomPct to [0,100] for over-quota (negative remaining) snapshots', () => {
+  const cycle = [
+    { ts: '2026-07-13T08:00:00Z', wk: 5 },
+    { ts: '2026-07-13T09:00:00Z', wk: -2 }, // over quota → 102% used pre-clamp
+  ];
+  const s = cycleStats(cycle, 'wk');
+  assert.equal(s.peakPct, 100);   // clamped from 102
+  assert.equal(s.headroomPct, 0); // clamped from -2
+});
+
 test('countDepletionEvents counts transitions into depletion, not every depleted poll', () => {
   const snaps = [
     { ts: '2026-06-25T00:00:00Z', '5h': 20 },
