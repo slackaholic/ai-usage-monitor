@@ -41,7 +41,10 @@ function segmentCycles(snapshots, win) {
 
 function cycleStats(cycle, win) {
   const remaining = cycle.map(p => p[win]);
-  const minRemaining = Math.min(...remaining);
+  // Clamp into [0,100]: a meter can report over-quota (negative remaining, when
+  // utilization > 1), which would otherwise make peakPct exceed 100 or
+  // headroomPct go negative. Peak usage caps at 100%; headroom can't be negative.
+  const minRemaining = Math.max(0, Math.min(100, Math.min(...remaining)));
   const firstZeroIdx = remaining.findIndex(r => r === 0);
   // Only count as blocked when at least one snapshot BEFORE the zero existed.
   // firstZeroIdx === 0 means the log started mid-depletion (left-censored); skip it.
