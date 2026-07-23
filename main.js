@@ -76,7 +76,12 @@ function readUsageLogGrouped() {
 function tierChangeMs(dateStr) {
   if (typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
   const [y, m, d] = dateStr.split('-').map(Number);
-  const t = new Date(y, m - 1, d).getTime();
+  const dt = new Date(y, m - 1, d);
+  // The Date constructor NORMALIZES out-of-range values rather than failing
+  // ('2026-02-30' becomes 2 Mar), so Number.isFinite can't reject them —
+  // round-trip the components to confirm the date is real.
+  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
+  const t = dt.getTime();
   return Number.isFinite(t) ? t : null;
 }
 
