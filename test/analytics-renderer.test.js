@@ -324,3 +324,33 @@ test('renderStats Plan Fit falls back to 1x for an unset Claude Code (not 20x)',
   assert.match(container.innerHTML, /1x -&gt;|1x ->/);
   assert.doesNotMatch(container.innerHTML, /20x -&gt;|20x ->/);
 });
+
+test('renderStats shows Window Budget and Today Budget cards from the budget ratio', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
+  const container = new FakeElement();
+  const entries = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1, reset7dTs: Date.parse('2026-07-21T08:00:00Z') },
+    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70,   reset7dTs: Date.parse('2026-07-21T08:00:00Z') },
+  ];
+  // 5h remaining 60 → 40% burned; ratio 0.2 → 8.0% weekly-equivalent this window.
+  renderStats(entries, container, { budgetTargets: { window: 10, day: 20 } },
+              { ratio: 0.2, dayWeeklyBurnPct: 12.5 });
+
+  assert.match(container.innerHTML, /Window Budget/);
+  assert.match(container.innerHTML, /8\.0% \/ 10%/);
+  assert.match(container.innerHTML, /Today.s Budget/);
+  assert.match(container.innerHTML, /12\.5% \/ 20%/);
+});
+
+test('renderStats budget cards show em-dash when the ratio is unknown', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
+  const container = new FakeElement();
+  const entries = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1 },
+    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70 },
+  ];
+  renderStats(entries, container, {}, { ratio: null, dayWeeklyBurnPct: 0 });
+
+  assert.match(container.innerHTML, /Window Budget/);
+  assert.match(container.innerHTML, /need more history/);
+});
