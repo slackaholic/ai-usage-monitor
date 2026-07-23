@@ -20,7 +20,6 @@ async function loadSettings() {
   ACCOUNTS.forEach(a => { document.getElementById('price-' + a).value = pp[a] != null ? pp[a] : ''; });
 
   const tc = s.tierChangedAt || {};
-  lastTierChangedAt = { ...tc };
   ACCOUNTS.forEach(a => { document.getElementById('tier-date-' + a).value = tc[a] || ''; });
 
   const pm = s.planMultipliers || {};
@@ -45,26 +44,17 @@ function savePlanPrices() {
   window.electronAPI.saveSettings({ planPrices });
 }
 
-// Last values seen from settings, so a field we decline to save keeps what it had.
-// (saveSettings shallow-merges, so the patch must carry every account key —
-// omitting one would drop its stored date entirely.)
-let lastTierChangedAt = {};
-
+// NB: do NOT try to use validity.badInput to tell "user cleared it" from "user
+// typed a partial date". Measured in Chromium: clearing a date input with the
+// keyboard — even clearing every segment — leaves value === '' with badInput
+// TRUE, indistinguishable from a half-typed entry. (The picker's own Clear
+// leaves it false, so a badInput guard makes clearing work via the picker but
+// silently revert via the keyboard.) An empty field is therefore just saved as
+// '' = "use all history"; the "ratio since <date>" note in the budget readouts
+// is what makes an active cutoff visible.
 function saveTierDates() {
   const tierChangedAt = {};
-  ACCOUNTS.forEach(a => {
-    const el = document.getElementById('tier-date-' + a);
-    // A part-typed date leaves value === '' with validity.badInput true, and
-    // `change` still fires on blur — saving that would silently wipe a stored
-    // date. Treat incomplete entry as "no change"; a genuine clear has
-    // badInput false and is saved as ''.
-    if (el.validity && el.validity.badInput) {
-      tierChangedAt[a] = lastTierChangedAt[a] || '';
-      return;
-    }
-    tierChangedAt[a] = el.value || '';
-  });
-  lastTierChangedAt = { ...tierChangedAt };
+  ACCOUNTS.forEach(a => { tierChangedAt[a] = document.getElementById('tier-date-' + a).value || ''; });
   window.electronAPI.saveSettings({ tierChangedAt });
 }
 
