@@ -130,16 +130,17 @@ ipcMain.on('open-analytics', (_, account) => {
 
 ipcMain.on('open-settings', () => {
   if (settingsWindow && !settingsWindow.isDestroyed()) { settingsWindow.focus(); return; }
-  // Sized to the measured natural content: rows need 393px at 440 wide (below
-  // ~420 the Subscriptions row overflows), and the full form is ~1010px tall.
-  // Height is clamped to the display so it can't exceed a smaller screen.
-  const { screen } = require('electron');
-  const workArea = screen.getPrimaryDisplay().workAreaSize;
+  // Width is measured: the Subscriptions rows need 393px of content, and below
+  // ~420 they overflow horizontally — hence minWidth 420. Height is a starting
+  // value only; did-finish-load below fits it to the real content.
+  // autoHideMenuBar reclaims the stock File/Edit/View bar (still shown on Alt),
+  // which is pure chrome on a settings dialog and ~30px of vertical space.
   settingsWindow = new BrowserWindow({
     width: 440,
-    height: Math.min(1020, Math.max(320, workArea.height - 60)),
+    height: 940,
     minWidth: 420,
     minHeight: 320,
+    autoHideMenuBar: true,
     title: 'AI Usage Monitor — Settings',
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
@@ -153,8 +154,16 @@ ipcMain.on('open-settings', () => {
   settingsWindow.webContents.once('did-finish-load', async () => {
     try {
       const h = await settingsWindow.webContents.executeJavaScript('document.body.scrollHeight');
-      const [w] = settingsWindow.getContentSize();
-      settingsWindow.setContentSize(w, Math.min(Math.max(Math.ceil(h) + 4, 320), 1000));
+      const [w, contentH] = settingsWindow.getContentSize();
+      const [, winH] = settingsWindow.getSize();
+      // setContentSize sets the CONTENT box, so the frame (titlebar + any menu
+      // bar) is extra — measure it rather than guessing, or the window runs off
+      // the bottom of a short screen. Previously this was a hardcoded 1000 cap,
+      // which sat just under the real content height and left a scrollbar.
+      const chrome = Math.max(0, winH - contentH);
+      const { screen } = require('electron');
+      const maxContentH = Math.max(320, screen.getPrimaryDisplay().workAreaSize.height - chrome - 40);
+      settingsWindow.setContentSize(w, Math.min(Math.max(Math.ceil(h) + 4, 320), maxContentH));
     } catch {}
   });
   settingsWindow.on('closed', () => { settingsWindow = null; });

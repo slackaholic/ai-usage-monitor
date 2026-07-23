@@ -9,13 +9,15 @@
     --accent: #a78bfa; --accent-med: #6d4fd0; --border: rgba(255,255,255,.1);
   }
   * { box-sizing: border-box; }
+  /* Vertical rhythm is deliberately tight: the form must fit the settings
+     window without scrolling (measured ~920px of content at 440 wide). */
   body { margin: 0; background: var(--bg); color: var(--text);
-    font-family: -apple-system, Segoe UI, Roboto, sans-serif; font-size: 12px; padding: 14px 16px 24px; }
-  h1 { font-size: 15px; margin: 0 0 12px; }
-  .section { margin-bottom: 18px; }
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif; font-size: 12px; padding: 12px 16px 12px; }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  .section { margin-bottom: 12px; }
   .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
     color: var(--accent); margin-bottom: 8px; }
-  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
   .row label { width: 120px; flex-shrink: 0; color: var(--text); }
   input[type="text"], input[type="number"], input[type="date"], select {
     flex: 1; min-width: 0; background: rgba(255,255,255,.06); border: 1px solid var(--border);
@@ -38,7 +40,7 @@
     border-radius: 4px; padding: 5px 9px; font-size: 12px; cursor: pointer; }
   .btn:hover { background: var(--accent-med); color: #fff; }
   .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
-  .note { font-size: 10px; color: var(--text-mid); margin-top: 6px; }
+  .note { font-size: 10px; color: var(--text-mid); margin-top: 4px; }
   #login-status { font-size: 10px; color: var(--accent); margin-top: 6px; min-height: 12px; }
 </style>
 </head>
