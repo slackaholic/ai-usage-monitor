@@ -19,6 +19,9 @@ async function loadSettings() {
   const pp = s.planPrices || {};
   ACCOUNTS.forEach(a => { document.getElementById('price-' + a).value = pp[a] != null ? pp[a] : ''; });
 
+  const tc = s.tierChangedAt || {};
+  ACCOUNTS.forEach(a => { document.getElementById('tier-date-' + a).value = tc[a] || ''; });
+
   const pm = s.planMultipliers || {};
   ACCOUNTS.forEach(a => { document.getElementById('mult-' + a).value = pm[a] != null ? pm[a] : MULT_DEFAULTS[a]; });
 
@@ -39,6 +42,20 @@ function savePlanPrices() {
     if (!isNaN(v) && v > 0) planPrices[a] = v;
   });
   window.electronAPI.saveSettings({ planPrices });
+}
+
+function saveTierDates() {
+  const tierChangedAt = {};
+  ACCOUNTS.forEach(a => { tierChangedAt[a] = document.getElementById('tier-date-' + a).value || ''; });
+  window.electronAPI.saveSettings({ tierChangedAt });
+}
+
+// Local YYYY-MM-DD for the "Today" buttons (not toISOString, which is UTC and
+// can land on the wrong day near midnight).
+function todayLocalISO() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 function savePlanMultipliers() {
@@ -87,6 +104,11 @@ document.getElementById('cur-rate').addEventListener('change', e => {
   if (!isNaN(r) && r > 0) window.electronAPI.saveSettings({ usdRate: r });
 });
 ACCOUNTS.forEach(a => document.getElementById('price-' + a).addEventListener('change', savePlanPrices));
+ACCOUNTS.forEach(a => document.getElementById('tier-date-' + a).addEventListener('change', saveTierDates));
+ACCOUNTS.forEach(a => document.getElementById('tier-today-' + a).addEventListener('click', () => {
+  document.getElementById('tier-date-' + a).value = todayLocalISO();
+  saveTierDates();
+}));
 ACCOUNTS.forEach(a => document.getElementById('mult-' + a).addEventListener('change', savePlanMultipliers));
 ['budget-window', 'budget-day'].forEach(id =>
   document.getElementById(id).addEventListener('change', saveBudgetTargets));
