@@ -130,10 +130,15 @@ ipcMain.on('open-analytics', (_, account) => {
 
 ipcMain.on('open-settings', () => {
   if (settingsWindow && !settingsWindow.isDestroyed()) { settingsWindow.focus(); return; }
+  // Sized to the measured natural content: rows need 393px at 440 wide (below
+  // ~420 the Subscriptions row overflows), and the full form is ~1010px tall.
+  // Height is clamped to the display so it can't exceed a smaller screen.
+  const { screen } = require('electron');
+  const workArea = screen.getPrimaryDisplay().workAreaSize;
   settingsWindow = new BrowserWindow({
-    width: 400,
-    height: 700,
-    minWidth: 340,
+    width: 440,
+    height: Math.min(1020, Math.max(320, workArea.height - 60)),
+    minWidth: 420,
     minHeight: 320,
     title: 'AI Usage Monitor — Settings',
     icon: path.join(__dirname, 'icon.png'),
