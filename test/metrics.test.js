@@ -637,6 +637,17 @@ test('weeklyPerFiveHourRatio: returns null below the evidence floor', () => {
   assert.equal(weeklyPerFiveHourRatio([]), null);
 });
 
+test('weeklyPerFiveHourRatio: skips intervals where either meter reset', () => {
+  const snaps = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
+    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 },  // active: 10 / 2
+    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 95 },  // active: 15 / 3
+    // 5h resets (refill) while weekly keeps dropping — must NOT contribute wk
+    { ts: '2026-07-20T08:15:00Z', '5h': 100, wk: 94 },
+  ];
+  assert.equal(weeklyPerFiveHourRatio(snaps), 0.2); // 5/25 — not 6/25
+});
+
 test('fiveHourAllowancePct: converts a weekly target into 5h-window %, clamped to 100', () => {
   const v = fiveHourAllowancePct(10, 0.1932);          // measured real-log ratio
   assert.ok(Math.abs(v - 51.76) < 0.1, `got ${v}`);    // 10 / 0.1932
@@ -651,7 +662,7 @@ test('weeklyBurnSince: sums only active weekly drops at or after the boundary', 
   const snaps = [
     { ts: '2026-07-19T22:00:00Z', wk: 100 },
     { ts: '2026-07-19T22:05:00Z', wk: 97 },  // before boundary → excluded
-    { ts: '2026-07-20T08:00:00Z', wk: 95 },  // 3h gap → idle, excluded
+    { ts: '2026-07-20T08:00:00Z', wk: 95 },  // ~10h gap → idle, excluded
     { ts: '2026-07-20T08:05:00Z', wk: 93 },  // active: 2
     { ts: '2026-07-20T08:10:00Z', wk: 90 },  // active: 3
   ];

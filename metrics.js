@@ -193,8 +193,12 @@ function weeklyPerFiveHourRatio(snapshots) {
     if (!(dt > 0) || dt >= ACTIVE_GAP_MAX) continue;
     const d5 = pts[i - 1]['5h'] - pts[i]['5h'];
     const dw = pts[i - 1].wk - pts[i].wk;
-    if (d5 > 0) sum5h += d5;
-    if (dw > 0) sumWk += dw;
+    // Pair the meters: if EITHER reset (negative drop = quota refill), this
+    // interval's data isn't comparable — skip it rather than counting only the
+    // surviving signal, which would bias the ratio (5h resets ~4-5x/day).
+    if (d5 < 0 || dw < 0) continue;
+    sum5h += d5;
+    sumWk += dw;
   }
   if (sum5h < MIN_RATIO_EVIDENCE_PCT || sumWk <= 0) return null;
   return sumWk / sum5h;
@@ -214,6 +218,9 @@ function weeklyBurnSince(snapshots, sinceMs) {
   const pts = (snapshots || []).filter(s => s && s.wk != null);
   for (let i = 1; i < pts.length; i++) {
     const t = new Date(pts[i].ts).getTime();
+    // Known, accepted approximation: an active interval that STRADDLES sinceMs
+    // is counted in full (only the later point is tested). Bounded by
+    // ACTIVE_GAP_MAX (<15 min), and there is no sub-interval data to pro-rate.
     if (!Number.isFinite(t) || t < sinceMs) continue;
     const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
     if (!(dt > 0) || dt >= ACTIVE_GAP_MAX) continue;
