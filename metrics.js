@@ -178,6 +178,58 @@ function weeklyRunway(snapshots, currentPlanMultiplier) {
     confidence,
   };
 }
+
+// Minimum total 5h burn (in percentage points) before a measured ratio is trusted.
+const MIN_RATIO_EVIDENCE_PCT = 20;
+
+// Aggregate weekly-% burned per 1% of 5h burned, from ACTIVE drops only
+// (positive drop, gap < ACTIVE_GAP_MAX) — excludes resets and idle gaps.
+// Returns null when the evidence is too thin to trust.
+function weeklyPerFiveHourRatio(snapshots) {
+  let sum5h = 0, sumWk = 0;
+  const pts = (snapshots || []).filter(s => s && s['5h'] != null && s.wk != null);
+  for (let i = 1; i < pts.length; i++) {
+    const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
+    if (!(dt > 0) || dt >= ACTIVE_GAP_MAX) continue;
+    const d5 = pts[i - 1]['5h'] - pts[i]['5h'];
+    const dw = pts[i - 1].wk - pts[i].wk;
+    // Pair the meters: if EITHER reset (negative drop = quota refill), this
+    // interval's data isn't comparable — skip it rather than counting only the
+    // surviving signal, which would bias the ratio (5h resets ~4-5x/day).
+    if (d5 < 0 || dw < 0) continue;
+    sum5h += d5;
+    sumWk += dw;
+  }
+  if (sum5h < MIN_RATIO_EVIDENCE_PCT || sumWk <= 0) return null;
+  return sumWk / sum5h;
+}
+
+// How much of a 5h window a weekly-% target is worth. Clamped to [0,100]: a low
+// ratio can imply >100%, meaning a whole window fits inside the weekly budget.
+function fiveHourAllowancePct(targetWeeklyPct, ratio) {
+  if (!(ratio > 0) || !(targetWeeklyPct > 0)) return null;
+  return Math.max(0, Math.min(100, targetWeeklyPct / ratio));
+}
+
+// Weekly % burned since a timestamp (active drops only). sinceMs is a parameter
+// so this module never reads the clock.
+function weeklyBurnSince(snapshots, sinceMs) {
+  let sum = 0;
+  const pts = (snapshots || []).filter(s => s && s.wk != null);
+  for (let i = 1; i < pts.length; i++) {
+    const t = new Date(pts[i].ts).getTime();
+    // Known, accepted approximation: an active interval that STRADDLES sinceMs
+    // is counted in full (only the later point is tested). Bounded by
+    // ACTIVE_GAP_MAX (<15 min), and there is no sub-interval data to pro-rate.
+    if (!Number.isFinite(t) || t < sinceMs) continue;
+    const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
+    if (!(dt > 0) || dt >= ACTIVE_GAP_MAX) continue;
+    const dw = pts[i - 1].wk - pts[i].wk;
+    if (dw > 0) sum += dw;
+  }
+  return sum;
+}
+
 function hourlyBurn(snapshots, win) {
   const hours = new Array(24).fill(0);
   const pts = snapshots.filter(s => s && s[win] != null);
@@ -397,5 +449,5 @@ function normalizeCodexTokenUsage(u, model, timestamp) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_FRAC, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_FRAC, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, MIN_RATIO_EVIDENCE_PCT, weeklyPerFiveHourRatio, fiveHourAllowancePct, weeklyBurnSince, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
 }

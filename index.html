@@ -192,7 +192,14 @@
     }
 
     /* ── Progress bars ────────────────────────────────────────────────────── */
-    .progress-track { height: 3px; background: var(--border); border-radius: 2px; }
+    .progress-track { height: 3px; background: var(--border); border-radius: 2px; position: relative; }
+    .budget-marker {
+      position: absolute; top: -2px; bottom: -2px; width: 2px;
+      background: var(--text-mid); border-radius: 1px; pointer-events: none;
+    }
+    .budget-note { font-size: 9px; color: var(--text-muted); margin-top: 3px; }
+    .budget-note.over    { color: var(--badge-warn-text); }
+    .budget-note.wayover { color: var(--badge-err-text); }
     .progress-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
 
     /* ── Badges ───────────────────────────────────────────────────────────── */
@@ -408,10 +415,12 @@
         </div>
         <div class="progress-track" style="margin-bottom:3px">
           <div class="progress-fill" id="codex-5h-bar" style="width:0%;background:linear-gradient(90deg,#059669,#34d399)"></div>
+          <div class="budget-marker" id="codex-5h-budget" style="display:none"></div>
         </div>
         <div class="progress-track" style="margin-bottom:6px">
           <div class="progress-fill" id="codex-wk-bar" style="width:0%;background:linear-gradient(90deg,#dc2626,#f87171)"></div>
         </div>
+        <div class="budget-note" id="codex-budget-note"></div>
 
         <div class="stats-grid full">
           <div class="stat-box">
@@ -491,10 +500,12 @@
         </div>
         <div class="progress-track" style="margin-bottom:3px">
           <div class="progress-fill" id="claude-5h-bar" style="width:0%;background:linear-gradient(90deg,#059669,#34d399)"></div>
+          <div class="budget-marker" id="claude-5h-budget" style="display:none"></div>
         </div>
         <div class="progress-track" style="margin-bottom:6px">
           <div class="progress-fill" id="claude-wk-bar" style="width:0%;background:linear-gradient(90deg,#dc2626,#f87171)"></div>
         </div>
+        <div class="budget-note" id="claude-budget-note"></div>
 
         <div class="sublabel">5H Tokens Used (local)</div>
         <div class="stats-grid">
@@ -570,10 +581,12 @@
         </div>
         <div class="progress-track" style="margin-bottom:3px">
           <div class="progress-fill" id="claude2-5h-bar" style="width:0%;background:linear-gradient(90deg,#059669,#34d399)"></div>
+          <div class="budget-marker" id="claude2-5h-budget" style="display:none"></div>
         </div>
         <div class="progress-track">
           <div class="progress-fill" id="claude2-wk-bar" style="width:0%;background:linear-gradient(90deg,#dc2626,#f87171)"></div>
         </div>
+        <div class="budget-note" id="claude2-budget-note"></div>
 
         <div class="trend-toggle-row">
           <button class="trend-toggle-btn" id="claude2-trend-toggle" onclick="toggleTrend('claude2')">Trend ▾</button>
@@ -608,6 +621,7 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="metrics.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>

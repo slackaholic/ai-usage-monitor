@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { segmentCycles, countDepletionEvents, weeklyRunway } = require('../metrics.js');
+const { segmentCycles, countDepletionEvents, weeklyRunway, weeklyPerFiveHourRatio, fiveHourAllowancePct, weeklyBurnSince, MIN_RATIO_EVIDENCE_PCT } = require('../metrics.js');
 
 test('segmentCycles splits on a large upward jump (reset by recovery)', () => {
   const snaps = [
@@ -605,4 +605,66 @@ test('tokenMix handles empty/undefined input and missing fields', () => {
   const m = tokenMix([{ input_tokens: 7 }]);
   assert.equal(m.input, 7);
   assert.equal(m.total, 7);
+});
+
+test('weeklyPerFiveHourRatio: aggregates active drops into a wk-per-5h ratio', () => {
+  // 5h drops 10 + 15 = 25 (>= MIN_RATIO_EVIDENCE_PCT); wk drops 2 + 3 = 5 → 0.2
+  const snaps = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
+    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 },
+    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 95 },
+  ];
+  assert.equal(weeklyPerFiveHourRatio(snaps), 0.2);
+});
+
+test('weeklyPerFiveHourRatio: ignores idle gaps and resets', () => {
+  const snaps = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
+    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 },  // active: 10 / 2
+    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 95 },  // active: 15 / 3
+    { ts: '2026-07-20T08:40:00Z', '5h': 60,  wk: 92 },  // 30m gap >= ACTIVE_GAP_MAX → excluded
+    { ts: '2026-07-20T08:45:00Z', '5h': 100, wk: 100 }, // reset (negative drop) → excluded
+  ];
+  assert.equal(weeklyPerFiveHourRatio(snaps), 0.2);
+});
+
+test('weeklyPerFiveHourRatio: returns null below the evidence floor', () => {
+  const snaps = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
+    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 }, // only 10% of 5h burn < 20
+  ];
+  assert.equal(weeklyPerFiveHourRatio(snaps), null);
+  assert.equal(weeklyPerFiveHourRatio([]), null);
+});
+
+test('weeklyPerFiveHourRatio: skips intervals where either meter reset', () => {
+  const snaps = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
+    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 },  // active: 10 / 2
+    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 95 },  // active: 15 / 3
+    // 5h resets (refill) while weekly keeps dropping — must NOT contribute wk
+    { ts: '2026-07-20T08:15:00Z', '5h': 100, wk: 94 },
+  ];
+  assert.equal(weeklyPerFiveHourRatio(snaps), 0.2); // 5/25 — not 6/25
+});
+
+test('fiveHourAllowancePct: converts a weekly target into 5h-window %, clamped to 100', () => {
+  const v = fiveHourAllowancePct(10, 0.1932);          // measured real-log ratio
+  assert.ok(Math.abs(v - 51.76) < 0.1, `got ${v}`);    // 10 / 0.1932
+  assert.equal(fiveHourAllowancePct(10, 0.05), 100);   // would be 200 → clamped
+  assert.equal(fiveHourAllowancePct(10, 0), null);
+  assert.equal(fiveHourAllowancePct(10, null), null);
+  assert.equal(fiveHourAllowancePct(0, 0.2), null);
+});
+
+test('weeklyBurnSince: sums only active weekly drops at or after the boundary', () => {
+  const since = Date.parse('2026-07-20T00:00:00Z');
+  const snaps = [
+    { ts: '2026-07-19T22:00:00Z', wk: 100 },
+    { ts: '2026-07-19T22:05:00Z', wk: 97 },  // before boundary → excluded
+    { ts: '2026-07-20T08:00:00Z', wk: 95 },  // ~10h gap → idle, excluded
+    { ts: '2026-07-20T08:05:00Z', wk: 93 },  // active: 2
+    { ts: '2026-07-20T08:10:00Z', wk: 90 },  // active: 3
+  ];
+  assert.equal(weeklyBurnSince(snaps, since), 5);
 });

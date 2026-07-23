@@ -2,6 +2,7 @@
 
 const ACCOUNTS = ['codex', 'claude-desktop', 'claude-vscode'];
 const MULT_DEFAULTS = { 'codex': 5, 'claude-desktop': 1, 'claude-vscode': 1 };
+const BUDGET_DEFAULTS = { window: 10, day: 20 };
 const status = (msg) => { document.getElementById('login-status').textContent = msg || ''; };
 
 async function loadSettings() {
@@ -20,6 +21,10 @@ async function loadSettings() {
 
   const pm = s.planMultipliers || {};
   ACCOUNTS.forEach(a => { document.getElementById('mult-' + a).value = pm[a] != null ? pm[a] : MULT_DEFAULTS[a]; });
+
+  const bt = s.budgetTargets || {};
+  document.getElementById('budget-window').value = bt.window != null ? bt.window : BUDGET_DEFAULTS.window;
+  document.getElementById('budget-day').value    = bt.day    != null ? bt.day    : BUDGET_DEFAULTS.day;
 
   const ov = s.accountOverrides || {};
   document.getElementById('ov-codex').value = ov.codex || '';
@@ -43,6 +48,17 @@ function savePlanMultipliers() {
     if (!isNaN(v) && v > 0) planMultipliers[a] = v;
   });
   window.electronAPI.saveSettings({ planMultipliers });
+}
+
+function saveBudgetTargets() {
+  const win = parseFloat(document.getElementById('budget-window').value);
+  const day = parseFloat(document.getElementById('budget-day').value);
+  window.electronAPI.saveSettings({
+    budgetTargets: {
+      window: (isFinite(win) && win > 0) ? win : BUDGET_DEFAULTS.window,
+      day:    (isFinite(day) && day > 0) ? day : BUDGET_DEFAULTS.day,
+    },
+  });
 }
 
 function saveOverrides() {
@@ -72,6 +88,8 @@ document.getElementById('cur-rate').addEventListener('change', e => {
 });
 ACCOUNTS.forEach(a => document.getElementById('price-' + a).addEventListener('change', savePlanPrices));
 ACCOUNTS.forEach(a => document.getElementById('mult-' + a).addEventListener('change', savePlanMultipliers));
+['budget-window', 'budget-day'].forEach(id =>
+  document.getElementById(id).addEventListener('change', saveBudgetTargets));
 ['ov-codex', 'ov-claude', 'ov-claude2'].forEach(id =>
   document.getElementById(id).addEventListener('change', saveOverrides));
 

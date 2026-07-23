@@ -298,7 +298,7 @@ function renderSparkline(svgEl, entries, ratePerMs) {
 }
 
 // ── Stat cards ─────────────────────────────────────────────────────────────
-function renderStats(entries, container, settings = {}) {
+function renderStats(entries, container, settings = {}, budget = {}) {
   if (!entries.length) {
     container.innerHTML = '<div class="empty">No data in this window.</div>';
     return;
@@ -340,6 +340,32 @@ function renderStats(entries, container, settings = {}) {
     planFitValue = `${fmtMultiplier(cur)} · won't fit`;
     planFitSub = 'pace far exceeds any plan';
   }
+  // ── Weekly budget ───────────────────────────────────────────────────────
+  const bt = (settings && settings.budgetTargets) || {};
+  const budgetWindowTarget = bt.window > 0 ? bt.window : 10;
+  const budgetDayTarget    = bt.day    > 0 ? bt.day    : 20;
+  const budgetRatio = budget && budget.ratio;
+  const budgetLevel = (v, t) => (v <= t ? '' : v <= t * 1.5 ? 'amber' : 'red');
+  let windowBudgetCard, dayBudgetCard;
+  if (!(budgetRatio > 0) || last['5h'] == null) {
+    windowBudgetCard = { label: 'Window Budget', value: '—', sub: 'need more history', cls: 'dim' };
+    dayBudgetCard    = { label: "Today's Budget", value: '—', sub: 'need more history', cls: 'dim' };
+  } else {
+    const wkEquiv = (100 - last['5h']) * budgetRatio;
+    const dayBurn = budget.dayWeeklyBurnPct || 0;
+    windowBudgetCard = {
+      label: 'Window Budget',
+      value: `${wkEquiv.toFixed(1)}% / ${budgetWindowTarget}%`,
+      sub: 'weekly-equivalent burn this window',
+      cls: budgetLevel(wkEquiv, budgetWindowTarget),
+    };
+    dayBudgetCard = {
+      label: "Today's Budget",
+      value: `${dayBurn.toFixed(1)}% / ${budgetDayTarget}%`,
+      sub: 'weekly burn today',
+      cls: budgetLevel(dayBurn, budgetDayTarget),
+    };
+  }
   const runwayCards = !runwayHasProjection ? [
     { label: 'Weekly Runway', value: '-', sub: runway.confidence === 'limited' ? `${runwayEvidence} so far` : 'need weekly movement', cls: 'dim' },
     { label: 'Reset Gap', value: '-', sub: 'vs weekly reset', cls: 'dim' },
@@ -366,6 +392,7 @@ function renderStats(entries, container, settings = {}) {
       cls: runwayCls,
     },
   ];
+  runwayCards.push(windowBudgetCard, dayBudgetCard);
   const fmtDepleteTime = (d) => d
     ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (d - Date.now() < 0 ? ' (past)' : '')
     : null;
@@ -1023,6 +1050,8 @@ async function renderAll() {
   const _cur = (await window.electronAPI.getSettings()) || {};
   curSymbol = _cur.currencySymbol || '£';
   usdRate = _cur.usdRate != null ? _cur.usdRate : 0.79;
+  const _budgetAll = (await window.electronAPI.getBudgetInfo().catch(() => ({}))) || {};
+  const _budget = _budgetAll[currentAccount] || {};
 
   const limit = rowLimit === 0 ? 5000 : rowLimit;
   let entries = await window.electronAPI.readUsageLog(currentAccount, limit);
@@ -1061,7 +1090,7 @@ async function renderAll() {
   // Efficiency reads the FULL log (all cycles), independent of the time-window filter.
   const allEntries = await window.electronAPI.readUsageLog(currentAccount, 0);
 
-  renderStats(entries, statsEl, _cur);
+  renderStats(entries, statsEl, _cur, _budget);
   renderEfficiency(allEntries, effEl);
   await renderCost(costEl);
   renderChart(entries, chartEl);
