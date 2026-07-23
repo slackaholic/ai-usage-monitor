@@ -597,7 +597,7 @@ function renderBudget(prefix, pct5h) {
     }
   }
   if (!note) return;
-  if (ratio == null || pct == null) {
+  if (!(ratio > 0) || pct == null) {
     note.textContent = 'budget: need more history';
     note.className = 'budget-note';
     return;
@@ -614,13 +614,15 @@ function renderBudget(prefix, pct5h) {
 async function refreshBudget() {
   try {
     budgetInfo = (await window.electronAPI.getBudgetInfo()) || {};
+  } catch { /* leave previous value */ }
+  try {
     const s = (await window.electronAPI.getSettings()) || {};
     const bt = s.budgetTargets || {};
     budgetTargets = {
       window: (bt.window > 0) ? bt.window : 10,
       day:    (bt.day    > 0) ? bt.day    : 20,
     };
-  } catch { /* leave previous values */ }
+  } catch { /* leave previous value */ }
   ['codex', 'claude', 'claude2'].forEach(p => renderBudget(p, null));
 }
 
@@ -1049,6 +1051,9 @@ function setRefreshInterval(seconds) {
     setInterval(fetchClaudeWebUsage,  seconds * 1000),
     setInterval(fetchClaudeWebUsage2, seconds * 1000),
     setInterval(fetchCodexUsage,      seconds * 1000),
+    // Budget info must refresh too: otherwise the day figure never grows, never
+    // resets at midnight, and a fresh install stays on "need more history".
+    setInterval(refreshBudget,        seconds * 1000),
   ];
   window.electronAPI.saveSettings({ refreshInterval: seconds });
 }
