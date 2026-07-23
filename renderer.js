@@ -95,6 +95,10 @@ function applyTrendDisplay(key, delta) {
 // ── Analytics / sparkline ──────────────────────────────────────────────────
 const LOG_ACCOUNT = { codex: 'codex', claude: 'claude-desktop', claude2: 'claude-vscode' };
 
+let budgetInfo = {};
+let budgetTargets = { window: 10, day: 20 };
+const lastPct5h = { codex: null, claude: null, claude2: null };
+
 // Per-account session tracking. sessionStart persists in each log entry so analytics
 // can group entries by session even after an app restart.
 const _ss = {
@@ -574,6 +578,52 @@ function renderStat(prefix, win, pct) {
   showCompactStat(`${prefix}-${win}`, true);
 }
 
+// Budget marker + note for one account. `pct5h` is the current 5h REMAINING %.
+function renderBudget(prefix, pct5h) {
+  if (pct5h != null) lastPct5h[prefix] = pct5h;
+  const pct    = lastPct5h[prefix];
+  const marker = document.getElementById(prefix + '-5h-budget');
+  const note   = document.getElementById(prefix + '-budget-note');
+  const info   = budgetInfo[LOG_ACCOUNT[prefix]] || {};
+  const ratio  = info.ratio;
+  const allowance = fiveHourAllowancePct(budgetTargets.window, ratio);
+
+  if (marker) {
+    if (allowance != null) {
+      marker.style.left = (100 - allowance) + '%';
+      marker.style.display = '';
+    } else {
+      marker.style.display = 'none';
+    }
+  }
+  if (!note) return;
+  if (ratio == null || pct == null) {
+    note.textContent = 'budget: need more history';
+    note.className = 'budget-note';
+    return;
+  }
+  const wkEquiv = (100 - pct) * ratio;
+  const day     = info.dayWeeklyBurnPct || 0;
+  const level   = (v, t) => (v <= t ? 0 : v <= t * 1.5 ? 1 : 2);
+  const worst   = Math.max(level(wkEquiv, budgetTargets.window), level(day, budgetTargets.day));
+  note.textContent = `${wkEquiv.toFixed(1)}% / ${budgetTargets.window}% wk this window · today ${day.toFixed(1)}% / ${budgetTargets.day}%`;
+  note.className = 'budget-note' + (worst === 1 ? ' over' : worst === 2 ? ' wayover' : '');
+}
+
+// Pull fresh budget info + targets, then repaint all three accounts' budget UI.
+async function refreshBudget() {
+  try {
+    budgetInfo = (await window.electronAPI.getBudgetInfo()) || {};
+    const s = (await window.electronAPI.getSettings()) || {};
+    const bt = s.budgetTargets || {};
+    budgetTargets = {
+      window: (bt.window > 0) ? bt.window : 10,
+      day:    (bt.day    > 0) ? bt.day    : 20,
+    };
+  } catch { /* leave previous values */ }
+  ['codex', 'claude', 'claude2'].forEach(p => renderBudget(p, null));
+}
+
 // Build a usage-log entry with depletion flags + reset timestamps.
 // Callers attach an account-specific sessionStart before appending.
 function buildUsageEntry(account, p5h, pwk, reset5hMs, reset7dMs) {
@@ -716,6 +766,7 @@ function renderClaudeWebData(parsed, stale = false) {
 
   renderStat('claude', '5h', remaining5h);
   renderStat('claude', 'wk', remainingWk);
+  renderBudget('claude', remaining5h);
   setText('claude-5h-reset', parsed.sessionResetMs ? fmtResetIn(parsed.sessionResetMs) : (parsed.sessionReset ? 'Resets in ' + parsed.sessionReset : ''));
   setText('claude-wk-reset', parsed.weeklyResetMs  ? fmtResetOn(parsed.weeklyResetMs)  : (parsed.weeklyReset  ? 'Resets ' + parsed.weeklyReset : ''));
 
@@ -797,6 +848,7 @@ function renderClaudeCodeApiData(data, stale = false) {
 
   renderStat('claude2', '5h', data.pct5h);
   renderStat('claude2', 'wk', data.pct7d);
+  renderBudget('claude2', data.pct5h);
   setText('claude2-5h-reset', data.reset5hMs > 0 ? fmtResetIn(data.reset5hMs) : (data.reset5h ? 'Resets in ' + data.reset5h : ''));
   setText('claude2-wk-reset', data.reset7dMs > 0 ? fmtResetOn(data.reset7dMs) : (data.reset7d ? 'Resets in ' + data.reset7d : ''));
 
@@ -910,6 +962,7 @@ function renderCodexData(parsed, stale = false) {
 
   renderStat('codex', '5h', parsed.shared5h);
   renderStat('codex', 'wk', parsed.sharedWeek);
+  renderBudget('codex', parsed.shared5h);
   setText('codex-5h-reset', parsed.reset5hMs > 0 ? fmtResetIn(parsed.reset5hMs) : (parsed.shared5hReset ? 'Resets ' + parsed.shared5hReset : ''));
   setText('codex-wk-reset', parsed.reset7dMs > 0 ? fmtResetOn(parsed.reset7dMs) : (parsed.sharedWeekReset ? 'Resets ' + parsed.sharedWeekReset : ''));
   setText('codex-credits', parsed.credits);
@@ -1087,6 +1140,7 @@ async function init() {
   fetchClaudeWebUsage();
   fetchClaudeWebUsage2();
   fetchCodexUsage();
+  refreshBudget();
 
   setRefreshInterval(refreshSeconds);
 
@@ -1100,6 +1154,7 @@ async function init() {
         applyAccountLabel('claude2', null);
       }
       if (s.refreshInterval && s.refreshInterval !== refreshSeconds) setRefreshInterval(s.refreshInterval);
+      refreshBudget();
     } catch {}
   });
 }
