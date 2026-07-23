@@ -356,10 +356,15 @@ function renderStats(entries, container, settings = {}, budget = {}) {
   } else {
     const wkEquiv = (100 - last['5h']) * budgetRatio;
     const dayBurn = budget.dayWeeklyBurnPct || 0;
+    // Only this card is ratio-derived, so the tier-change scope belongs here —
+    // Today's Budget is raw weekly burn and is unaffected by the cutoff.
+    const scope = budget && budget.tierChangedAt
+      ? ' · ratio since ' + new Date(budget.tierChangedAt).toLocaleDateString([], { day: 'numeric', month: 'short' })
+      : '';
     windowBudgetCard = {
       label: 'Window Budget',
       value: `${wkEquiv.toFixed(1)}% / ${budgetWindowTarget}%`,
-      sub: 'weekly-equivalent burn this window',
+      sub: 'weekly-equivalent burn this window' + scope,
       cls: budgetLevel(wkEquiv, budgetWindowTarget),
     };
     dayBudgetCard = {
