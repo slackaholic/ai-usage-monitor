@@ -71,17 +71,34 @@ function readUsageLogGrouped() {
   return byAccount;
 }
 
+// 'YYYY-MM-DD' (from an <input type="date">) -> local-midnight epoch ms, or null.
+// Parsed here rather than in metrics.js, which must stay clock- and locale-free.
+function tierChangeMs(dateStr) {
+  if (typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  // The Date constructor NORMALIZES out-of-range values rather than failing
+  // ('2026-02-30' becomes 2 Mar), so Number.isFinite can't reject them —
+  // round-trip the components to confirm the date is real.
+  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
+  const t = dt.getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
 ipcMain.handle('get-budget-info', () => {
   const byAccount = readUsageLogGrouped();
+  const tierDates = loadSettings().tierChangedAt || {};
   const midnight = new Date();
   midnight.setHours(0, 0, 0, 0);
   const midnightMs = midnight.getTime();
   const out = {};
   for (const a of BUDGET_ACCOUNTS) {
     const snaps = (byAccount && byAccount[a]) || [];
+    const tierMs = tierChangeMs(tierDates[a]);
     out[a] = {
-      ratio: weeklyPerFiveHourRatio(snaps),
+      ratio: weeklyPerFiveHourRatio(snaps, tierMs),
       dayWeeklyBurnPct: weeklyBurnSince(snaps, midnightMs),
+      tierChangedAt: tierMs,
     };
   }
   return out;
