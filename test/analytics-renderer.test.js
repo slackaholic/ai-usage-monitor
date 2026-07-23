@@ -380,3 +380,33 @@ test('renderStats budget cards use the generic message when no tier change is se
   assert.match(container.innerHTML, /need more history/);
   assert.doesNotMatch(container.innerHTML, /since tier change/);
 });
+
+test('renderStats Window Budget shows the ratio scope when a tier change is declared', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
+  const container = new FakeElement();
+  const entries = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1 },
+    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70 },
+  ];
+  renderStats(entries, container, { budgetTargets: { window: 10, day: 20 } },
+              { ratio: 0.2, dayWeeklyBurnPct: 12.5, tierChangedAt: Date.parse('2026-07-20T00:00:00Z') });
+
+  // The ratio-derived card is scoped...
+  assert.match(container.innerHTML, /weekly-equivalent burn this window · ratio since \d+ \w+/);
+  // ...but Today's Budget is raw weekly burn, so it must NOT claim a ratio scope.
+  assert.match(container.innerHTML, /weekly burn today<\/div>/);
+});
+
+test('renderStats Window Budget omits the scope when no tier change is declared', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
+  const container = new FakeElement();
+  const entries = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1 },
+    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70 },
+  ];
+  renderStats(entries, container, { budgetTargets: { window: 10, day: 20 } },
+              { ratio: 0.2, dayWeeklyBurnPct: 12.5, tierChangedAt: null });
+
+  assert.match(container.innerHTML, /weekly-equivalent burn this window/);
+  assert.doesNotMatch(container.innerHTML, /ratio since/);
+});

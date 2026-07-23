@@ -608,7 +608,13 @@ function renderBudget(prefix, pct5h) {
   const day     = info.dayWeeklyBurnPct || 0;
   const level   = (v, t) => (v <= t ? 0 : v <= t * 1.5 ? 1 : 2);
   const worst   = Math.max(level(wkEquiv, budgetTargets.window), level(day, budgetTargets.day));
-  note.textContent = `${wkEquiv.toFixed(1)}% / ${budgetTargets.window}% wk this window · today ${day.toFixed(1)}% / ${budgetTargets.day}%`;
+  // Positive confirmation that a declared tier change is in effect. Without it
+  // a valid date is invisible whenever there IS enough post-cutoff data, so
+  // there's no way to tell whether the cutoff applied.
+  const scope = info.tierChangedAt
+    ? ' · ratio since ' + new Date(info.tierChangedAt).toLocaleDateString([], { day: 'numeric', month: 'short' })
+    : '';
+  note.textContent = `${wkEquiv.toFixed(1)}% / ${budgetTargets.window}% wk this window · today ${day.toFixed(1)}% / ${budgetTargets.day}%${scope}`;
   note.className = 'budget-note' + (worst === 1 ? ' over' : worst === 2 ? ' wayover' : '');
 }
 

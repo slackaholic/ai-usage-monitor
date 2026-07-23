@@ -20,6 +20,7 @@ async function loadSettings() {
   ACCOUNTS.forEach(a => { document.getElementById('price-' + a).value = pp[a] != null ? pp[a] : ''; });
 
   const tc = s.tierChangedAt || {};
+  lastTierChangedAt = { ...tc };
   ACCOUNTS.forEach(a => { document.getElementById('tier-date-' + a).value = tc[a] || ''; });
 
   const pm = s.planMultipliers || {};
@@ -44,9 +45,26 @@ function savePlanPrices() {
   window.electronAPI.saveSettings({ planPrices });
 }
 
+// Last values seen from settings, so a field we decline to save keeps what it had.
+// (saveSettings shallow-merges, so the patch must carry every account key —
+// omitting one would drop its stored date entirely.)
+let lastTierChangedAt = {};
+
 function saveTierDates() {
   const tierChangedAt = {};
-  ACCOUNTS.forEach(a => { tierChangedAt[a] = document.getElementById('tier-date-' + a).value || ''; });
+  ACCOUNTS.forEach(a => {
+    const el = document.getElementById('tier-date-' + a);
+    // A part-typed date leaves value === '' with validity.badInput true, and
+    // `change` still fires on blur — saving that would silently wipe a stored
+    // date. Treat incomplete entry as "no change"; a genuine clear has
+    // badInput false and is saved as ''.
+    if (el.validity && el.validity.badInput) {
+      tierChangedAt[a] = lastTierChangedAt[a] || '';
+      return;
+    }
+    tierChangedAt[a] = el.value || '';
+  });
+  lastTierChangedAt = { ...tierChangedAt };
   window.electronAPI.saveSettings({ tierChangedAt });
 }
 
