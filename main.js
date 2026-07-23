@@ -18,6 +18,8 @@ const claudeWebWindows = { desktop: null, vscode: null };
 const SETTINGS_PATH = path.join(__dirname, 'settings.json');
 const USAGE_LOG_PATH = path.join(__dirname, 'usage-log.jsonl');
 
+const { weeklyPerFiveHourRatio, weeklyBurnSince } = require('./metrics.js');
+
 function loadSettings() {
   try { return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')); } catch { return {}; }
 }
@@ -43,6 +45,46 @@ ipcMain.handle('read-usage-log', (_, account, limit = 200) => {
       .filter(e => e && (!account || e.account === account));
     return all.slice(-limit);
   } catch { return []; }
+});
+
+// ── Budget info ───────────────────────────────────────────────────────────
+// read-usage-log parses the WHOLE log on every call, so budget data gets its own
+// mtime-cached read: one parse shared by all accounts, re-done only on change.
+const BUDGET_ACCOUNTS = ['codex', 'claude-desktop', 'claude-vscode'];
+let _budgetCache = { mtimeMs: -1, byAccount: null };
+
+function readUsageLogGrouped() {
+  let st;
+  try { st = fs.statSync(USAGE_LOG_PATH); } catch { return null; }
+  if (_budgetCache.byAccount && _budgetCache.mtimeMs === st.mtimeMs) return _budgetCache.byAccount;
+  let entries;
+  try {
+    entries = fs.readFileSync(USAGE_LOG_PATH, 'utf8').trim().split('\n')
+      .filter(Boolean)
+      .map(l => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch { return null; }
+  const byAccount = {};
+  for (const a of BUDGET_ACCOUNTS) byAccount[a] = [];
+  for (const e of entries) if (byAccount[e.account]) byAccount[e.account].push(e);
+  _budgetCache = { mtimeMs: st.mtimeMs, byAccount };
+  return byAccount;
+}
+
+ipcMain.handle('get-budget-info', () => {
+  const byAccount = readUsageLogGrouped();
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  const midnightMs = midnight.getTime();
+  const out = {};
+  for (const a of BUDGET_ACCOUNTS) {
+    const snaps = (byAccount && byAccount[a]) || [];
+    out[a] = {
+      ratio: weeklyPerFiveHourRatio(snaps),
+      dayWeeklyBurnPct: weeklyBurnSince(snaps, midnightMs),
+    };
+  }
+  return out;
 });
 
 ipcMain.on('open-analytics', (_, account) => {

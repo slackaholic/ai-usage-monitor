@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Usage history log
   appendUsageLog: (entry) => ipcRenderer.send('append-usage-log', entry),
   readUsageLog: (account, limit) => ipcRenderer.invoke('read-usage-log', account, limit),
+  getBudgetInfo: () => ipcRenderer.invoke('get-budget-info'),
 
   // Claude Code API usage (reads ~/.claude/.credentials.json directly)
   fetchClaudeCodeApiUsage: () => ipcRenderer.invoke('fetch-claude-code-api-usage'),
