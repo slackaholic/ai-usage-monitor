@@ -354,3 +354,29 @@ test('renderStats budget cards show em-dash when the ratio is unknown', () => {
   assert.match(container.innerHTML, /Window Budget/);
   assert.match(container.innerHTML, /need more history/);
 });
+
+test('renderStats budget cards explain a null ratio caused by a tier change', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
+  const container = new FakeElement();
+  const entries = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1 },
+    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70 },
+  ];
+  renderStats(entries, container, {},
+              { ratio: null, dayWeeklyBurnPct: 0, tierChangedAt: Date.parse('2026-07-19T00:00:00Z') });
+
+  assert.match(container.innerHTML, /need more history since tier change/);
+});
+
+test('renderStats budget cards use the generic message when no tier change is set', () => {
+  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
+  const container = new FakeElement();
+  const entries = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1 },
+    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70 },
+  ];
+  renderStats(entries, container, {}, { ratio: null, dayWeeklyBurnPct: 0, tierChangedAt: null });
+
+  assert.match(container.innerHTML, /need more history/);
+  assert.doesNotMatch(container.innerHTML, /since tier change/);
+});

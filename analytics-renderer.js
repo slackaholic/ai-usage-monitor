@@ -348,8 +348,11 @@ function renderStats(entries, container, settings = {}, budget = {}) {
   const budgetLevel = (v, t) => (v <= t ? '' : v <= t * 1.5 ? 'amber' : 'red');
   let windowBudgetCard, dayBudgetCard;
   if (!(budgetRatio > 0) || last['5h'] == null) {
-    windowBudgetCard = { label: 'Window Budget', value: '—', sub: 'need more history', cls: 'dim' };
-    dayBudgetCard    = { label: "Today's Budget", value: '—', sub: 'need more history', cls: 'dim' };
+    const noRatioSub = budget && budget.tierChangedAt
+      ? 'need more history since tier change'
+      : 'need more history';
+    windowBudgetCard = { label: 'Window Budget', value: '—', sub: noRatioSub, cls: 'dim' };
+    dayBudgetCard    = { label: "Today's Budget", value: '—', sub: noRatioSub, cls: 'dim' };
   } else {
     const wkEquiv = (100 - last['5h']) * budgetRatio;
     const dayBurn = budget.dayWeeklyBurnPct || 0;

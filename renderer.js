@@ -598,7 +598,9 @@ function renderBudget(prefix, pct5h) {
   }
   if (!note) return;
   if (!(ratio > 0) || pct == null) {
-    note.textContent = 'budget: need more history';
+    note.textContent = info.tierChangedAt
+      ? 'budget: need more history since tier change'
+      : 'budget: need more history';
     note.className = 'budget-note';
     return;
   }
