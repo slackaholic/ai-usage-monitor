@@ -185,10 +185,16 @@ const MIN_RATIO_EVIDENCE_PCT = 20;
 // Aggregate weekly-% burned per 1% of 5h burned, from ACTIVE drops only
 // (positive drop, gap < ACTIVE_GAP_MAX) — excludes resets and idle gaps.
 // Returns null when the evidence is too thin to trust.
-function weeklyPerFiveHourRatio(snapshots) {
+function weeklyPerFiveHourRatio(snapshots, sinceMs) {
   let sum5h = 0, sumWk = 0;
   const pts = (snapshots || []).filter(s => s && s['5h'] != null && s.wk != null);
   for (let i = 1; i < pts.length; i++) {
+    // Optional cutoff: ignore intervals recorded before a declared tier change.
+    // Omitted / non-finite sinceMs means no filtering (full history).
+    if (Number.isFinite(sinceMs)) {
+      const t = new Date(pts[i].ts).getTime();
+      if (!Number.isFinite(t) || t < sinceMs) continue;
+    }
     const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
     if (!(dt > 0) || dt >= ACTIVE_GAP_MAX) continue;
     const d5 = pts[i - 1]['5h'] - pts[i]['5h'];

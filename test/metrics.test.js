@@ -668,3 +668,39 @@ test('weeklyBurnSince: sums only active weekly drops at or after the boundary', 
   ];
   assert.equal(weeklyBurnSince(snaps, since), 5);
 });
+
+test('weeklyPerFiveHourRatio: sinceMs cutoff ignores pre-cutoff intervals', () => {
+  const since = Date.parse('2026-07-20T00:00:00Z');
+  const snaps = [
+    // Pre-cutoff burn at a DIFFERENT ratio (0.5) — must be excluded entirely.
+    { ts: '2026-07-19T08:00:00Z', '5h': 100, wk: 100 },
+    { ts: '2026-07-19T08:05:00Z', '5h': 70,  wk: 85 },
+    // Post-cutoff burn at ratio 0.2: 5h drops 10 + 15 = 25, wk drops 2 + 3 = 5.
+    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 80 },
+    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 78 },
+    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 75 },
+  ];
+  assert.equal(weeklyPerFiveHourRatio(snaps, since), 0.2);
+});
+
+test('weeklyPerFiveHourRatio: omitted or non-finite sinceMs applies no filter', () => {
+  const snaps = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
+    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 },
+    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 95 },
+  ];
+  assert.equal(weeklyPerFiveHourRatio(snaps), 0.2);
+  assert.equal(weeklyPerFiveHourRatio(snaps, undefined), 0.2);
+  assert.equal(weeklyPerFiveHourRatio(snaps, null), 0.2);
+  assert.equal(weeklyPerFiveHourRatio(snaps, NaN), 0.2);
+});
+
+test('weeklyPerFiveHourRatio: cutoff leaving too little evidence returns null', () => {
+  const since = Date.parse('2026-07-20T08:06:00Z');
+  const snaps = [
+    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
+    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 },
+    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 95 }, // only 15 < 20 after cutoff
+  ];
+  assert.equal(weeklyPerFiveHourRatio(snaps, since), null);
+});
