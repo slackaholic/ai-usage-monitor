@@ -888,6 +888,29 @@ function renderClaudeCodeApiData(data, stale = false) {
   resizeToFit();
 }
 
+// ── Claude Code account email ──────────────────────────────────────────────
+// The cache exists only to paint a label instantly at startup — it is never
+// authoritative. A fresh `claude login` swaps the account under a running app,
+// so every poll re-resolves the email from the live credentials; a write-once
+// cache would keep showing the previous account's address forever.
+const CLAUDE2_EMAIL_KEY = 'claude2-email-v2';
+
+function readClaude2EmailCache() {
+  try { return JSON.parse(localStorage.getItem(CLAUDE2_EMAIL_KEY) || 'null'); } catch { return null; }
+}
+
+async function refreshClaude2Email() {
+  const cached = readClaude2EmailCache();
+  if (cached) applyAccountLabel('claude2', cached);
+  const email = await window.electronAPI.fetchClaudeCodeEmail();
+  // Empty means the lookup failed (offline, no credentials) — keep showing the
+  // cached label rather than blanking it.
+  if (!email || email === cached) return cached;
+  localStorage.setItem(CLAUDE2_EMAIL_KEY, JSON.stringify(email));
+  applyAccountLabel('claude2', email);
+  return email;
+}
+
 async function fetchClaudeWebUsage2() {
   clearTimeout(claude2RetryTimer); claude2RetryTimer = null;
   fetchStart('claude2');
@@ -913,18 +936,7 @@ async function fetchClaudeWebUsage2() {
   if (openPanels.has('claude2')) { window.electronAPI.readUsageLog('claude-vscode', 200).then(e => renderTrendAnalytics('claude2', e)); }
   markUpdated();
 
-  // Fetch email lazily if not already cached
-  const cachedEmail = (() => { try { return JSON.parse(localStorage.getItem('claude2-email-v2') || 'null'); } catch { return null; } })();
-  if (cachedEmail) {
-    applyAccountLabel('claude2', cachedEmail);
-  } else {
-    window.electronAPI.fetchClaudeCodeEmail().then(email => {
-      if (email) {
-        localStorage.setItem('claude2-email-v2', JSON.stringify(email));
-        applyAccountLabel('claude2', email);
-      }
-    });
-  }
+  refreshClaude2Email().catch(e => console.error('claude2 email refresh:', e));
 }
 
 // ── Codex ──────────────────────────────────────────────────────────────────
@@ -1047,7 +1059,7 @@ function loadCachedData(settings) {
     const pct7d  = c.weeklyUsed  != null ? 100 - c.weeklyUsed  : c.pct7d  ?? null;
     renderClaudeCodeApiData({ pct5h, pct7d, reset5h: c.sessionReset ?? c.reset5h, reset7d: c.weeklyReset ?? c.reset7d, account: c.account }, true);
     setBadge('claude2-badge', 'Cached', 'stale');
-    try { const e = JSON.parse(localStorage.getItem('claude2-email-v2') || 'null'); if (e) applyAccountLabel('claude2', e); } catch {}
+    const e = readClaude2EmailCache(); if (e) applyAccountLabel('claude2', e);
   }
 }
 
