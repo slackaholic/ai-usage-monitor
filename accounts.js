@@ -28,4 +28,56 @@ function deriveAccountId(configDir, homeDir) {
   return 'cc-' + (slug || 'account');
 }
 
-module.exports = { deriveLogKey, deriveAccountId, isDefaultDir };
+const fsp = require('fs').promises;
+
+// A directory counts as a Claude config dir only if it actually holds a login.
+// This is what keeps ~/.claude.json and the .claude.json.bak* files out: they
+// are not directories and carry no OAuth token.
+async function hasOAuthCredentials(dir) {
+  try {
+    const st = await fsp.stat(dir);
+    if (!st.isDirectory()) return false;
+    const raw = await fsp.readFile(path.join(dir, '.credentials.json'), 'utf8');
+    return Boolean(JSON.parse(raw)?.claudeAiOauth?.accessToken);
+  } catch {
+    return false;
+  }
+}
+
+// Every Claude config directory on this machine, resolved and deduped.
+// Order is stable — default dir first, then alphabetical — so cards never
+// reshuffle between runs.
+async function scanClaudeCodeConfigDirs({ homeDir, env = {}, extraPaths = [] }) {
+  const candidates = [];
+  if (env.CLAUDE_CONFIG_DIR) candidates.push(env.CLAUDE_CONFIG_DIR);
+  candidates.push(path.join(homeDir, '.claude'));
+  try {
+    for (const e of await fsp.readdir(homeDir, { withFileTypes: true })) {
+      if (e.isDirectory() && e.name.startsWith('.claude')) candidates.push(path.join(homeDir, e.name));
+    }
+  } catch {
+    // Home unreadable — fall through with whatever explicit candidates we have.
+  }
+  candidates.push(...extraPaths);
+
+  const seen = new Set();
+  const found = [];
+  for (const c of candidates) {
+    if (!(await hasOAuthCredentials(c))) continue;
+    let real;
+    try { real = await fsp.realpath(c); } catch { real = path.resolve(c); }
+    const key = real.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    found.push(real);
+  }
+
+  const def = path.resolve(path.join(homeDir, '.claude')).toLowerCase();
+  found.sort((a, b) => {
+    const rank = (p) => (p.toLowerCase() === def ? 0 : 1);
+    return rank(a) - rank(b) || a.localeCompare(b);
+  });
+  return found;
+}
+
+module.exports = { deriveLogKey, deriveAccountId, isDefaultDir, scanClaudeCodeConfigDirs };
