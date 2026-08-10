@@ -710,12 +710,26 @@ const EMAIL_ONLY_SCRIPT = `
   })()
 `;
 
+// The renderer asks for the email on every poll, because a fresh `claude login`
+// can swap the account under a running app. Memoising the answer against the
+// access token that produced it keeps that cheap: a repeat poll costs nothing,
+// while a re-login mints a new token and forces a re-resolve. A failed lookup
+// is retried on a cooldown, not every poll — the browser fallback below opens a
+// hidden window and can take 20s. Both the memo and the cooldown are keyed by
+// token, so a re-login is never held back by either.
+let claudeCodeEmailMemo = { token: null, email: '' };
+let claudeCodeEmailFailure = { token: null, retryAt: 0 };
+const CLAUDE_CODE_EMAIL_RETRY_MS = 10 * 60 * 1000;
+
 ipcMain.handle('fetch-claude-code-email', async () => {
   // 1) OAuth profile — same token/account as the usage numbers.
   const token = await getValidClaudeCodeToken();
+  if (claudeCodeEmailMemo.email && claudeCodeEmailMemo.token === token) return claudeCodeEmailMemo.email;
+  if (claudeCodeEmailFailure.token === token && Date.now() < claudeCodeEmailFailure.retryAt) return '';
+
   if (token) {
     const email = await fetchClaudeCodeProfileEmail(token);
-    if (email) return email;
+    if (email) { claudeCodeEmailMemo = { token, email }; return email; }
   }
 
   // 2) Fallback: scrape a logged-in claude.ai browser session.
@@ -749,8 +763,9 @@ ipcMain.handle('fetch-claude-code-email', async () => {
       win.loadURL('https://claude.ai/settings');
     });
 
-    if (email) return email;
+    if (email) { claudeCodeEmailMemo = { token, email }; return email; }
   }
+  claudeCodeEmailFailure = { token, retryAt: Date.now() + CLAUDE_CODE_EMAIL_RETRY_MS };
   return '';
 });
 
