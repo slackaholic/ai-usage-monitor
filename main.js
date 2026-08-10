@@ -626,6 +626,53 @@ function fetchClaudeCodeProfileEmail(token) {
   });
 }
 
+// Turns the unified rate-limit response headers into the numbers the renderer
+// draws. A window whose headers are absent is UNKNOWN, not unlimited: its
+// percentage comes back null so the meter shows "—", the way the other two
+// accounts already render a missing weekly figure. Anthropic stopped sending
+// the 7d pair on this plan, and the old `?? '-1'` sentinel reached the UI as
+// "200% remaining, resets soon". A utilization above 1 is real over-quota and
+// stays a negative remaining %. Returns null when even the 5h window is
+// missing — that response carries no usable numbers at all.
+// nowMs is passed in so the reset formatting is testable.
+function parseUnifiedRateLimitHeaders(h, nowMs) {
+  const readUtil = (win) => {
+    const raw = h[`anthropic-ratelimit-unified-${win}-utilization`];
+    if (raw == null) return null;
+    const util = parseFloat(raw);
+    return Number.isFinite(util) && util >= 0 ? util : null;
+  };
+  const readReset = (win) => {
+    const secs = parseInt(h[`anthropic-ratelimit-unified-${win}-reset`] ?? '0', 10);
+    return Number.isFinite(secs) && secs > 0 ? secs * 1000 : 0;
+  };
+  const fmtReset = (ms) => {
+    const diff = ms - nowMs;
+    if (diff <= 0) return 'soon';
+    const hr = Math.floor(diff / 3_600_000);
+    const mn = Math.floor((diff % 3_600_000) / 60_000);
+    return hr > 0 ? `${hr} hr ${mn} min` : `${mn} min`;
+  };
+
+  const util5h = readUtil('5h');
+  if (util5h == null) return null;
+  const util7d = readUtil('7d');
+
+  const reset5hMs = readReset('5h');
+  const reset7dMs = util7d != null ? readReset('7d') : 0;
+
+  return {
+    pct5h:     Math.round((1 - util5h) * 100),
+    pct7d:     util7d != null ? Math.round((1 - util7d) * 100) : null,
+    reset5h:   reset5hMs > 0 ? fmtReset(reset5hMs) : null,
+    reset7d:   reset7dMs > 0 ? fmtReset(reset7dMs) : null,
+    reset5hMs,  // epoch ms — exact reset timestamp from API header
+    reset7dMs,
+    status5h:  h['anthropic-ratelimit-unified-5h-status'] ?? 'unknown',
+    status7d:  h['anthropic-ratelimit-unified-7d-status']  ?? 'unknown',
+  };
+}
+
 ipcMain.handle('fetch-claude-code-api-usage', async () => {
   const creds = readCredentials();
   if (!creds?.claudeAiOauth?.accessToken) return { error: 'no-credentials' };
@@ -653,33 +700,10 @@ ipcMain.handle('fetch-claude-code-api-usage', async () => {
       },
     }, (res) => {
       res.resume(); // drain body — we only care about headers
-      const h = res.headers;
-      const util5h = parseFloat(h['anthropic-ratelimit-unified-5h-utilization'] ?? '-1');
-      const util7d  = parseFloat(h['anthropic-ratelimit-unified-7d-utilization'] ?? '-1');
-      if (util5h < 0) { resolve({ error: 'no-rate-limit-headers' }); return; }
+      const limits = parseUnifiedRateLimitHeaders(res.headers, Date.now());
+      if (!limits) { resolve({ error: 'no-rate-limit-headers' }); return; }
 
-      const reset5hMs = parseInt(h['anthropic-ratelimit-unified-5h-reset'] ?? '0') * 1000;
-      const reset7dMs  = parseInt(h['anthropic-ratelimit-unified-7d-reset']  ?? '0') * 1000;
-
-      const fmtReset = (ms) => {
-        const diff = ms - Date.now();
-        if (diff <= 0) return 'soon';
-        const hr = Math.floor(diff / 3_600_000);
-        const mn = Math.floor((diff % 3_600_000) / 60_000);
-        return hr > 0 ? `${hr} hr ${mn} min` : `${mn} min`;
-      };
-
-      resolve({
-        pct5h:     Math.round((1 - util5h) * 100),
-        pct7d:     Math.round((1 - util7d) * 100),
-        reset5h:   fmtReset(reset5hMs),
-        reset7d:   fmtReset(reset7dMs),
-        reset5hMs,  // epoch ms — exact reset timestamp from API header
-        reset7dMs,
-        status5h:  h['anthropic-ratelimit-unified-5h-status'] ?? 'unknown',
-        status7d:  h['anthropic-ratelimit-unified-7d-status']  ?? 'unknown',
-        account,
-      });
+      resolve({ ...limits, account });
     });
     req.on('error', e => resolve({ error: e.message }));
     req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'Timeout' }); });
