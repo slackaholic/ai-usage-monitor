@@ -104,10 +104,16 @@
 
     /* ── Content ─────────────────────────────────────────────────────────── */
     .content {
-      flex: 1; overflow-y: auto; padding: 8px 10px 10px;
+      /* overflow-x must be stated: with overflow-y non-visible, an unset
+         overflow-x computes to auto, so anything a pixel too wide raises a
+         horizontal scrollbar — a textless ~15px bar that eats the height the
+         window was sized for and forces a vertical scrollbar in turn. This is
+         a fixed-width panel; sideways scrolling is never wanted. */
+      flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 10px 10px;
       display: flex; flex-direction: column; gap: 7px;
     }
-    .content::-webkit-scrollbar { width: 4px; }
+    /* height styles a horizontal bar the way width styles a vertical one */
+    .content::-webkit-scrollbar { width: 4px; height: 4px; }
     .content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
     /* ── Compact view ────────────────────────────────────────────────────── */

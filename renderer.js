@@ -660,6 +660,12 @@ function fetchStop(prefix) {
   document.getElementById(prefix + '-refresh').classList.remove('spinning');
 }
 
+// A little headroom on the fitted height, so sub-pixel rounding or a few px of
+// measurement drift can't leave the content one notch too tall for its window
+// and put the scrollbar back. Constant, so the window height stays stable
+// instead of oscillating between two fits.
+const FIT_SLACK_PX = 10;
+
 function resizeToFit() {
   requestAnimationFrame(() => {
     const titlebar = document.querySelector('.titlebar');
@@ -681,7 +687,7 @@ function resizeToFit() {
     const contentH = maxBottom + padBot;
 
     const titlebarH = titlebar ? titlebar.offsetHeight : 36;
-    window.electronAPI.resizeToFit(Math.ceil(contentH + titlebarH));
+    window.electronAPI.resizeToFit(Math.ceil(contentH + titlebarH + FIT_SLACK_PX));
   });
 }
 
