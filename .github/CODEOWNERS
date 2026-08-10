@@ -1,0 +1,15 @@
+# Tier 1 review paths (F008 WO-001, rolled out 2026-08-04).
+# Instantiated from the estate template; every line verified to resolve in
+# THIS repo's layout. See AGENTS.md "Tier 1 paths" for what this means in
+# practice: single-human estate + free-plan private repos, so this file is a
+# stop-and-think marker, an audit trail, and the path list the pre-push hook
+# enforces (activate: git config core.hooksPath .githooks).
+
+# Default: no owner. Tier 2 - self-review plus green CI is enough.
+
+/.github/                               @slackaholic
+/.githooks/                             @slackaholic
+AGENTS.md                               @slackaholic
+CLAUDE.md                               @slackaholic
+package.json                            @slackaholic
+package-lock.json                       @slackaholic

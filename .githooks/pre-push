@@ -1,0 +1,87 @@
+#!/bin/sh
+# PHASE TEMPLATE - Tier-1 pre-push hook (F008, D006 route b).
+#
+# Reads this repo's .github/CODEOWNERS - every "<pattern> <owner>" line is a
+# Tier-1 path - and stops any push whose outgoing commits touch one, unless
+# TIER1_OK=1 acknowledges it:
+#
+#   TIER1_OK=1 git push
+#
+# One source of truth: the path list IS CODEOWNERS; there is no second list.
+# Activate with: git config core.hooksPath .githooks
+#
+# Honest limits (recorded in the suite's D006): client-side, so this is
+# mistake-resistant, not adversary-resistant - --no-verify bypasses it and
+# standing agent rules forbid that. Filenames containing spaces are not
+# supported by the matcher (none exist in this estate).
+
+CODEOWNERS=".github/CODEOWNERS"
+[ -f "$CODEOWNERS" ] || exit 0
+
+ZERO=0000000000000000000000000000000000000000
+
+# Files changed across every ref being pushed (stdin: local_ref local_sha
+# remote_ref remote_sha per line). Deleting a remote ref carries no commits.
+changed=""
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "$ZERO" ] && continue
+  if [ "$remote_sha" = "$ZERO" ]; then
+    files=$(git log --format= --name-only "$local_sha" --not --remotes=origin 2>/dev/null)
+  else
+    files=$(git log --format= --name-only "$remote_sha..$local_sha" 2>/dev/null)
+  fi
+  changed="$changed
+$files"
+done
+changed=$(printf '%s\n' "$changed" | sort -u | sed '/^$/d')
+[ -n "$changed" ] || exit 0
+
+# Match against CODEOWNERS patterns. GitHub semantics, simplified: a leading or
+# embedded slash anchors the pattern to the repo root; a bare name matches at
+# any depth; a trailing slash means the directory's contents; shell globs pass
+# through to `case` natively.
+matches=""
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in ""|\#*) continue ;; esac
+  set -- $line
+  pattern=$1
+  [ $# -ge 2 ] || continue
+  anchored=0
+  case "$pattern" in
+    /*) anchored=1; pattern=${pattern#/} ;;
+    */*) anchored=1 ;;
+  esac
+  pattern=${pattern%/}
+  for f in $changed; do
+    hit=0
+    if [ "$anchored" = 1 ]; then
+      case "$f" in $pattern|$pattern/*) hit=1 ;; esac
+    else
+      case "$f" in $pattern|*/$pattern|$pattern/*|*/$pattern/*) hit=1 ;; esac
+    fi
+    if [ "$hit" = 1 ]; then
+      matches="$matches  $f
+"
+    fi
+  done
+done < "$CODEOWNERS"
+
+matches=$(printf '%s' "$matches" | sort -u)
+[ -n "$matches" ] || exit 0
+
+if [ "${TIER1_OK:-}" = "1" ]; then
+  echo "pre-push: Tier-1 change acknowledged (TIER1_OK=1):" >&2
+  printf '%s\n' "$matches" >&2
+  exit 0
+fi
+
+echo "" >&2
+echo "pre-push: this push touches Tier-1 paths (see .github/CODEOWNERS):" >&2
+printf '%s\n' "$matches" >&2
+echo "" >&2
+echo "Tier-1 changes are a visible decision, not a casual edit. If a work" >&2
+echo "order or human gate authorized this, acknowledge and re-run:" >&2
+echo "" >&2
+echo "  TIER1_OK=1 git push" >&2
+echo "" >&2
+exit 1

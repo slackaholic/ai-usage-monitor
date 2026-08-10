@@ -114,3 +114,12 @@ npm install
 npm start            # launch the Electron app (user-side; not in agent env)
 npm test             # node --test — 36 tests, must stay green
 ```
+
+## Tier 1 paths — stop and think
+
+`.github/CODEOWNERS` lists this repo's Tier 1 paths (instruction files,
+deploy/pipeline config, lockfiles, workflows/migrations). Changing one is a
+visible decision, not a casual edit: a work order or human approval comes
+first. A pre-push hook enforces the stop — activate it once per clone with
+`git config core.hooksPath .githooks`; an authorized push is then
+`TIER1_OK=1 git push`.
