@@ -44,16 +44,38 @@ async function hasOAuthCredentials(dir) {
   }
 }
 
+// Resolves homeDir to the same canonical form scanClaudeCodeConfigDirs uses
+// for every entry it returns (fsp.realpath). Callers that later compare a
+// scanned dir against homeDir via isDefaultDir (e.g. groupIntoAccounts) must
+// resolve homeDir through this first — otherwise a raw homeDir that diverges
+// from its own realpath (Windows 8.3 short names, symlinks, junctions) never
+// matches the realpath'd entries in the scan, and the default account stops
+// being recognised as default. Falls back to path.resolve when realpath
+// throws — a homeDir that does not exist must not throw here.
+async function resolveHomeDir(homeDir) {
+  try {
+    return await fsp.realpath(homeDir);
+  } catch {
+    return path.resolve(homeDir);
+  }
+}
+
 // Every Claude config directory on this machine, resolved and deduped.
 // Order is stable — default dir first, then alphabetical — so cards never
 // reshuffle between runs.
 async function scanClaudeCodeConfigDirs({ homeDir, env = {}, extraPaths = [] }) {
+  // Resolve once, up front, and use the resolved form for every downstream
+  // homeDir-derived value (the default candidate, the readdir walk, the sort
+  // rank) so this function is internally self-consistent no matter what form
+  // of home it's handed — see resolveHomeDir above.
+  const home = await resolveHomeDir(homeDir);
+
   const candidates = [];
   if (env.CLAUDE_CONFIG_DIR) candidates.push(env.CLAUDE_CONFIG_DIR);
-  candidates.push(path.join(homeDir, '.claude'));
+  candidates.push(path.join(home, '.claude'));
   try {
-    for (const e of await fsp.readdir(homeDir, { withFileTypes: true })) {
-      if (e.isDirectory() && e.name.startsWith('.claude')) candidates.push(path.join(homeDir, e.name));
+    for (const e of await fsp.readdir(home, { withFileTypes: true })) {
+      if (e.isDirectory() && e.name.startsWith('.claude')) candidates.push(path.join(home, e.name));
     }
   } catch {
     // Home unreadable — fall through with whatever explicit candidates we have.
@@ -72,7 +94,7 @@ async function scanClaudeCodeConfigDirs({ homeDir, env = {}, extraPaths = [] }) 
     found.push(real);
   }
 
-  const def = path.resolve(path.join(homeDir, '.claude')).toLowerCase();
+  const def = path.resolve(path.join(home, '.claude')).toLowerCase();
   found.sort((a, b) => {
     const rank = (p) => (p.toLowerCase() === def ? 0 : 1);
     return rank(a) - rank(b) || a.localeCompare(b);
@@ -80,4 +102,4 @@ async function scanClaudeCodeConfigDirs({ homeDir, env = {}, extraPaths = [] }) 
   return found;
 }
 
-module.exports = { deriveLogKey, deriveAccountId, isDefaultDir, scanClaudeCodeConfigDirs };
+module.exports = { deriveLogKey, deriveAccountId, isDefaultDir, scanClaudeCodeConfigDirs, resolveHomeDir };

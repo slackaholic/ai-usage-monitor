@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
-const { deriveLogKey, deriveAccountId } = require('../accounts.js');
+const { deriveLogKey, deriveAccountId, isDefaultDir, resolveHomeDir } = require('../accounts.js');
 
 const HOME = path.join('C:', 'Users', 'someone');
 
@@ -118,4 +118,33 @@ test('a missing home dir yields no accounts rather than throwing', async () => {
   const missing = path.join(os.tmpdir(), 'acct-not-here-xyz');
   const dirs = await scanClaudeCodeConfigDirs({ homeDir: missing, env: {} });
   assert.deepStrictEqual(dirs, []);
+});
+
+test('scan is self-consistent when homeDir is an alias of the real directory', async () => {
+  // realHome is the actual directory holding the login. aliasHome is a
+  // directory junction pointing at it — a stand-in for any case where the
+  // raw homeDir a caller passes in diverges from its own realpath (Windows
+  // 8.3 short names, symlinks, junctions). Every scanned entry always comes
+  // back realpath'd, so aliasHome's raw form is a *different string entirely*
+  // from realHome's realpath, not just a case/short-name variant of it.
+  const realHome = fakeHome({ '.claude': OAUTH });
+  const aliasHome = path.join(os.tmpdir(), 'acct-alias-' + Date.now());
+  fs.symlinkSync(realHome, aliasHome, 'junction');
+
+  // A second, unrelated account whose real path sorts alphabetically before
+  // the default .claude dir's real path. Under the bug, the sort's rank()
+  // never recognises the default entry (because it compares against the raw,
+  // unresolved aliasHome instead of its realpath), so both entries fall back
+  // to rank 1 and the tie-break is pure alphabetical — putting this account
+  // first instead of the default one.
+  const extraAcctDir = fs.mkdtempSync(path.join(os.tmpdir(), '0acct-'));
+  fs.writeFileSync(path.join(extraAcctDir, '.credentials.json'), JSON.stringify(OAUTH));
+
+  const dirs = await scanClaudeCodeConfigDirs({ homeDir: aliasHome, env: {}, extraPaths: [extraAcctDir] });
+  const resolvedHome = await resolveHomeDir(aliasHome);
+  assert.ok(isDefaultDir(dirs[0], resolvedHome), `expected ${dirs[0]} to be the default dir under ${resolvedHome}`);
+
+  fs.rmSync(aliasHome, { recursive: true, force: true });
+  fs.rmSync(realHome, { recursive: true, force: true });
+  fs.rmSync(extraAcctDir, { recursive: true, force: true });
 });
