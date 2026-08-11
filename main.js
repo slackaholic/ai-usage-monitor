@@ -137,7 +137,8 @@ ipcMain.on('open-settings', () => {
   if (settingsWindow && !settingsWindow.isDestroyed()) { settingsWindow.focus(); return; }
   // Width is measured: the Subscriptions rows need 393px of content, and below
   // ~420 they overflow horizontally — hence minWidth 420. Height is a starting
-  // value only; did-finish-load below fits it to the real content.
+  // value only; fitSettingsWindowToContent below fits it to the real content
+  // once the renderer says its account rows exist.
   // autoHideMenuBar reclaims the stock File/Edit/View bar (still shown on Alt),
   // which is pure chrome on a settings dialog and ~30px of vertical space.
   settingsWindow = new BrowserWindow({
