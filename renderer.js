@@ -1129,6 +1129,17 @@ async function fetchClaudeCodeUsage(acct) {
   if (result.error === 'no-credentials') {
     setBadge(acct.id + '-badge', 'No credentials', 'error');
     showToast(`Claude Code credentials not found (${who}) — run "claude login" to authenticate.`);
+    // Show the prompt, not just the badge. It carries the `claude login` hint
+    // and THIS account's credentials path (painted in buildClaudeCodeCards) —
+    // the only place the user is told which directory is actually missing a
+    // login. Without this the block is markup nothing ever displays, and the
+    // toast has faded five seconds later.
+    const promptEl = document.getElementById(acct.id + '-login-prompt');
+    if (promptEl) promptEl.style.display = '';
+    const dataEl = document.getElementById(acct.id + '-data');
+    if (dataEl) dataEl.style.display = 'none';
+    showSection(acct.id + '-section', true);
+    resizeToFit();
     return;
   }
   if (result.error) {

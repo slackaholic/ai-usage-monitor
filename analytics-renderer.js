@@ -1033,6 +1033,13 @@ async function renderCostCompare(el) {
   }).join('');
 
   // Claude Code value ratio: API-equivalent $ ÷ attributed subscription cost.
+  //
+  // 'claude-vscode' is hardcoded ON PURPOSE — do not "fix" this into a loop over
+  // the registry. The numerator comes from readClaudeCodeUsage(), which only
+  // ever reads ~/.claude/projects/**; the spec explicitly leaves per-account
+  // token data out of scope, so there is no other account's token total to
+  // divide. Widening the account without widening the reader would attribute
+  // the default directory's tokens to whichever account happened to match.
   let ratioLine = '';
   const cc = rows.find(r => r.acct === 'claude-vscode');
   if (cc && cc.sv && cc.sv.attributedCost > 0) {
@@ -1156,7 +1163,12 @@ async function buildAccountTabs() {
   PLAN_MULTIPLIERS['claude-desktop'] = 1;
   for (const a of accts) {
     VALID_ACCOUNTS.push(a.logKey);
-    ACCOUNT_LABELS[a.logKey] = a.label || 'Claude Code';
+    // displayName, not `label || 'Claude Code'`: label is null until the OAuth
+    // profile resolves and permanently if it never does, so two accounts would
+    // render two identically-named tabs with no way to tell them apart.
+    // accounts.js derives the fallback (the config directory's own name) once,
+    // for all three windows.
+    ACCOUNT_LABELS[a.logKey] = a.displayName || a.label || 'Claude Code';
     PLAN_MULTIPLIERS[a.logKey] = CLAUDE_CODE_MULTIPLIER;
   }
 

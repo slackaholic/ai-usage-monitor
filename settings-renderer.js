@@ -61,7 +61,12 @@ async function loadAccounts() {
   ACCOUNT_PAIRS = [
     { logKey: 'codex', id: 'codex', label: 'Codex' },
     { logKey: 'claude-desktop', id: 'claude', label: 'Claude Desktop' },
-    ...accts.map(a => ({ logKey: a.logKey, id: a.id, label: a.label || 'Claude Code' })),
+    // displayName, not `label || 'Claude Code'`: label is null until the OAuth
+    // profile resolves and permanently if it never does, so two accounts would
+    // render two identically-named rows — and a price or multiplier typed into
+    // the wrong one. accounts.js derives the fallback (the config directory's
+    // own name) once, for all three windows.
+    ...accts.map(a => ({ logKey: a.logKey, id: a.id, label: a.displayName || a.label || 'Claude Code' })),
   ];
   for (const a of accts) MULT_DEFAULTS[a.logKey] = CLAUDE_CODE_MULT_DEFAULT;
   return accts;
