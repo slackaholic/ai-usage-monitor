@@ -680,9 +680,7 @@ function parseUnifiedRateLimitHeaders(h, nowMs) {
   };
 }
 
-ipcMain.handle('fetch-claude-code-api-usage', async () => {
-  // TODO(Task 7): receive configDir over IPC instead of hardcoding the default.
-  const configDir = path.join(os.homedir(), '.claude');
+ipcMain.handle('fetch-claude-code-api-usage', async (_evt, configDir) => {
   const creds = accounts.readCredentials(configDir);
   if (!creds?.claudeAiOauth?.accessToken) return { error: 'no-credentials' };
 
@@ -712,7 +710,7 @@ ipcMain.handle('fetch-claude-code-api-usage', async () => {
       const limits = parseUnifiedRateLimitHeaders(res.headers, Date.now());
       if (!limits) { resolve({ error: 'no-rate-limit-headers' }); return; }
 
-      resolve({ ...limits, account });
+      resolve({ ...limits, account, configDir });
     });
     req.on('error', e => resolve({ error: e.message }));
     req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'Timeout' }); });
@@ -743,6 +741,19 @@ const EMAIL_ONLY_SCRIPT = `
   })()
 `;
 
+// Persists a resolved email into settings so account grouping (buildClaudeAccounts,
+// below) survives a restart. Only called when an email actually resolves — never
+// on every poll, since 'claudeAccountEmails' sits outside SILENT_SETTINGS_KEYS and
+// a write here broadcasts `settings-changed` to every window. Guarding on "did the
+// value actually change" is what keeps that broadcast from firing on a poll where
+// nothing changed.
+function persistClaudeAccountEmail(configDir, email) {
+  const current = loadSettings().claudeAccountEmails || {};
+  if (current[configDir] === email) return;
+  saveSettings({ claudeAccountEmails: { ...current, [configDir]: email } });
+  BrowserWindow.getAllWindows().forEach(w => w.webContents.send('settings-changed'));
+}
+
 // The renderer asks for the email on every poll, because a fresh `claude login`
 // can swap the account under a running app. Memoising the answer against the
 // access token that produced it keeps that cheap: a repeat poll costs nothing,
@@ -750,58 +761,112 @@ const EMAIL_ONLY_SCRIPT = `
 // is retried on a cooldown, not every poll — the browser fallback below opens a
 // hidden window and can take 20s. Both the memo and the cooldown are keyed by
 // token, so a re-login is never held back by either.
-let claudeCodeEmailMemo = { token: null, email: '' };
-let claudeCodeEmailFailure = { token: null, retryAt: 0 };
+//
+// Per config directory: each account's config dir memoises and cools down
+// independently, so a slow/failing lookup on one account never blocks another.
+const claudeCodeEmailMemo = new Map();     // configDir -> { token, email }
+const claudeCodeEmailFailure = new Map();  // configDir -> { token, retryAt }
 const CLAUDE_CODE_EMAIL_RETRY_MS = 10 * 60 * 1000;
 
-ipcMain.handle('fetch-claude-code-email', async () => {
+ipcMain.handle('fetch-claude-code-email', async (_evt, configDir) => {
   // 1) OAuth profile — same token/account as the usage numbers.
-  // TODO(Task 7): receive configDir over IPC instead of hardcoding the default.
-  const token = await getValidClaudeCodeToken(path.join(os.homedir(), '.claude'));
-  if (claudeCodeEmailMemo.email && claudeCodeEmailMemo.token === token) return claudeCodeEmailMemo.email;
-  if (claudeCodeEmailFailure.token === token && Date.now() < claudeCodeEmailFailure.retryAt) return '';
+  const token = await getValidClaudeCodeToken(configDir);
+
+  const memo = claudeCodeEmailMemo.get(configDir);
+  if (memo?.email && memo.token === token) return memo.email;
+
+  const failure = claudeCodeEmailFailure.get(configDir);
+  if (failure && failure.token === token && Date.now() < failure.retryAt) return '';
 
   if (token) {
     const email = await fetchClaudeCodeProfileEmail(token);
-    if (email) { claudeCodeEmailMemo = { token, email }; return email; }
+    if (email) {
+      claudeCodeEmailMemo.set(configDir, { token, email });
+      persistClaudeAccountEmail(configDir, email);
+      return email;
+    }
   }
 
-  // 2) Fallback: scrape a logged-in claude.ai browser session.
-  const { session: electronSession } = require('electron');
+  // 2) Fallback: scrape a logged-in claude.ai browser session. Only meaningful
+  // for the default config dir — the Electron partitions below hold at most
+  // one claude.ai login, so running this for a second config dir would label
+  // it with the wrong account's email (the bug already found and fixed once,
+  // 2026-07-07).
+  if (accounts.isDefaultDir(configDir, os.homedir())) {
+    const { session: electronSession } = require('electron');
 
-  // Try each partition that might have an active claude.ai session
-  for (const partition of ['persist:claude-web-vscode', 'persist:claude-web']) {
-    const sess = electronSession.fromPartition(partition);
-    const cookies = await sess.cookies.get({ domain: 'claude.ai' });
-    const hasSession = cookies.some(c => c.name.startsWith('__Secure') || c.name === 'sessionKey' || c.httpOnly);
-    if (!hasSession) continue;
+    // Try each partition that might have an active claude.ai session
+    for (const partition of ['persist:claude-web-vscode', 'persist:claude-web']) {
+      const sess = electronSession.fromPartition(partition);
+      const cookies = await sess.cookies.get({ domain: 'claude.ai' });
+      const hasSession = cookies.some(c => c.name.startsWith('__Secure') || c.name === 'sessionKey' || c.httpOnly);
+      if (!hasSession) continue;
 
-    const email = await new Promise((resolve) => {
-      const win = new BrowserWindow({
-        width: 1024, height: 768, show: false, skipTaskbar: true,
-        webPreferences: { nodeIntegration: false, contextIsolation: false, partition },
+      const email = await new Promise((resolve) => {
+        const win = new BrowserWindow({
+          width: 1024, height: 768, show: false, skipTaskbar: true,
+          webPreferences: { nodeIntegration: false, contextIsolation: false, partition },
+        });
+        const timeout = setTimeout(() => { if (!win.isDestroyed()) win.destroy(); resolve(''); }, 20000);
+        win.webContents.on('did-finish-load', async () => {
+          // Bail if redirected to login
+          const url = win.webContents.getURL();
+          if (/login|auth|sign/i.test(url)) { clearTimeout(timeout); win.destroy(); resolve(''); return; }
+          try {
+            await new Promise(r => setTimeout(r, 2000));
+            const result = await win.webContents.executeJavaScript(EMAIL_ONLY_SCRIPT);
+            clearTimeout(timeout);
+            win.destroy();
+            resolve(result || '');
+          } catch { clearTimeout(timeout); win.destroy(); resolve(''); }
+        });
+        win.loadURL('https://claude.ai/settings');
       });
-      const timeout = setTimeout(() => { if (!win.isDestroyed()) win.destroy(); resolve(''); }, 20000);
-      win.webContents.on('did-finish-load', async () => {
-        // Bail if redirected to login
-        const url = win.webContents.getURL();
-        if (/login|auth|sign/i.test(url)) { clearTimeout(timeout); win.destroy(); resolve(''); return; }
-        try {
-          await new Promise(r => setTimeout(r, 2000));
-          const result = await win.webContents.executeJavaScript(EMAIL_ONLY_SCRIPT);
-          clearTimeout(timeout);
-          win.destroy();
-          resolve(result || '');
-        } catch { clearTimeout(timeout); win.destroy(); resolve(''); }
-      });
-      win.loadURL('https://claude.ai/settings');
-    });
 
-    if (email) { claudeCodeEmailMemo = { token, email }; return email; }
+      if (email) {
+        claudeCodeEmailMemo.set(configDir, { token, email });
+        persistClaudeAccountEmail(configDir, email);
+        return email;
+      }
+    }
   }
-  claudeCodeEmailFailure = { token, retryAt: Date.now() + CLAUDE_CODE_EMAIL_RETRY_MS };
+  claudeCodeEmailFailure.set(configDir, { token, retryAt: Date.now() + CLAUDE_CODE_EMAIL_RETRY_MS });
   return '';
 });
+
+// The registry. Scanning touches the filesystem and only runs on demand;
+// grouping is pure and re-runs whenever an email resolves, so a same-account
+// collapse takes effect without waiting for a rescan.
+let scannedConfigDirs = null;
+
+async function buildClaudeAccounts({ rescan = false } = {}) {
+  const settings = loadSettings();
+  // Resolve once, and hand the SAME resolved value to both calls below. The scan
+  // realpath-resolves every directory it returns; groupIntoAccounts compares its
+  // homeDir argument against those directories with plain path.resolve (no
+  // realpath). If the two disagree (Windows 8.3 short names, symlinks,
+  // junctions), the default directory stops being recognised as default and
+  // existing usage-log history detaches from its card.
+  const homeDir = await accounts.resolveHomeDir(os.homedir());
+  if (rescan || !scannedConfigDirs) {
+    scannedConfigDirs = await accounts.scanClaudeCodeConfigDirs({
+      homeDir,
+      env: process.env,
+      extraPaths: settings.claudeExtraConfigDirs || [],
+    });
+  }
+  // Pass the scan's output straight through — unsorted, unfiltered. The
+  // default directory's lead position (scanClaudeCodeConfigDirs sorts it
+  // first) is what lets groupIntoAccounts keep the 'claude-vscode' log key on
+  // a same-account collapse.
+  return accounts.groupIntoAccounts(scannedConfigDirs, {
+    homeDir,
+    knownEmails: settings.claudeAccountEmails || {},
+  });
+}
+
+ipcMain.handle('get-claude-accounts',    () => buildClaudeAccounts());
+ipcMain.handle('rescan-claude-accounts', () => buildClaudeAccounts({ rescan: true }));
 
 const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 

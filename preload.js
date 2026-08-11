@@ -41,9 +41,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readUsageLog: (account, limit) => ipcRenderer.invoke('read-usage-log', account, limit),
   getBudgetInfo: () => ipcRenderer.invoke('get-budget-info'),
 
-  // Claude Code API usage (reads ~/.claude/.credentials.json directly)
-  fetchClaudeCodeApiUsage: () => ipcRenderer.invoke('fetch-claude-code-api-usage'),
-  fetchClaudeCodeEmail: () => ipcRenderer.invoke('fetch-claude-code-email'),
+  // Claude Code API usage — one call per account config directory
+  fetchClaudeCodeApiUsage: (configDir) => ipcRenderer.invoke('fetch-claude-code-api-usage', configDir),
+  fetchClaudeCodeEmail:    (configDir) => ipcRenderer.invoke('fetch-claude-code-email', configDir),
+
+  // Claude Code account registry
+  getClaudeAccounts:    () => ipcRenderer.invoke('get-claude-accounts'),
+  rescanClaudeAccounts: () => ipcRenderer.invoke('rescan-claude-accounts'),
 
   // Resize window to fit content
   resizeToFit: (h) => ipcRenderer.send('resize-to-fit', h),
