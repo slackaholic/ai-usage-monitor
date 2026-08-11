@@ -200,3 +200,34 @@ test('a dir with a known email does not swallow one whose email is still unknown
   assert.strictEqual(accts.length, 2, 'unresolved dirs stay distinct until their email lands');
   assert.strictEqual(accts[1].label, null);
 });
+
+const { readCredentials, writeCredentialsAtomic } = require('../accounts.js');
+
+test('readCredentials parses a dir\'s credentials, or returns null', () => {
+  const home = fakeHome({ '.claude': OAUTH, '.claude-broken': null });
+  fs.writeFileSync(path.join(home, '.claude-broken', '.credentials.json'), 'not json');
+
+  assert.strictEqual(readCredentials(path.join(home, '.claude')).claudeAiOauth.accessToken, 'tok');
+  assert.strictEqual(readCredentials(path.join(home, '.claude-broken')), null);
+  assert.strictEqual(readCredentials(path.join(home, 'nope')), null);
+
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('writeCredentialsAtomic replaces the file and leaves no temp behind', () => {
+  const home = fakeHome({ '.claude': OAUTH });
+  const dir = path.join(home, '.claude');
+
+  const ok = writeCredentialsAtomic(dir, { claudeAiOauth: { accessToken: 'fresh' } });
+
+  assert.strictEqual(ok, true);
+  assert.strictEqual(readCredentials(dir).claudeAiOauth.accessToken, 'fresh');
+  assert.deepStrictEqual(fs.readdirSync(dir), ['.credentials.json'], 'no .tmp-* left over');
+
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('writeCredentialsAtomic reports failure instead of throwing', () => {
+  const ok = writeCredentialsAtomic(path.join(os.tmpdir(), 'acct-missing-xyz'), { a: 1 });
+  assert.strictEqual(ok, false);
+});

@@ -1,5 +1,6 @@
 'use strict';
 const path = require('path');
+const fs = require('fs');
 
 // Two directories are the same account directory if they resolve to the same
 // path. Windows paths are case-insensitive, so compare case-folded.
@@ -134,7 +135,35 @@ function groupIntoAccounts(dirs, { homeDir, knownEmails = {} }) {
   return accounts;
 }
 
+function credentialsPath(configDir) {
+  return path.join(configDir, '.credentials.json');
+}
+
+function readCredentials(configDir) {
+  try { return JSON.parse(fs.readFileSync(credentialsPath(configDir), 'utf8')); }
+  catch { return null; }
+}
+
+// Write to a temp file in the same directory, then rename over the target.
+// rename is atomic within a volume, so a Claude Code process reading this file
+// mid-refresh sees either the old contents or the new ones, never a truncated
+// file. It does NOT coordinate two writers — the loser's refresh is simply
+// superseded, which is harmless because either token is valid.
+function writeCredentialsAtomic(configDir, creds) {
+  const target = credentialsPath(configDir);
+  const tmp = target + '.tmp-' + process.pid;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(creds, null, 2));
+    fs.renameSync(tmp, target);
+    return true;
+  } catch {
+    try { fs.unlinkSync(tmp); } catch {}
+    return false;
+  }
+}
+
 module.exports = {
   deriveLogKey, deriveAccountId, isDefaultDir,
   scanClaudeCodeConfigDirs, resolveHomeDir, groupIntoAccounts,
+  readCredentials, writeCredentialsAtomic,
 };
