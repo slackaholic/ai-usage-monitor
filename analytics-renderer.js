@@ -1023,7 +1023,7 @@ async function renderCostCompare(el) {
   const tbody = rows.map(r => {
     const sv = r.sv;
     return `<tr>
-      <td>${ACCOUNT_LABELS[r.acct]}</td>
+      <td>${esc(ACCOUNT_LABELS[r.acct])}</td>
       <td>${r.price != null ? fmtMoneyUsd(r.price) + '/mo' : '—'}</td>
       <td>${sv ? sv.activeHours.toFixed(1) + 'h' : '—'}</td>
       <td>${sv ? sv.windows : '—'}</td>
@@ -1146,6 +1146,14 @@ async function buildAccountTabs() {
 
   VALID_ACCOUNTS = ['codex', 'claude-desktop'];
   ACCOUNT_LABELS = { codex: 'Codex', 'claude-desktop': 'Claude Desktop' };
+  // PLAN_MULTIPLIERS is `const` (its keys are mutated in place rather than
+  // reassigned), so reset its contents explicitly to the same two-entry base
+  // as its siblings above — otherwise a Claude Code account that vanishes
+  // between calls (e.g. a second registry scan after removing a config dir)
+  // would leave a stale multiplier entry behind instead of being dropped.
+  for (const k of Object.keys(PLAN_MULTIPLIERS)) delete PLAN_MULTIPLIERS[k];
+  PLAN_MULTIPLIERS['codex'] = 1;
+  PLAN_MULTIPLIERS['claude-desktop'] = 1;
   for (const a of accts) {
     VALID_ACCOUNTS.push(a.logKey);
     ACCOUNT_LABELS[a.logKey] = a.label || 'Claude Code';
