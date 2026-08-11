@@ -148,3 +148,55 @@ test('scan is self-consistent when homeDir is an alias of the real directory', a
   fs.rmSync(realHome, { recursive: true, force: true });
   fs.rmSync(extraAcctDir, { recursive: true, force: true });
 });
+
+const { groupIntoAccounts } = require('../accounts.js');
+
+test('each dir becomes its own account when no emails are known', () => {
+  const dirs = [path.join(HOME, '.claude'), path.join(HOME, '.claude-work')];
+  const accts = groupIntoAccounts(dirs, { homeDir: HOME, knownEmails: {} });
+
+  assert.strictEqual(accts.length, 2);
+  assert.strictEqual(accts[0].id, 'claude2');
+  assert.strictEqual(accts[0].logKey, 'claude-vscode');
+  assert.strictEqual(accts[0].label, null);
+  assert.deepStrictEqual(accts[0].configDirs, [path.join(HOME, '.claude')]);
+  assert.strictEqual(accts[1].id, 'cc-claude-work');
+  assert.strictEqual(accts[1].logKey, 'claude-code:.claude-work');
+});
+
+test('dirs sharing an email collapse into one account, keeping the first dir identity', () => {
+  const a = path.join(HOME, '.claude');
+  const b = path.join(HOME, '.claude-work');
+  const accts = groupIntoAccounts([a, b], {
+    homeDir: HOME,
+    knownEmails: { [a]: 'me@example.com', [b]: 'me@example.com' },
+  });
+
+  assert.strictEqual(accts.length, 1);
+  assert.strictEqual(accts[0].logKey, 'claude-vscode', 'history must not fork onto the second dir');
+  assert.strictEqual(accts[0].configDir, a);
+  assert.deepStrictEqual(accts[0].configDirs, [a, b]);
+  assert.strictEqual(accts[0].label, 'me@example.com');
+});
+
+test('different emails stay separate accounts', () => {
+  const a = path.join(HOME, '.claude');
+  const b = path.join(HOME, '.claude-work');
+  const accts = groupIntoAccounts([a, b], {
+    homeDir: HOME,
+    knownEmails: { [a]: 'one@example.com', [b]: 'two@example.com' },
+  });
+
+  assert.strictEqual(accts.length, 2);
+  assert.strictEqual(accts[0].label, 'one@example.com');
+  assert.strictEqual(accts[1].label, 'two@example.com');
+});
+
+test('a dir with a known email does not swallow one whose email is still unknown', () => {
+  const a = path.join(HOME, '.claude');
+  const b = path.join(HOME, '.claude-work');
+  const accts = groupIntoAccounts([a, b], { homeDir: HOME, knownEmails: { [a]: 'me@example.com' } });
+
+  assert.strictEqual(accts.length, 2, 'unresolved dirs stay distinct until their email lands');
+  assert.strictEqual(accts[1].label, null);
+});

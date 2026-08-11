@@ -102,4 +102,39 @@ async function scanClaudeCodeConfigDirs({ homeDir, env = {}, extraPaths = [] }) 
   return found;
 }
 
-module.exports = { deriveLogKey, deriveAccountId, isDefaultDir, scanClaudeCodeConfigDirs, resolveHomeDir };
+// Directory identity is not account identity: two config dirs can hold logins
+// for the SAME account, and because the quota is per-account and shared across
+// every surface, they would render two cards with identical numbers. Once an
+// email is known for both, they collapse into one descriptor — one card, one
+// probe, one log key.
+//
+// Pure: `dirs` is already scanned and sorted, `knownEmails` is the persisted
+// configDir -> email map. No filesystem, no network.
+function groupIntoAccounts(dirs, { homeDir, knownEmails = {} }) {
+  const byEmail = new Map();
+  const accounts = [];
+
+  for (const dir of dirs) {
+    const email = knownEmails[dir] || null;
+    if (email && byEmail.has(email)) {
+      byEmail.get(email).configDirs.push(dir);
+      continue;
+    }
+    const descriptor = {
+      id: deriveAccountId(dir, homeDir),
+      kind: 'claude-code',
+      configDir: dir,
+      configDirs: [dir],
+      logKey: deriveLogKey(dir, homeDir),
+      label: email,
+    };
+    if (email) byEmail.set(email, descriptor);
+    accounts.push(descriptor);
+  }
+  return accounts;
+}
+
+module.exports = {
+  deriveLogKey, deriveAccountId, isDefaultDir,
+  scanClaudeCodeConfigDirs, resolveHomeDir, groupIntoAccounts,
+};
