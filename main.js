@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { readClaudeCodeUsage, readCodexUsage } = require('./usage-reader.js');
+const accounts = require('./accounts.js');
 
 let mainWindow;
 let analyticsWindow = null;
@@ -559,12 +560,7 @@ const CLAUDE_SCRAPE_SCRIPT = `
 
 const CLAUDE_PARTITIONS = { desktop: 'persist:claude-web', vscode: 'persist:claude-web-vscode' };
 
-// ── Claude Code API usage (reads ~/.claude/.credentials.json) ─────────────
-const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
-
-function readCredentials() {
-  try { return JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8')); } catch { return null; }
-}
+// ── Claude Code API usage (reads <configDir>/.credentials.json) ───────────
 
 async function refreshOAuthToken(refreshToken) {
   const https = require('https');
@@ -586,18 +582,25 @@ async function refreshOAuthToken(refreshToken) {
   });
 }
 
-// Returns a valid Claude Code OAuth access token (refreshing + persisting if
-// within 5 min of expiry), or null when no credentials are present.
-async function getValidClaudeCodeToken() {
-  const creds = readCredentials();
+// Returns a valid Claude Code OAuth access token for ONE config directory,
+// refreshing and persisting when within 5 min of expiry, or null when that
+// directory has no credentials.
+async function getValidClaudeCodeToken(configDir) {
+  const creds = accounts.readCredentials(configDir);
   if (!creds?.claudeAiOauth?.accessToken) return null;
   let token = creds.claudeAiOauth.accessToken;
   if (creds.claudeAiOauth.expiresAt < Date.now() + 300_000) {
     const refreshed = await refreshOAuthToken(creds.claudeAiOauth.refreshToken);
     if (refreshed?.access_token) {
       token = refreshed.access_token;
-      const updated = { ...creds, claudeAiOauth: { ...creds.claudeAiOauth, accessToken: token, expiresAt: Date.now() + (refreshed.expires_in ?? 3600) * 1000 } };
-      try { fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(updated, null, 2)); } catch {}
+      accounts.writeCredentialsAtomic(configDir, {
+        ...creds,
+        claudeAiOauth: {
+          ...creds.claudeAiOauth,
+          accessToken: token,
+          expiresAt: Date.now() + (refreshed.expires_in ?? 3600) * 1000,
+        },
+      });
     }
   }
   return token;
@@ -678,7 +681,9 @@ function parseUnifiedRateLimitHeaders(h, nowMs) {
 }
 
 ipcMain.handle('fetch-claude-code-api-usage', async () => {
-  const creds = readCredentials();
+  // TODO(Task 7): receive configDir over IPC instead of hardcoding the default.
+  const configDir = path.join(os.homedir(), '.claude');
+  const creds = accounts.readCredentials(configDir);
   if (!creds?.claudeAiOauth?.accessToken) return { error: 'no-credentials' };
 
   // Build a readable account label from credentials metadata
@@ -686,7 +691,7 @@ ipcMain.handle('fetch-claude-code-api-usage', async () => {
   const sub  = creds.claudeAiOauth?.subscriptionType ?? '';
   const account = tier.replace('default_', '').replace(/_/g, ' ') || sub || 'Claude Code';
 
-  const token = await getValidClaudeCodeToken();
+  const token = await getValidClaudeCodeToken(configDir);
 
   const https = require('https');
   // Minimal inference probe — only to read rate-limit response headers
@@ -751,7 +756,8 @@ const CLAUDE_CODE_EMAIL_RETRY_MS = 10 * 60 * 1000;
 
 ipcMain.handle('fetch-claude-code-email', async () => {
   // 1) OAuth profile — same token/account as the usage numbers.
-  const token = await getValidClaudeCodeToken();
+  // TODO(Task 7): receive configDir over IPC instead of hardcoding the default.
+  const token = await getValidClaudeCodeToken(path.join(os.homedir(), '.claude'));
   if (claudeCodeEmailMemo.email && claudeCodeEmailMemo.token === token) return claudeCodeEmailMemo.email;
   if (claudeCodeEmailFailure.token === token && Date.now() < claudeCodeEmailFailure.retryAt) return '';
 
