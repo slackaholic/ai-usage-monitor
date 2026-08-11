@@ -1,11 +1,13 @@
 // ── Account label overrides ────────────────────────────────────────────────
-const accountOverrides = { codex: '', claude: '', claude2: '' };
+// Keyed by render prefix. Codex and Claude Desktop are fixed; one key per
+// Claude Code account is added by buildClaudeCodeCards.
+const accountOverrides = { codex: '', claude: '' };
 
 function applyAccountLabel(key, autoValue) {
   const override = accountOverrides[key];
   const label = override || autoValue || '';
-  const ids = { codex: 'codex-account', claude: 'claude-account', claude2: 'claude2-account' };
-  const el = document.getElementById(ids[key]);
+  // Every card — static or cloned — names its label element <prefix>-account.
+  const el = document.getElementById(key + '-account');
   if (el && label) el.textContent = label;
 }
 
@@ -33,29 +35,39 @@ const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 let claudeEntries = [];
 let isCompact = false;
 let claudeRetryTimer  = null;
-let claude2RetryTimer = null;
 let codexRetryTimer   = null;
 let refreshIntervalIds = [];
 let refreshSeconds = 120;
 
 // Track whether each account has ever returned real data
-const hasData = { codex: false, claude: false, claude2: false };
+const hasData = { codex: false, claude: false };
 
 // Last-known cache (shown immediately on startup while live fetch runs)
-const cachedData = { codex: null, claude: null, claude2: null };
+const cachedData = { codex: null, claude: null };
 function saveCachedData(key, parsed) {
   cachedData[key] = parsed;
   window.electronAPI.saveSettings({ lastKnown: { ...cachedData } });
 }
 
+// ── Claude Code accounts ───────────────────────────────────────────────────
+// Descriptors from the main process: { id, kind, configDir, configDirs,
+// logKey, label }. Empty until buildClaudeCodeCards() has run.
+let claudeAccounts = [];
+const claudeRetryTimers = {};   // account id -> retry timer
+
+// Every render prefix currently on screen. Codex and Claude Desktop are always
+// present; the Claude Code half is however many accounts were discovered.
+function accountPrefixes() {
+  return ['codex', 'claude', ...claudeAccounts.map(a => a.id)];
+}
+
 // ── Trend history ──────────────────────────────────────────────────────────
+// Two series per prefix. Claude Code accounts add theirs in buildClaudeCodeCards.
 const trendHistory = {
   'codex-5h':   [],
   'codex-wk':   [],
   'claude-5h':  [],
   'claude-wk':  [],
-  'claude2-5h': [],
-  'claude2-wk': [],
 };
 
 function pushTrend(key, value) {
@@ -93,17 +105,19 @@ function applyTrendDisplay(key, delta) {
 }
 
 // ── Analytics / sparkline ──────────────────────────────────────────────────
-const LOG_ACCOUNT = { codex: 'codex', claude: 'claude-desktop', claude2: 'claude-vscode' };
+// Render prefix -> usage-log account key. Claude Code accounts are added from
+// their descriptors' logKey in buildClaudeCodeCards.
+const LOG_ACCOUNT = { codex: 'codex', claude: 'claude-desktop' };
 
 let budgetInfo = {};
 let budgetTargets = { window: 10, day: 20 };
-const lastPct5h = { codex: null, claude: null, claude2: null };
+const lastPct5h = { codex: null, claude: null };
 
-// Per-account session tracking. sessionStart persists in each log entry so analytics
-// can group entries by session even after an app restart.
+// Per-account session tracking, keyed by usage-log account key. sessionStart
+// persists in each log entry so analytics can group entries by session even
+// after an app restart. Claude Code keys are added in buildClaudeCodeCards.
 const _ss = {
   'claude-desktop': { start: null, lastPct: null },
-  'claude-vscode':  { start: null, lastPct: null },
   'codex':          { start: null, lastPct: null },
 };
 
@@ -567,7 +581,8 @@ function setBar(id, pct) {
 }
 
 // Render one usage stat (5h or weekly) across the full card, its bar, and the
-// compact view in one call. prefix: 'codex' | 'claude' | 'claude2'; win: '5h' | 'wk'.
+// compact view in one call. prefix: 'codex' | 'claude' | a Claude Code account
+// id (see accountPrefixes); win: '5h' | 'wk'.
 function renderStat(prefix, win, pct) {
   setPct(`${prefix}-${win}-pct`, pct);
   setBar(`${prefix}-${win}-bar`, pct);
@@ -618,7 +633,7 @@ function renderBudget(prefix, pct5h) {
   note.className = 'budget-note' + (worst === 1 ? ' over' : worst === 2 ? ' wayover' : '');
 }
 
-// Pull fresh budget info + targets, then repaint all three accounts' budget UI.
+// Pull fresh budget info + targets, then repaint every account's budget UI.
 async function refreshBudget() {
   try {
     budgetInfo = (await window.electronAPI.getBudgetInfo()) || {};
@@ -631,7 +646,7 @@ async function refreshBudget() {
       day:    (bt.day    > 0) ? bt.day    : 20,
     };
   } catch { /* leave previous value */ }
-  ['codex', 'claude', 'claude2'].forEach(p => renderBudget(p, null));
+  accountPrefixes().forEach(p => renderBudget(p, null));
 }
 
 // Build a usage-log entry with depletion flags + reset timestamps.
@@ -858,39 +873,111 @@ async function fetchClaudeWebUsage() {
   if (openPanels.has('claude')) { window.electronAPI.readUsageLog('claude-desktop', 200).then(e => renderTrendAnalytics('claude', e)); }
 }
 
-// ── Claude Code (VS Code / CLI) — direct API via ~/.claude/.credentials.json
-function renderClaudeCodeApiData(data, stale = false) {
-  if (!stale) applyAccountLabel('claude2', data.account);
+// ── Claude Code (VS Code / CLI) — direct API per account config directory ──
+// Rewrites every data-id in a freshly cloned card into an id namespaced by the
+// account, so two accounts' cards never share an element id. The attribute is
+// dropped afterwards: a stamped card is stamped once.
+function stampCardIds(root, prefix) {
+  for (const el of root.querySelectorAll('[data-id]')) {
+    el.id = prefix + '-' + el.dataset.id;
+    el.removeAttribute('data-id');
+  }
+}
 
-  renderStat('claude2', '5h', data.pct5h);
-  renderStat('claude2', 'wk', data.pct7d);
-  renderBudget('claude2', data.pct5h);
-  setText('claude2-5h-reset', data.reset5hMs > 0 ? fmtResetIn(data.reset5hMs) : (data.reset5h ? 'Resets in ' + data.reset5h : ''));
-  setText('claude2-wk-reset', data.reset7dMs > 0 ? fmtResetOn(data.reset7dMs) : (data.reset7d ? 'Resets in ' + data.reset7d : ''));
+// Clones one card (and one compact-stat pair) per discovered account, and seeds
+// the per-account state the render helpers key off. Safe to run again after a
+// rescan: both hosts are cleared of Claude Code entries first, and existing
+// state for a surviving account is kept rather than reset.
+async function buildClaudeCodeCards() {
+  claudeAccounts = await window.electronAPI.getClaudeAccounts();
+  const host        = document.getElementById('claude-code-cards');
+  const cardTpl     = document.getElementById('tpl-claude-code-card');
+  const compactTpl  = document.getElementById('tpl-claude-code-compact');
+  const compactHost = document.querySelector('#compact-view .compact-grid');
+  host.replaceChildren();
+  // The compact grid is shared with Codex and Claude Desktop, whose stats are
+  // static markup — clear only the rows this function put there.
+  compactHost.querySelectorAll('[data-cs]').forEach(el => el.remove());
+
+  for (const acct of claudeAccounts) {
+    const card = cardTpl.content.cloneNode(true);
+    stampCardIds(card, acct.id);
+    host.appendChild(card);
+
+    const compact = compactTpl.content.cloneNode(true);
+    stampCardIds(compact, 'c-' + acct.id);           // value + trend spans
+    for (const el of compact.querySelectorAll('[data-cs]')) {
+      el.id = 'cs-' + acct.id + '-' + el.dataset.cs; // the stat container
+    }
+    compactHost.appendChild(compact);
+
+    if (!(acct.id in hasData))         hasData[acct.id] = false;
+    if (!(acct.id in cachedData))      cachedData[acct.id] = null;
+    if (!(acct.id in lastPct5h))       lastPct5h[acct.id] = null;
+    if (!(acct.id in accountOverrides)) accountOverrides[acct.id] = '';
+    LOG_ACCOUNT[acct.id] = acct.logKey;
+    trendHistory[acct.id + '-5h'] = trendHistory[acct.id + '-5h'] || [];
+    trendHistory[acct.id + '-wk'] = trendHistory[acct.id + '-wk'] || [];
+    _ss[acct.logKey] = _ss[acct.logKey] || { start: null, lastPct: null };
+
+    // Handlers the template cannot carry, because each needs its own account.
+    const section = document.getElementById(acct.id + '-section');
+    document.getElementById(acct.id + '-refresh')
+      .addEventListener('click', () => fetchClaudeCodeUsage(acct));
+    document.getElementById(acct.id + '-trend-toggle')
+      .addEventListener('click', () => toggleTrend(acct.id));
+    document.getElementById(acct.id + '-analytics-btn')
+      .addEventListener('click', () => window.electronAPI.openAnalytics(acct.logKey));
+    // data-section mirrors the static cards, so the button is self-describing
+    // even though its handler is wired here rather than by the load-time sweep.
+    const hideBtn = section.querySelector('.section-hide-btn');
+    hideBtn.dataset.section = acct.id + '-section';
+    hideBtn.addEventListener('click', () => hideSection(hideBtn.dataset.section));
+    section.querySelectorAll('.card-title.clickable').forEach(el => {
+      el.addEventListener('click', () => window.electronAPI.openExternal(el.dataset.url));
+    });
+    // The credentials path is this account's own, not always ~/.claude.
+    const sep = acct.configDir.includes('\\') ? '\\' : '/';
+    document.getElementById(acct.id + '-cred-path').textContent =
+      acct.configDir + sep + '.credentials.json';
+
+    if (acct.label) applyAccountLabel(acct.id, acct.label);
+  }
+}
+
+function renderClaudeCodeApiData(acct, data, stale = false) {
+  const id = acct.id;
+  if (!stale) applyAccountLabel(id, data.account);
+
+  renderStat(id, '5h', data.pct5h);
+  renderStat(id, 'wk', data.pct7d);
+  renderBudget(id, data.pct5h);
+  setText(id + '-5h-reset', data.reset5hMs > 0 ? fmtResetIn(data.reset5hMs) : (data.reset5h ? 'Resets in ' + data.reset5h : ''));
+  setText(id + '-wk-reset', data.reset7dMs > 0 ? fmtResetOn(data.reset7dMs) : (data.reset7d ? 'Resets in ' + data.reset7d : ''));
 
   if (!stale) {
-    pushTrend('claude2-5h', data.pct5h);
-    pushTrend('claude2-wk', data.pct7d);
-    // Cache in a format compatible with loadCachedData (reuse claude2 slot)
+    pushTrend(id + '-5h', data.pct5h);
+    pushTrend(id + '-wk', data.pct7d);
+    // Cache in a format compatible with loadCachedData (this account's slot)
     const cacheObj = { sessionUsed: data.pct5h != null ? 100 - data.pct5h : null, weeklyUsed: data.pct7d != null ? 100 - data.pct7d : null, sessionReset: data.reset5h, weeklyReset: data.reset7d, account: data.account };
-    saveCachedData('claude2', cacheObj);
-    const entry = buildUsageEntry('claude-vscode', data.pct5h, data.pct7d, data.reset5hMs || 0, data.reset7dMs || 0);
+    saveCachedData(id, cacheObj);
+    const entry = buildUsageEntry(acct.logKey, data.pct5h, data.pct7d, data.reset5hMs || 0, data.reset7dMs || 0);
     // Claude Code: exact session start derived from API reset header (5h before next reset)
     if (data.reset5hMs > 0) {
       const vsSession = new Date(data.reset5hMs - 5 * 3_600_000).toISOString();
       entry.sessionStart = vsSession;
-      _ss['claude-vscode'].start   = vsSession;
-      _ss['claude-vscode'].lastPct = data.pct5h;
+      _ss[acct.logKey].start   = vsSession;
+      _ss[acct.logKey].lastPct = data.pct5h;
     } else {
-      const vsSession = trackSession('claude-vscode', data.pct5h);
+      const vsSession = trackSession(acct.logKey, data.pct5h);
       if (vsSession) entry.sessionStart = vsSession;
     }
     window.electronAPI.appendUsageLog(entry);
   }
 
-  document.getElementById('claude2-login-prompt').style.display = 'none';
-  document.getElementById('claude2-data').style.display = 'block';
-  showSection('claude2-section', true);
+  document.getElementById(id + '-login-prompt').style.display = 'none';
+  document.getElementById(id + '-data').style.display = 'block';
+  showSection(id + '-section', true);
   resizeToFit();
 }
 
@@ -899,50 +986,66 @@ function renderClaudeCodeApiData(data, stale = false) {
 // authoritative. A fresh `claude login` swaps the account under a running app,
 // so every poll re-resolves the email from the live credentials; a write-once
 // cache would keep showing the previous account's address forever.
-const CLAUDE2_EMAIL_KEY = 'claude2-email-v2';
-
-function readClaude2EmailCache() {
-  try { return JSON.parse(localStorage.getItem(CLAUDE2_EMAIL_KEY) || 'null'); } catch { return null; }
+function claudeEmailCacheKey(acct) {
+  // Keyed by logKey, not by email: the label may change under us, the key must not.
+  return 'claude-code-email:' + acct.logKey;
 }
 
-async function refreshClaude2Email() {
-  const cached = readClaude2EmailCache();
-  if (cached) applyAccountLabel('claude2', cached);
-  const email = await window.electronAPI.fetchClaudeCodeEmail();
+function readClaudeCodeEmailCache(acct) {
+  const key = claudeEmailCacheKey(acct);
+  try {
+    const own = JSON.parse(localStorage.getItem(key) || 'null');
+    if (own) return own;
+    // One-time carry-over so the existing card keeps its label on first run.
+    if (acct.logKey === 'claude-vscode') {
+      const legacy = JSON.parse(localStorage.getItem('claude2-email-v2') || 'null');
+      if (legacy) { localStorage.setItem(key, JSON.stringify(legacy)); return legacy; }
+    }
+    return null;
+  } catch { return null; }
+}
+
+async function refreshClaudeCodeEmail(acct) {
+  const cached = readClaudeCodeEmailCache(acct);
+  if (cached) applyAccountLabel(acct.id, cached);
+  const email = await window.electronAPI.fetchClaudeCodeEmail(acct.configDir);
   // Empty means the lookup failed (offline, no credentials) — keep showing the
   // cached label rather than blanking it.
   if (!email || email === cached) return cached;
-  localStorage.setItem(CLAUDE2_EMAIL_KEY, JSON.stringify(email));
-  applyAccountLabel('claude2', email);
+  localStorage.setItem(claudeEmailCacheKey(acct), JSON.stringify(email));
+  applyAccountLabel(acct.id, email);
   return email;
 }
 
-async function fetchClaudeWebUsage2() {
-  clearTimeout(claude2RetryTimer); claude2RetryTimer = null;
-  fetchStart('claude2');
+async function fetchClaudeCodeUsage(acct) {
+  clearTimeout(claudeRetryTimers[acct.id]); claudeRetryTimers[acct.id] = null;
+  fetchStart(acct.id);
 
-  const result = await window.electronAPI.fetchClaudeCodeApiUsage();
-  fetchStop('claude2');
+  const result = await window.electronAPI.fetchClaudeCodeApiUsage(acct.configDir);
+  fetchStop(acct.id);
 
+  // Toasts name the account: with several cards up, an unattributed error is
+  // one you cannot act on.
+  const who = acct.label || acct.configDir;
   if (result.error === 'no-credentials') {
-    setBadge('claude2-badge', 'No credentials', 'error');
-    showToast('Claude Code credentials not found — run "claude login" to authenticate.');
+    setBadge(acct.id + '-badge', 'No credentials', 'error');
+    showToast(`Claude Code credentials not found (${who}) — run "claude login" to authenticate.`);
     return;
   }
   if (result.error) {
-    setBadge('claude2-badge', 'Error', 'error');
-    showToast('Claude Code API error — retrying in 45s: ' + result.error);
-    claude2RetryTimer = setTimeout(fetchClaudeWebUsage2, 45_000);
+    setBadge(acct.id + '-badge', 'Error', 'error');
+    showToast(`Claude Code API error (${who}) — retrying in 45s: ` + result.error);
+    claudeRetryTimers[acct.id] = setTimeout(() => fetchClaudeCodeUsage(acct), 45_000);
     return;
   }
 
-  hasData.claude2 = true;
-  renderClaudeCodeApiData(result);
-  setBadge('claude2-badge', 'Live', 'ok');
-  if (openPanels.has('claude2')) { window.electronAPI.readUsageLog('claude-vscode', 200).then(e => renderTrendAnalytics('claude2', e)); }
+  hasData[acct.id] = true;
+  renderClaudeCodeApiData(acct, result);
+  setBadge(acct.id + '-badge', 'Live', 'ok');
+  if (openPanels.has(acct.id)) { window.electronAPI.readUsageLog(acct.logKey, 200).then(e => renderTrendAnalytics(acct.id, e)); }
   markUpdated();
 
-  refreshClaude2Email().catch(e => console.error('claude2 email refresh:', e));
+  refreshClaudeCodeEmail(acct).catch(e => console.error('claude code email refresh:', e));
 }
 
 // ── Codex ──────────────────────────────────────────────────────────────────
@@ -1058,14 +1161,17 @@ function loadCachedData(settings) {
   Object.assign(cachedData, kn);
   if (kn.codex)   { renderCodexData(kn.codex, true);    setBadge('codex-badge',   'Cached', 'stale'); }
   if (kn.claude)  { renderClaudeWebData(kn.claude, true);  setBadge('claude-badge',  'Cached', 'stale'); }
-  if (kn.claude2) {
-    // claude2 cache stored as {sessionUsed, weeklyUsed, ...} — convert to API format
-    const c = kn.claude2;
+  // One slot per Claude Code account, keyed by descriptor id. A slot left over
+  // from an account that is no longer discovered simply has no card to paint.
+  for (const acct of claudeAccounts) {
+    const c = kn[acct.id];
+    if (!c) continue;
+    // Cache stored as {sessionUsed, weeklyUsed, ...} — convert to API format
     const pct5h = c.sessionUsed != null ? 100 - c.sessionUsed : c.pct5h ?? null;
-    const pct7d  = c.weeklyUsed  != null ? 100 - c.weeklyUsed  : c.pct7d  ?? null;
-    renderClaudeCodeApiData({ pct5h, pct7d, reset5h: c.sessionReset ?? c.reset5h, reset7d: c.weeklyReset ?? c.reset7d, account: c.account }, true);
-    setBadge('claude2-badge', 'Cached', 'stale');
-    const e = readClaude2EmailCache(); if (e) applyAccountLabel('claude2', e);
+    const pct7d = c.weeklyUsed  != null ? 100 - c.weeklyUsed  : c.pct7d  ?? null;
+    renderClaudeCodeApiData(acct, { pct5h, pct7d, reset5h: c.sessionReset ?? c.reset5h, reset7d: c.weeklyReset ?? c.reset7d, account: c.account }, true);
+    setBadge(acct.id + '-badge', 'Cached', 'stale');
+    const e = readClaudeCodeEmailCache(acct); if (e) applyAccountLabel(acct.id, e);
   }
 }
 
@@ -1073,14 +1179,17 @@ function loadCachedData(settings) {
 function setRefreshInterval(seconds) {
   refreshSeconds = seconds;
   refreshIntervalIds.forEach(clearInterval);
-  refreshIntervalIds = [
-    setInterval(fetchClaudeWebUsage,  seconds * 1000),
-    setInterval(fetchClaudeWebUsage2, seconds * 1000),
-    setInterval(fetchCodexUsage,      seconds * 1000),
-    // Budget info must refresh too: otherwise the day figure never grows, never
-    // resets at midnight, and a fresh install stays on "need more history".
-    setInterval(refreshBudget,        seconds * 1000),
-  ];
+  // One timer fanning out over every account, so all readings in a round come
+  // from the same instant — and so an account discovered later is picked up
+  // without re-timing anything. Budget info refreshes on the same tick:
+  // otherwise the day figure never grows, never resets at midnight, and a
+  // fresh install stays on "need more history".
+  refreshIntervalIds = [setInterval(() => {
+    fetchClaudeWebUsage();
+    fetchCodexUsage();
+    claudeAccounts.forEach(acct => fetchClaudeCodeUsage(acct));
+    refreshBudget();
+  }, seconds * 1000)];
   window.electronAPI.saveSettings({ refreshInterval: seconds });
 }
 
@@ -1123,9 +1232,10 @@ async function logoffClaudeDesktop() {
 }
 document.getElementById('claude-signout-btn')?.addEventListener('click', logoffClaudeDesktop);
 
-document.getElementById('claude2-refresh').addEventListener('click', fetchClaudeWebUsage2);
+// Claude Code refresh buttons are wired per clone in buildClaudeCodeCards —
+// no card exists yet at this point in the script.
 
-// Card title → open in browser
+// Card title → open in browser (static cards; cloned ones wire their own)
 document.querySelectorAll('.card-title.clickable').forEach(el => {
   el.addEventListener('click', () => window.electronAPI.openExternal(el.dataset.url));
 });
@@ -1145,6 +1255,11 @@ async function init() {
   const aot = await window.electronAPI.getAlwaysOnTop();
   document.getElementById('btn-pin').classList.toggle('active', aot);
 
+  // Before anything settings-driven: restoring hidden sections, painting cached
+  // values and applying label overrides all address these cards by id, so the
+  // cards have to exist first.
+  try { await buildClaudeCodeCards(); } catch (e) { console.error('buildClaudeCodeCards:', e); }
+
   let settings = {};
   try {
     settings = await window.electronAPI.getSettings();
@@ -1155,9 +1270,7 @@ async function init() {
     if (settings.refreshInterval) refreshSeconds = settings.refreshInterval;
     if (settings.accountOverrides) {
       Object.assign(accountOverrides, settings.accountOverrides);
-      applyAccountLabel('codex', null);
-      applyAccountLabel('claude', null);
-      applyAccountLabel('claude2', null);
+      accountPrefixes().forEach(p => applyAccountLabel(p, null));
     }
     // Show last known values immediately while live fetch runs
     loadCachedData(settings);
@@ -1167,9 +1280,9 @@ async function init() {
 
   try { await loadClaudeData(); } catch (e) { console.error('loadClaudeData:', e); }
 
-  // Fetch all three accounts in parallel
+  // Fetch every account in parallel
   fetchClaudeWebUsage();
-  fetchClaudeWebUsage2();
+  claudeAccounts.forEach(acct => fetchClaudeCodeUsage(acct));
   fetchCodexUsage();
   refreshBudget();
 
@@ -1180,9 +1293,7 @@ async function init() {
       const s = await window.electronAPI.getSettings();
       if (s.accountOverrides) {
         Object.assign(accountOverrides, s.accountOverrides);
-        applyAccountLabel('codex', null);
-        applyAccountLabel('claude', null);
-        applyAccountLabel('claude2', null);
+        accountPrefixes().forEach(p => applyAccountLabel(p, null));
       }
       if (s.refreshInterval && s.refreshInterval !== refreshSeconds) setRefreshInterval(s.refreshInterval);
       refreshBudget();

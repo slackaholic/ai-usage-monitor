@@ -363,14 +363,9 @@
         <div class="compact-label">Claude Desktop Wk</div>
         <div class="compact-value"><span id="c-claude-wk">—</span><span class="trend" id="c-claude-wk-trend"></span></div>
       </div>
-      <div class="compact-stat" id="cs-claude2-5h" style="display:none">
-        <div class="compact-label">Claude VS Code 5H</div>
-        <div class="compact-value"><span id="c-claude2-5h">—</span><span class="trend" id="c-claude2-5h-trend"></span></div>
-      </div>
-      <div class="compact-stat" id="cs-claude2-wk" style="display:none">
-        <div class="compact-label">Claude VS Code Wk</div>
-        <div class="compact-value"><span id="c-claude2-wk">—</span><span class="trend" id="c-claude2-wk-trend"></span></div>
-      </div>
+      <!-- One pair per Claude Code account is cloned in here from
+           #tpl-claude-code-compact. Codex and Claude Desktop above stay
+           static, so this grid is never cleared wholesale. -->
     </div>
   </div>
 
@@ -552,68 +547,9 @@
 
     </div><!-- #claude-section -->
 
-    <!-- Claude (VS Code) -->
-    <div id="claude2-section">
-    <div class="section-label">Claude (VS Code)<button class="section-hide-btn" data-section="claude2-section" title="Hide section">×</button></div>
-
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <div class="card-title clickable" data-url="https://claude.ai/settings/usage"><div class="dot dot-claude"></div>Claude Code<span class="ext-icon">↗</span></div>
-          <div class="account-label" id="claude2-account"></div>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px">
-          <button class="icon-btn" id="claude2-refresh" title="Refresh">↻</button>
-          <span class="badge" id="claude2-badge">–</span>
-        </div>
-      </div>
-
-      <div id="claude2-login-prompt" style="display:none">
-        <div class="note">Reads from <code>~/.claude/.credentials.json</code>. Run <code>claude login</code> in your terminal to authenticate.</div>
-      </div>
-
-      <div id="claude2-data" style="display:none">
-        <div class="stats-grid" style="margin-bottom:6px">
-          <div class="stat-box">
-            <div class="stat-label">5H Remaining</div>
-            <div class="stat-value accent"><span id="claude2-5h-pct">—</span><span class="trend" id="claude2-5h-trend"></span></div>
-            <div id="claude2-5h-reset"></div>
-          </div>
-          <div class="stat-box">
-            <div class="stat-label">Weekly Remaining</div>
-            <div class="stat-value accent"><span id="claude2-wk-pct">—</span><span class="trend" id="claude2-wk-trend"></span></div>
-            <div id="claude2-wk-reset"></div>
-          </div>
-        </div>
-        <div class="progress-track" style="margin-bottom:3px">
-          <div class="progress-fill" id="claude2-5h-bar" style="width:0%;background:linear-gradient(90deg,#059669,#34d399)"></div>
-          <div class="budget-marker" id="claude2-5h-budget" style="display:none"></div>
-        </div>
-        <div class="progress-track">
-          <div class="progress-fill" id="claude2-wk-bar" style="width:0%;background:linear-gradient(90deg,#dc2626,#f87171)"></div>
-        </div>
-        <div class="budget-note" id="claude2-budget-note"></div>
-
-        <div class="trend-toggle-row">
-          <button class="trend-toggle-btn" id="claude2-trend-toggle" onclick="toggleTrend('claude2')">Trend ▾</button>
-          <button class="trend-toggle-btn" style="margin-left:8px" onclick="window.electronAPI.openAnalytics('claude-vscode')">Analytics ↗</button>
-        </div>
-        <div class="trend-panel" id="claude2-trend-panel">
-          <div class="trend-inner">
-            <div class="trend-stats">
-              <span>5H Δ: <b id="claude2-5h-delta">—</b></span>
-              <span>Wk Δ: <b id="claude2-wk-delta">—</b></span>
-              <span>Burn: <b id="claude2-burn">—</b></span>
-              <span>Depletions: <b id="claude2-depletions">—</b></span>
-            </div>
-            <svg class="trend-spark" id="claude2-spark" height="40" viewBox="0 0 260 40" preserveAspectRatio="none"></svg>
-            <div class="trend-spark-labels"><span id="claude2-spark-start">—</span><span id="claude2-spark-end">now</span></div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    </div><!-- #claude2-section -->
+    <!-- Claude Code — one cloned card per discovered account.
+         Filled by buildClaudeCodeCards() from #tpl-claude-code-card. -->
+    <div id="claude-code-cards"></div>
 
     <div id="show-hidden-row">
       <button id="show-all-btn"><span id="hidden-count">0</span> section(s) hidden · Show all</button>
@@ -626,6 +562,91 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- ── Claude Code card template ─────────────────────────────────────────────
+     One clone per account. Every id is written as data-id and stamped with the
+     account's id at clone time (stampCardIds), so two accounts never collide.
+     Handlers are wired in JS after stamping rather than by inline onclick,
+     which cannot know the account it belongs to. -->
+<template id="tpl-claude-code-card">
+  <div class="section" data-id="section">
+    <div class="section-label">Claude (VS Code)<button class="section-hide-btn" title="Hide section">×</button></div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title clickable" data-url="https://claude.ai/settings/usage"><div class="dot dot-claude"></div>Claude Code<span class="ext-icon">↗</span></div>
+          <div class="account-label" data-id="account"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <button class="icon-btn" data-id="refresh" title="Refresh">↻</button>
+          <span class="badge" data-id="badge">–</span>
+        </div>
+      </div>
+
+      <div data-id="login-prompt" style="display:none">
+        <div class="note">Reads from <code data-id="cred-path"></code>. Run <code>claude login</code> in your terminal to authenticate.</div>
+      </div>
+
+      <div data-id="data" style="display:none">
+        <div class="stats-grid" style="margin-bottom:6px">
+          <div class="stat-box">
+            <div class="stat-label">5H Remaining</div>
+            <div class="stat-value accent"><span data-id="5h-pct">—</span><span class="trend" data-id="5h-trend"></span></div>
+            <div data-id="5h-reset"></div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Weekly Remaining</div>
+            <div class="stat-value accent"><span data-id="wk-pct">—</span><span class="trend" data-id="wk-trend"></span></div>
+            <div data-id="wk-reset"></div>
+          </div>
+        </div>
+        <div class="progress-track" style="margin-bottom:3px">
+          <div class="progress-fill" data-id="5h-bar" style="width:0%;background:linear-gradient(90deg,#059669,#34d399)"></div>
+          <div class="budget-marker" data-id="5h-budget" style="display:none"></div>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" data-id="wk-bar" style="width:0%;background:linear-gradient(90deg,#dc2626,#f87171)"></div>
+        </div>
+        <div class="budget-note" data-id="budget-note"></div>
+
+        <div class="trend-toggle-row">
+          <button class="trend-toggle-btn" data-id="trend-toggle">Trend ▾</button>
+          <button class="trend-toggle-btn" style="margin-left:8px" data-id="analytics-btn">Analytics ↗</button>
+        </div>
+        <div class="trend-panel" data-id="trend-panel">
+          <div class="trend-inner">
+            <div class="trend-stats">
+              <span>5H Δ: <b data-id="5h-delta">—</b></span>
+              <span>Wk Δ: <b data-id="wk-delta">—</b></span>
+              <span>Burn: <b data-id="burn">—</b></span>
+              <span>Depletions: <b data-id="depletions">—</b></span>
+            </div>
+            <svg class="trend-spark" data-id="spark" height="40" viewBox="0 0 260 40" preserveAspectRatio="none"></svg>
+            <div class="trend-spark-labels"><span data-id="spark-start">—</span><span data-id="spark-end">now</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<!-- ── Claude Code compact-stat template ─────────────────────────────────────
+     Two ids per stat, on different prefixes: the container is cs-<id>-<win>
+     while its value/trend spans are c-<id>-<win>. data-id carries the c- half
+     (stamped like the card), data-cs the container half. data-cs is left in
+     place afterwards: it is also the selector that removes just these rows
+     from a grid shared with Codex and Claude Desktop. -->
+<template id="tpl-claude-code-compact">
+  <div class="compact-stat" data-cs="5h" style="display:none">
+    <div class="compact-label">Claude VS Code 5H</div>
+    <div class="compact-value"><span data-id="5h">—</span><span class="trend" data-id="5h-trend"></span></div>
+  </div>
+  <div class="compact-stat" data-cs="wk" style="display:none">
+    <div class="compact-label">Claude VS Code Wk</div>
+    <div class="compact-value"><span data-id="wk">—</span><span class="trend" data-id="wk-trend"></span></div>
+  </div>
+</template>
 
 <script src="metrics.js"></script>
 <script src="renderer.js"></script>
