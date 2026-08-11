@@ -9,6 +9,15 @@ function applyAccountLabel(key, autoValue) {
   // Every card — static or cloned — names its label element <prefix>-account.
   const el = document.getElementById(key + '-account');
   if (el && label) el.textContent = label;
+
+  // Claude Code headings ride the same call, so a heading can never disagree
+  // with the label beneath the card title. Only an email is remembered as the
+  // account's identity: this function is also fed the rate-limit tier string
+  // ("max 20x"), which is identical on every card and distinguishes nothing.
+  const acct = claudeAccounts.find(a => a.id === key);
+  if (!acct) return;
+  if (autoValue && autoValue.includes('@')) acct.label = autoValue;
+  applyAccountHeadings(acct);
 }
 
 document.getElementById('btn-settings').addEventListener('click', () => {
@@ -665,14 +674,18 @@ function markUpdated() {
 }
 
 // Badge "Loading…" + spinner state shared by the async fetch functions.
+// Null-guarded like setBadge/setPct: a fetch or a retry can outlive the card it
+// started on (an account dropped by a rescan), and an unguarded call would
+// throw inside an async function nothing awaits — visible only as an unhandled
+// rejection.
 function fetchStart(prefix) {
   setBadge(prefix + '-badge', 'Loading…', 'warn');
-  document.getElementById(prefix + '-badge').classList.add('pulsing');
-  document.getElementById(prefix + '-refresh').classList.add('spinning');
+  document.getElementById(prefix + '-badge')?.classList.add('pulsing');
+  document.getElementById(prefix + '-refresh')?.classList.add('spinning');
 }
 function fetchStop(prefix) {
-  document.getElementById(prefix + '-badge').classList.remove('pulsing');
-  document.getElementById(prefix + '-refresh').classList.remove('spinning');
+  document.getElementById(prefix + '-badge')?.classList.remove('pulsing');
+  document.getElementById(prefix + '-refresh')?.classList.remove('spinning');
 }
 
 // A little headroom on the fitted height, so sub-pixel rounding or a few px of
@@ -884,12 +897,72 @@ function stampCardIds(root, prefix) {
   }
 }
 
+// A compact stat needs two id namespaces: cs-<id>-<win> on the container that
+// gets shown/hidden, c-<id>-<win> on the value and trend spans inside it. One
+// prefix cannot produce both, so data-id carries the c- half (stamped above)
+// and data-cs the container half. Unlike data-id it is left in place: it is
+// also the selector that removes only these rows from a grid shared with Codex
+// and Claude Desktop.
+function stampCompactIds(root, accountId) {
+  for (const el of root.querySelectorAll('[data-cs]')) {
+    el.id = 'cs-' + accountId + '-' + el.dataset.cs;
+  }
+}
+
+// What distinguishes one Claude Code card from another in its headings. Empty
+// for a lone account — the single-account screen keeps the plain headings the
+// template ships with, unchanged.
+function accountSuffix(acct) {
+  if (claudeAccounts.length < 2) return '';
+  const override = accountOverrides[acct.id];
+  if (override) return override;
+  const label = acct.label || '';
+  if (label.includes('@')) return label.slice(0, label.indexOf('@'));
+  if (label) return label;
+  // No email resolved yet — the directory it came from is at least stable.
+  return (acct.configDir || '').split(/[\\/]/).filter(Boolean).pop() || acct.id;
+}
+
+// Appends (or removes) a heading's account suffix, working off the template's
+// own text so repeated updates never stack onto an already-suffixed heading.
+// A heading that has never been suffixed and needs no suffix is left untouched
+// — not even rewritten with an identical string.
+function setHeadingSuffix(el, suffix) {
+  if (!el || !el.firstChild) return;
+  if (!suffix && el.dataset.base === undefined) return;
+  if (el.dataset.base === undefined) el.dataset.base = el.firstChild.nodeValue;
+  el.firstChild.nodeValue = suffix ? el.dataset.base + ' — ' + suffix : el.dataset.base;
+}
+
+// The card heading and both compact labels, kept in step with the -account
+// element by being driven from applyAccountLabel — the email resolves well
+// after the card is cloned.
+function applyAccountHeadings(acct) {
+  const suffix  = accountSuffix(acct);
+  const section = document.getElementById(acct.id + '-section');
+  if (section) setHeadingSuffix(section.querySelector('.section-label'), suffix);
+  for (const win of ['5h', 'wk']) {
+    const stat = document.getElementById('cs-' + acct.id + '-' + win);
+    if (stat) setHeadingSuffix(stat.querySelector('.compact-label'), suffix);
+  }
+}
+
 // Clones one card (and one compact-stat pair) per discovered account, and seeds
 // the per-account state the render helpers key off. Safe to run again after a
-// rescan: both hosts are cleared of Claude Code entries first, and existing
-// state for a surviving account is kept rather than reset.
+// rescan: pending retries are cancelled, both hosts are cleared of Claude Code
+// entries, and existing state for a surviving account is kept rather than reset.
 async function buildClaudeCodeCards() {
-  claudeAccounts = await window.electronAPI.getClaudeAccounts();
+  // Before anything else: a retry pending for an account that is about to
+  // vanish would fire into a card that no longer exists.
+  for (const id of Object.keys(claudeRetryTimers)) {
+    clearTimeout(claudeRetryTimers[id]);
+    delete claudeRetryTimers[id];
+  }
+  const found = await window.electronAPI.getClaudeAccounts();
+  // A malformed reply must not leave claudeAccounts non-iterable: the catch in
+  // init() would swallow the throw here and every later accountPrefixes() call
+  // would fail instead.
+  claudeAccounts = Array.isArray(found) ? found : [];
   const host        = document.getElementById('claude-code-cards');
   const cardTpl     = document.getElementById('tpl-claude-code-card');
   const compactTpl  = document.getElementById('tpl-claude-code-compact');
@@ -905,10 +978,8 @@ async function buildClaudeCodeCards() {
     host.appendChild(card);
 
     const compact = compactTpl.content.cloneNode(true);
-    stampCardIds(compact, 'c-' + acct.id);           // value + trend spans
-    for (const el of compact.querySelectorAll('[data-cs]')) {
-      el.id = 'cs-' + acct.id + '-' + el.dataset.cs; // the stat container
-    }
+    stampCardIds(compact, 'c-' + acct.id);   // value + trend spans
+    stampCompactIds(compact, acct.id);       // stat containers
     compactHost.appendChild(compact);
 
     if (!(acct.id in hasData))         hasData[acct.id] = false;
@@ -941,7 +1012,9 @@ async function buildClaudeCodeCards() {
     document.getElementById(acct.id + '-cred-path').textContent =
       acct.configDir + sep + '.credentials.json';
 
-    if (acct.label) applyAccountLabel(acct.id, acct.label);
+    // One funnel: paints the label when the registry already knows it, and the
+    // headings either way.
+    applyAccountLabel(acct.id, acct.label);
   }
 }
 

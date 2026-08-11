@@ -859,10 +859,19 @@ async function buildClaudeAccounts({ rescan = false } = {}) {
   // default directory's lead position (scanClaudeCodeConfigDirs sorts it
   // first) is what lets groupIntoAccounts keep the 'claude-vscode' log key on
   // a same-account collapse.
-  return accounts.groupIntoAccounts(scannedConfigDirs, {
-    homeDir,
-    knownEmails: settings.claudeAccountEmails || {},
-  });
+  const knownEmails = settings.claudeAccountEmails || {};
+  const grouped = accounts.groupIntoAccounts(scannedConfigDirs, { homeDir, knownEmails });
+  if (grouped.length) return grouped;
+
+  // Discovery finding nothing must not empty the screen. The renderer clones a
+  // card per descriptor, so an empty registry means no Claude Code card at all
+  // — where the card previously said "No credentials". Fall back to the default
+  // directory: one descriptor, id 'claude2', logKey 'claude-vscode', whose probe
+  // then reports the missing credentials on a visible card. Built through
+  // groupIntoAccounts rather than by hand so the shape cannot drift from a real
+  // descriptor, and off the already-resolved homeDir so isDefaultDir still
+  // recognises it.
+  return accounts.groupIntoAccounts([path.join(homeDir, '.claude')], { homeDir, knownEmails });
 }
 
 ipcMain.handle('get-claude-accounts',    () => buildClaudeAccounts());
