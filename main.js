@@ -769,6 +769,10 @@ function persistClaudeAccountEmail(configDir, email) {
   if (current[configDir] === email) return;
   saveSettings({ claudeAccountEmails: { ...current, [configDir]: email } });
   BrowserWindow.getAllWindows().forEach(w => w.webContents.send('settings-changed'));
+  // A newly-known email can collapse two config dirs onto one account. Regroup
+  // (pure — no rescan) and tell the windows, but only if the registry's shape
+  // actually moved: see publishClaudeAccountsIfChanged.
+  publishClaudeAccountsIfChanged().catch(e => console.error('claude accounts regroup:', e));
 }
 
 // The renderer asks for the email on every poll, because a fresh `claude login`
@@ -901,8 +905,43 @@ async function buildClaudeAccounts({ rescan = false } = {}) {
   return accounts.groupIntoAccounts([defaultDir], { homeDir, defaultDir, knownEmails });
 }
 
-ipcMain.handle('get-claude-accounts',    () => buildClaudeAccounts());
-ipcMain.handle('rescan-claude-accounts', () => buildClaudeAccounts({ rescan: true }));
+// The registry shape the windows were last handed. "Shape" is deliberately just
+// which accounts exist and which directories back them — NOT `label`. Only a
+// shape change needs the monitor window to re-clone its cards; a label landing
+// is painted in place by the renderer's own email refresh.
+let lastAccountsSignature = null;
+
+function accountsSignature(list) {
+  return (list || []).map(a => [a.id, a.logKey, ...(a.configDirs || [])].join('|')).join('\n');
+}
+
+// Rebuild the registry and, when its shape moved, tell every window so the
+// monitor can re-clone its cards. Without this the Settings rescan button
+// refreshes only the Settings rows: the new account's card never appears, and a
+// same-account collapse never lands.
+//
+// The signature guard is what stops a rebuild storm. persistClaudeAccountEmail
+// can fire for several accounts within one poll, and each rebuild clears and
+// re-clones every card — so only a real regroup (a collapse, or a rescan
+// finding/losing a directory) is worth one.
+async function publishClaudeAccountsIfChanged({ rescan = false } = {}) {
+  const list = await buildClaudeAccounts({ rescan });
+  const sig = accountsSignature(list);
+  if (sig !== lastAccountsSignature) {
+    lastAccountsSignature = sig;
+    BrowserWindow.getAllWindows().forEach(w => w.webContents.send('claude-accounts-changed'));
+  }
+  return list;
+}
+
+ipcMain.handle('get-claude-accounts', async () => {
+  const list = await buildClaudeAccounts();
+  // Record what the caller is about to render, so a later regroup compares
+  // against the shape actually on screen instead of re-announcing it.
+  lastAccountsSignature = accountsSignature(list);
+  return list;
+});
+ipcMain.handle('rescan-claude-accounts', () => publishClaudeAccountsIfChanged({ rescan: true }));
 
 const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 

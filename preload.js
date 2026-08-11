@@ -45,9 +45,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fetchClaudeCodeApiUsage: (configDir) => ipcRenderer.invoke('fetch-claude-code-api-usage', configDir),
   fetchClaudeCodeEmail:    (configDir) => ipcRenderer.invoke('fetch-claude-code-email', configDir),
 
-  // Claude Code account registry
+  // Claude Code account registry. onClaudeAccountsChanged fires when the set of
+  // accounts itself moves — a rescan found or lost a config directory, or a
+  // newly-resolved email collapsed two directories onto one account — which is
+  // the monitor window's cue to re-clone its cards. Distinct from
+  // `settings-changed`, which means "a value changed", not "the cards are wrong".
   getClaudeAccounts:    () => ipcRenderer.invoke('get-claude-accounts'),
   rescanClaudeAccounts: () => ipcRenderer.invoke('rescan-claude-accounts'),
+  onClaudeAccountsChanged: (cb) => ipcRenderer.on('claude-accounts-changed', () => cb()),
 
   // Resize window to fit content
   resizeToFit: (h) => ipcRenderer.send('resize-to-fit', h),

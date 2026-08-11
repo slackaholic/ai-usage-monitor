@@ -476,6 +476,26 @@ function hideSection(id) {
   updateShowHiddenRow();
 }
 
+// Re-applies the hidden set to the DOM, seeding it from settings the first
+// time. Used at startup AND after a Claude Code card rebuild: the rebuilt cards
+// are fresh clones with no display style, so without this a rebuild resurrects
+// every section the user had hidden.
+//
+// Deliberately not a loop over hideSection(): that would re-persist and
+// re-broadcast an unchanged hidden list on every rebuild (and on every startup,
+// as it used to).
+function applyHiddenSections(settings) {
+  if (Array.isArray(settings.hiddenSections)) {
+    settings.hiddenSections.forEach(id => hiddenSections.add(id));
+  }
+  for (const id of hiddenSections) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+    refreshCompactStatsForSection(id);
+  }
+  updateShowHiddenRow();
+}
+
 function showSection(id, visible) {
   if (hiddenSections.has(id)) return; // respect manual hide
   const el = document.getElementById(id);
@@ -1031,7 +1051,7 @@ function renderClaudeCodeApiData(acct, data, stale = false) {
   if (!stale) {
     pushTrend(id + '-5h', data.pct5h);
     pushTrend(id + '-wk', data.pct7d);
-    // Cache in a format compatible with loadCachedData (this account's slot)
+    // Cache in a format compatible with loadCachedClaudeCodeData (this account's slot)
     const cacheObj = { sessionUsed: data.pct5h != null ? 100 - data.pct5h : null, weeklyUsed: data.pct7d != null ? 100 - data.pct7d : null, sessionReset: data.reset5h, weeklyReset: data.reset7d, account: data.account };
     saveCachedData(id, cacheObj);
     const entry = buildUsageEntry(acct.logKey, data.pct5h, data.pct7d, data.reset5hMs || 0, data.reset7dMs || 0);
@@ -1234,12 +1254,23 @@ async function fetchCodexUsage() {
 }
 
 // ── Cached data (stale display on startup) ────────────────────────────────
-function loadCachedData(settings) {
+// Split in two on purpose: a Claude Code card rebuild re-clones only those
+// cards, so repainting Codex and Claude Desktop from cache — and stamping them
+// 'Cached' — would flip two live cards back to stale for a whole poll.
+function loadCachedStaticData(settings) {
   const kn = settings.lastKnown;
   if (!kn) return;
+  if (kn.codex)   { renderCodexData(kn.codex, true);       setBadge('codex-badge',  'Cached', 'stale'); }
+  if (kn.claude)  { renderClaudeWebData(kn.claude, true);  setBadge('claude-badge', 'Cached', 'stale'); }
+}
+
+function loadCachedClaudeCodeData(settings) {
+  const kn = settings.lastKnown;
+  if (!kn) return;
+  // Seeds cachedData from the persisted slots. buildClaudeCodeCards resets the
+  // slot of every account it clones, and the next saveCachedData persists the
+  // whole map — an un-restored slot would write null over a good cached value.
   Object.assign(cachedData, kn);
-  if (kn.codex)   { renderCodexData(kn.codex, true);    setBadge('codex-badge',   'Cached', 'stale'); }
-  if (kn.claude)  { renderClaudeWebData(kn.claude, true);  setBadge('claude-badge',  'Cached', 'stale'); }
   // One slot per Claude Code account, keyed by descriptor id. A slot left over
   // from an account that is no longer discovered simply has no card to paint.
   for (const acct of claudeAccounts) {
@@ -1329,6 +1360,55 @@ window.electronAPI.onAlwaysOnTopChanged((val) => {
   btn.title = val ? 'Always on Top: ON' : 'Always on Top: OFF';
 });
 
+// ── Card rebuild ───────────────────────────────────────────────────────────
+// Cloning the cards is only half the job. Hidden sections, label overrides and
+// the cached values all address cards BY ID, so they have to be re-applied to
+// the fresh clones — otherwise a rebuild resurrects sections the user hid and
+// blanks the cards that already had data. init() and the accounts-changed
+// handler share this so the two can never drift apart.
+function applyClaudeCardSettings(settings) {
+  applyHiddenSections(settings);
+  if (settings.accountOverrides) {
+    Object.assign(accountOverrides, settings.accountOverrides);
+    accountPrefixes().forEach(p => applyAccountLabel(p, null));
+  }
+  loadCachedClaudeCodeData(settings);
+}
+
+// The set of accounts moved (a rescan found or lost a config directory, or a
+// newly-resolved email collapsed two of them). Re-clone, re-apply everything
+// that addresses a card by id, then fetch — a card that only appeared after the
+// rebuild would otherwise sit blank until the next tick.
+async function rebuildClaudeCodeCards() {
+  await buildClaudeCodeCards();
+  try {
+    applyClaudeCardSettings((await window.electronAPI.getSettings()) || {});
+  } catch (e) {
+    console.error('rebuild settings apply:', e);
+  }
+  claudeAccounts.forEach(acct => fetchClaudeCodeUsage(acct));
+  resizeToFit();
+}
+
+// Serialises rebuilds. Main coalesces by registry shape, but two events can
+// still land while one rebuild is mid-flight, and overlapping runs would clear
+// the card hosts underneath each other. A queued flag rather than a plain drop,
+// so the last event is never the one that gets lost.
+let cardRebuildInFlight = null;
+let cardRebuildQueued = false;
+function requestCardRebuild() {
+  if (cardRebuildInFlight) { cardRebuildQueued = true; return cardRebuildInFlight; }
+  cardRebuildInFlight = (async () => {
+    try { await rebuildClaudeCodeCards(); }
+    catch (e) { console.error('claude accounts rebuild:', e); }
+    finally {
+      cardRebuildInFlight = null;
+      if (cardRebuildQueued) { cardRebuildQueued = false; requestCardRebuild(); }
+    }
+  })();
+  return cardRebuildInFlight;
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {
   const aot = await window.electronAPI.getAlwaysOnTop();
@@ -1343,16 +1423,12 @@ async function init() {
   try {
     settings = await window.electronAPI.getSettings();
     if (settings.compact) setCompact(true);
-    if (Array.isArray(settings.hiddenSections)) {
-      settings.hiddenSections.forEach(id => hideSection(id));
-    }
     if (settings.refreshInterval) refreshSeconds = settings.refreshInterval;
-    if (settings.accountOverrides) {
-      Object.assign(accountOverrides, settings.accountOverrides);
-      accountPrefixes().forEach(p => applyAccountLabel(p, null));
-    }
-    // Show last known values immediately while live fetch runs
-    loadCachedData(settings);
+    // Show last known values immediately while live fetch runs. The Claude Code
+    // half rides applyClaudeCardSettings, so a rebuild gets it too; the two
+    // static cards are init-only, because a rebuild must not repaint them.
+    applyClaudeCardSettings(settings);
+    loadCachedStaticData(settings);
   } catch (e) {
     console.error('Settings load error:', e);
   }
@@ -1366,6 +1442,11 @@ async function init() {
   refreshBudget();
 
   setRefreshInterval(refreshSeconds);
+
+  // A rescan from Settings, or a same-account collapse, changes which cards
+  // belong on screen — `settings-changed` cannot express that, so it has its
+  // own channel.
+  window.electronAPI.onClaudeAccountsChanged(() => { requestCardRebuild(); });
 
   window.electronAPI.onSettingsChanged(async () => {
     try {
