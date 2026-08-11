@@ -50,7 +50,6 @@ ipcMain.handle('read-usage-log', (_, account, limit = 200) => {
 // ── Budget info ───────────────────────────────────────────────────────────
 // read-usage-log parses the WHOLE log on every call, so budget data gets its own
 // mtime-cached read: one parse shared by all accounts, re-done only on change.
-const BUDGET_ACCOUNTS = ['codex', 'claude-desktop', 'claude-vscode'];
 let _budgetCache = { mtimeMs: -1, byAccount: null };
 
 function readUsageLogGrouped() {
@@ -64,9 +63,14 @@ function readUsageLogGrouped() {
       .map(l => { try { return JSON.parse(l); } catch { return null; } })
       .filter(Boolean);
   } catch { return null; }
+  // Bucket every account the log actually contains. A fixed list here would
+  // silently drop any account added later, leaving its card permanently on
+  // "budget: need more history".
   const byAccount = {};
-  for (const a of BUDGET_ACCOUNTS) byAccount[a] = [];
-  for (const e of entries) if (byAccount[e.account]) byAccount[e.account].push(e);
+  for (const e of entries) {
+    if (!e.account) continue;
+    (byAccount[e.account] = byAccount[e.account] || []).push(e);
+  }
   _budgetCache = { mtimeMs: st.mtimeMs, byAccount };
   return byAccount;
 }
@@ -92,8 +96,8 @@ ipcMain.handle('get-budget-info', () => {
   midnight.setHours(0, 0, 0, 0);
   const midnightMs = midnight.getTime();
   const out = {};
-  for (const a of BUDGET_ACCOUNTS) {
-    const snaps = (byAccount && byAccount[a]) || [];
+  for (const a of Object.keys(byAccount || {})) {
+    const snaps = byAccount[a];
     const tierMs = tierChangeMs(tierDates[a]);
     out[a] = {
       ratio: weeklyPerFiveHourRatio(snaps, tierMs),
