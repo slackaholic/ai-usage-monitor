@@ -1,32 +1,77 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+
+// Two paths name the same directory if they resolve to the same string.
+// Windows paths are case-insensitive, so compare case-folded. Pure: it does NOT
+// collapse symlinks or junctions, so a caller comparing against a scanned
+// directory has to hand it a realpath'd other side (resolveDefaultConfigDir).
+function samePath(a, b) {
+  return path.resolve(a || '').toLowerCase() === path.resolve(b || '').toLowerCase();
+}
+
+// The default config directory implied by a home directory, WITHOUT resolving
+// symlinks. Only for callers that have no realpath'd form to offer.
+function defaultDirOf(homeDir) {
+  return path.join(homeDir || '', '.claude');
+}
 
 // Two directories are the same account directory if they resolve to the same
-// path. Windows paths are case-insensitive, so compare case-folded.
+// path.
 function isDefaultDir(configDir, homeDir) {
-  const a = path.resolve(configDir).toLowerCase();
-  const b = path.resolve(path.join(homeDir, '.claude')).toLowerCase();
-  return a === b;
+  return samePath(configDir, defaultDirOf(homeDir));
 }
 
 // The usage-log account key. Derived from the DIRECTORY, never the email:
 // emails change on re-login, and re-keying history on a login change orphans
-// it. ~/.claude keeps 'claude-vscode' so existing history stays attached.
-function deriveLogKey(configDir, homeDir) {
-  if (isDefaultDir(configDir, homeDir)) return 'claude-vscode';
+// it. The default dir keeps 'claude-vscode' so existing history stays attached.
+function logKeyFor(configDir, defaultDir) {
+  if (samePath(configDir, defaultDir)) return 'claude-vscode';
   return 'claude-code:' + path.basename(configDir);
 }
 
-// The renderer prefix / DOM id namespace. ~/.claude keeps 'claude2' so the
-// existing markup, settings keys and localStorage entries keep working.
-function deriveAccountId(configDir, homeDir) {
-  if (isDefaultDir(configDir, homeDir)) return 'claude2';
+function deriveLogKey(configDir, homeDir) {
+  return logKeyFor(configDir, defaultDirOf(homeDir));
+}
+
+// The renderer prefix / DOM id namespace. The default dir keeps 'claude2' so
+// the existing markup, settings keys and localStorage entries keep working.
+function accountIdFor(configDir, defaultDir) {
+  if (samePath(configDir, defaultDir)) return 'claude2';
   const slug = path.basename(configDir)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
   return 'cc-' + (slug || 'account');
+}
+
+function deriveAccountId(configDir, homeDir) {
+  return accountIdFor(configDir, defaultDirOf(homeDir));
+}
+
+// The name a window shows for an account. `label` is the OAuth profile email:
+// null until it resolves, and permanently null if it never does. Falling back
+// to the literal 'Claude Code' there makes two accounts indistinguishable — two
+// identically-named Settings rows, two identically-named Analytics tabs — which
+// is how a plan price or a multiplier gets entered against the wrong account.
+// The config directory's own name is unique per account and stable, so it is
+// the fallback. Derived here once and carried ON THE DESCRIPTOR because the
+// three renderer windows run under contextIsolation and cannot require this
+// module; that is also what keeps them from drifting into three fallbacks.
+function deriveDisplayName({ label, configDir, id } = {}) {
+  if (label) return label;
+  const base = path.basename(configDir || '') || id || '';
+  return base ? 'Claude Code (' + base + ')' : 'Claude Code';
+}
+
+// A short, stable fingerprint of a full path, used to break identity collisions
+// between two directories that share a basename (see disambiguateAccounts).
+function pathFingerprint(fullPath) {
+  return crypto.createHash('sha1')
+    .update(path.resolve(fullPath || '').toLowerCase())
+    .digest('hex')
+    .slice(0, 6);
 }
 
 const fsp = require('fs').promises;
@@ -45,20 +90,42 @@ async function hasOAuthCredentials(dir) {
   }
 }
 
+// realpath, falling back to path.resolve when realpath throws — a path that
+// does not exist must not throw here.
+async function realpathOrResolve(p) {
+  try {
+    return await fsp.realpath(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
 // Resolves homeDir to the same canonical form scanClaudeCodeConfigDirs uses
 // for every entry it returns (fsp.realpath). Callers that later compare a
-// scanned dir against homeDir via isDefaultDir (e.g. groupIntoAccounts) must
-// resolve homeDir through this first — otherwise a raw homeDir that diverges
-// from its own realpath (Windows 8.3 short names, symlinks, junctions) never
-// matches the realpath'd entries in the scan, and the default account stops
-// being recognised as default. Falls back to path.resolve when realpath
-// throws — a homeDir that does not exist must not throw here.
+// scanned dir against homeDir (e.g. groupIntoAccounts) must resolve homeDir
+// through this first — otherwise a raw homeDir that diverges from its own
+// realpath (Windows 8.3 short names, symlinks, junctions) never matches the
+// realpath'd entries in the scan, and the default account stops being
+// recognised as default.
 async function resolveHomeDir(homeDir) {
-  try {
-    return await fsp.realpath(homeDir);
-  } catch {
-    return path.resolve(homeDir);
-  }
+  return realpathOrResolve(homeDir);
+}
+
+// The default config directory in the SAME canonical form the scan returns:
+// both the home directory AND `.claude` itself put through realpath.
+//
+// Resolving only the home side is not enough. `~/.claude` is itself commonly a
+// symlink or a junction — the usual way to move Claude's config off the system
+// drive — and then the scan returns its TARGET while a plain
+// `join(home, '.claude')` is the LINK. Those never compare equal, so the
+// default entry loses rank 0 in the sort (a same-account collapse can then keep
+// the wrong directory's key) and derives `claude-code:<target-basename>`
+// instead of `claude-vscode`, detaching 7,099 existing usage-log entries.
+//
+// This touches the filesystem, so it lives on the scan/caller side;
+// groupIntoAccounts stays pure and takes the answer as `defaultDir`.
+async function resolveDefaultConfigDir(homeDir) {
+  return realpathOrResolve(path.join(await realpathOrResolve(homeDir), '.claude'));
 }
 
 // Every Claude config directory on this machine, resolved and deduped.
@@ -95,7 +162,9 @@ async function scanClaudeCodeConfigDirs({ homeDir, env = {}, extraPaths = [] }) 
     found.push(real);
   }
 
-  const def = path.resolve(path.join(home, '.claude')).toLowerCase();
+  // Realpath'd, exactly like every entry in `found` — see
+  // resolveDefaultConfigDir for why resolving only `home` is not enough.
+  const def = (await resolveDefaultConfigDir(home)).toLowerCase();
   found.sort((a, b) => {
     const rank = (p) => (p.toLowerCase() === def ? 0 : 1);
     return rank(a) - rank(b) || a.localeCompare(b);
@@ -111,7 +180,14 @@ async function scanClaudeCodeConfigDirs({ homeDir, env = {}, extraPaths = [] }) 
 //
 // Pure: `dirs` is already scanned and sorted, `knownEmails` is the persisted
 // configDir -> email map. No filesystem, no network.
-function groupIntoAccounts(dirs, { homeDir, knownEmails = {} }) {
+//
+// `defaultDir` is the realpath'd ~/.claude (resolveDefaultConfigDir, on the
+// caller side). Passing it explicitly rather than re-deriving it from `homeDir`
+// is what lets a symlinked/junctioned ~/.claude still be recognised as the
+// default — see resolveDefaultConfigDir. `homeDir` remains accepted as the
+// fallback for callers with nothing better to offer.
+function groupIntoAccounts(dirs, { homeDir, defaultDir, knownEmails = {} } = {}) {
+  const def = defaultDir || defaultDirOf(homeDir);
   const byEmail = new Map();
   const accounts = [];
 
@@ -122,17 +198,56 @@ function groupIntoAccounts(dirs, { homeDir, knownEmails = {} }) {
       continue;
     }
     const descriptor = {
-      id: deriveAccountId(dir, homeDir),
+      id: accountIdFor(dir, def),
       kind: 'claude-code',
       configDir: dir,
       configDirs: [dir],
-      logKey: deriveLogKey(dir, homeDir),
+      logKey: logKeyFor(dir, def),
       label: email,
     };
+    descriptor.displayName = deriveDisplayName(descriptor);
     if (email) byEmail.set(email, descriptor);
     accounts.push(descriptor);
   }
-  return accounts;
+  return disambiguateAccounts(accounts, def);
+}
+
+// `id` and `logKey` both come from path.basename, so two config dirs sharing a
+// basename under different parents — CLAUDE_CONFIG_DIR=D:\configs\.claude-work
+// alongside ~/.claude-work — derive the SAME id and the SAME log key. Dedupe is
+// by realpath, so both survive the scan as separate accounts. The duplicate id
+// collides in the DOM; the duplicate log key is far worse, interleaving two
+// accounts' entries under one key in usage-log.jsonl and silently corrupting the
+// budget ratio, session tracking (`_ss`) and every analytics figure for both.
+//
+// BOTH members of a colliding group get the suffix, not just the later one: the
+// resulting key is then a pure function of that directory's own full path, so it
+// can never move again when a third directory turns up. Letting the first keep
+// the bare key would instead make every key depend on which other paths happen
+// to be present that run.
+//
+// Runs AFTER grouping, so directories that collapsed into one account (same
+// email) count once and keep their bare key — a collapse is not a collision.
+//
+// The default directory is exempt: 'claude2' / 'claude-vscode' are load-bearing
+// and must never move. It cannot collide anyway — every other directory derives
+// a 'cc-' / 'claude-code:' key, which can never equal them.
+function disambiguateAccounts(accts, defaultDir) {
+  const tally = (field) => {
+    const counts = new Map();
+    for (const a of accts) counts.set(a[field], (counts.get(a[field]) || 0) + 1);
+    return counts;
+  };
+  const ids = tally('id');
+  const keys = tally('logKey');
+
+  for (const a of accts) {
+    if (samePath(a.configDir, defaultDir)) continue;
+    const fp = pathFingerprint(a.configDir);
+    if (ids.get(a.id) > 1) a.id += '-' + fp;
+    if (keys.get(a.logKey) > 1) a.logKey += '-' + fp;
+  }
+  return accts;
 }
 
 function credentialsPath(configDir) {
@@ -168,7 +283,7 @@ function writeCredentialsAtomic(configDir, creds) {
 }
 
 module.exports = {
-  deriveLogKey, deriveAccountId, isDefaultDir,
-  scanClaudeCodeConfigDirs, resolveHomeDir, groupIntoAccounts,
-  readCredentials, writeCredentialsAtomic,
+  deriveLogKey, deriveAccountId, deriveDisplayName, isDefaultDir, samePath,
+  scanClaudeCodeConfigDirs, resolveHomeDir, resolveDefaultConfigDir,
+  groupIntoAccounts, readCredentials, writeCredentialsAtomic,
 };

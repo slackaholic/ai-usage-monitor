@@ -741,6 +741,23 @@ const EMAIL_ONLY_SCRIPT = `
   })()
 `;
 
+// The home directory and the default config directory in the SAME canonical
+// form every configDir arrives in — realpath'd. Resolved once and memoised:
+// neither moves while the app runs, and re-resolving per poll would put two
+// filesystem round trips on the main thread for a constant. Everything that
+// compares a configDir against "is this the default one?" has to go through
+// these, or a symlinked home / symlinked ~/.claude silently answers no.
+let resolvedHomeDirP = null;
+let resolvedDefaultDirP = null;
+function resolvedHomeDir() {
+  if (!resolvedHomeDirP) resolvedHomeDirP = accounts.resolveHomeDir(os.homedir());
+  return resolvedHomeDirP;
+}
+function resolvedDefaultDir() {
+  if (!resolvedDefaultDirP) resolvedDefaultDirP = accounts.resolveDefaultConfigDir(os.homedir());
+  return resolvedDefaultDirP;
+}
+
 // Persists a resolved email into settings so account grouping (buildClaudeAccounts,
 // below) survives a restart. Only called when an email actually resolves — never
 // on every poll, since 'claudeAccountEmails' sits outside SILENT_SETTINGS_KEYS and
@@ -792,7 +809,12 @@ ipcMain.handle('fetch-claude-code-email', async (_evt, configDir) => {
   // one claude.ai login, so running this for a second config dir would label
   // it with the wrong account's email (the bug already found and fixed once,
   // 2026-07-07).
-  if (accounts.isDefaultDir(configDir, os.homedir())) {
+  //
+  // Compared against the RESOLVED default directory, not a raw os.homedir():
+  // `configDir` arrives realpath'd from the registry, so a symlinked home (or a
+  // symlinked ~/.claude) would never match and the fallback would silently stop
+  // firing for the one account it exists for.
+  if (accounts.samePath(configDir, await resolvedDefaultDir())) {
     const { session: electronSession } = require('electron');
 
     // Try each partition that might have an active claude.ai session
@@ -847,7 +869,12 @@ async function buildClaudeAccounts({ rescan = false } = {}) {
   // realpath). If the two disagree (Windows 8.3 short names, symlinks,
   // junctions), the default directory stops being recognised as default and
   // existing usage-log history detaches from its card.
-  const homeDir = await accounts.resolveHomeDir(os.homedir());
+  const homeDir = await resolvedHomeDir();
+  // ~/.claude can itself be a symlink or a junction, in which case the scan
+  // returns its TARGET; deriving the default from homeDir alone would yield the
+  // LINK and stop recognising it. groupIntoAccounts stays pure and takes the
+  // resolved answer.
+  const defaultDir = await resolvedDefaultDir();
   if (rescan || !scannedConfigDirs) {
     scannedConfigDirs = await accounts.scanClaudeCodeConfigDirs({
       homeDir,
@@ -860,7 +887,7 @@ async function buildClaudeAccounts({ rescan = false } = {}) {
   // first) is what lets groupIntoAccounts keep the 'claude-vscode' log key on
   // a same-account collapse.
   const knownEmails = settings.claudeAccountEmails || {};
-  const grouped = accounts.groupIntoAccounts(scannedConfigDirs, { homeDir, knownEmails });
+  const grouped = accounts.groupIntoAccounts(scannedConfigDirs, { homeDir, defaultDir, knownEmails });
   if (grouped.length) return grouped;
 
   // Discovery finding nothing must not empty the screen. The renderer clones a
@@ -869,9 +896,9 @@ async function buildClaudeAccounts({ rescan = false } = {}) {
   // directory: one descriptor, id 'claude2', logKey 'claude-vscode', whose probe
   // then reports the missing credentials on a visible card. Built through
   // groupIntoAccounts rather than by hand so the shape cannot drift from a real
-  // descriptor, and off the already-resolved homeDir so isDefaultDir still
-  // recognises it.
-  return accounts.groupIntoAccounts([path.join(homeDir, '.claude')], { homeDir, knownEmails });
+  // descriptor, and off the already-resolved default dir so it is still
+  // recognised as the default.
+  return accounts.groupIntoAccounts([defaultDir], { homeDir, defaultDir, knownEmails });
 }
 
 ipcMain.handle('get-claude-accounts',    () => buildClaudeAccounts());
