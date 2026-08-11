@@ -155,24 +155,39 @@ ipcMain.on('open-settings', () => {
     },
   });
   settingsWindow.loadFile('settings.html');
-  // Size the window to fit its content so everything is visible without scrolling.
-  settingsWindow.webContents.once('did-finish-load', async () => {
-    try {
-      const h = await settingsWindow.webContents.executeJavaScript('document.body.scrollHeight');
-      const [w, contentH] = settingsWindow.getContentSize();
-      const [, winH] = settingsWindow.getSize();
-      // setContentSize sets the CONTENT box, so the frame (titlebar + any menu
-      // bar) is extra — measure it rather than guessing, or the window runs off
-      // the bottom of a short screen. Previously this was a hardcoded 1000 cap,
-      // which sat just under the real content height and left a scrollbar.
-      const chrome = Math.max(0, winH - contentH);
-      const { screen } = require('electron');
-      const maxContentH = Math.max(320, screen.getPrimaryDisplay().workAreaSize.height - chrome - 40);
-      settingsWindow.setContentSize(w, Math.min(Math.max(Math.ceil(h) + 4, 320), maxContentH));
-    } catch {}
-  });
   settingsWindow.on('closed', () => { settingsWindow = null; });
 });
+
+// Size the settings window to fit its content so everything is visible without
+// scrolling.
+//
+// Triggered by the renderer (`settings-fit-to-content`), NOT by
+// `did-finish-load`. The per-account rows are no longer static markup: the
+// settings renderer builds them only after an await on getClaudeAccounts, which
+// on first open also does a filesystem scan. Measuring at did-finish-load wins
+// that race and reads a height with #account-rows still empty — which puts back
+// exactly the scrollbar the measured sizing here exists to remove.
+async function fitSettingsWindowToContent() {
+  if (!settingsWindow || settingsWindow.isDestroyed()) return;
+  try {
+    const h = await settingsWindow.webContents.executeJavaScript('document.body.scrollHeight');
+    if (!settingsWindow || settingsWindow.isDestroyed()) return;
+    const [w, contentH] = settingsWindow.getContentSize();
+    const [, winH] = settingsWindow.getSize();
+    // setContentSize sets the CONTENT box, so the frame (titlebar + any menu
+    // bar) is extra — measure it rather than guessing, or the window runs off
+    // the bottom of a short screen. Previously this was a hardcoded 1000 cap,
+    // which sat just under the real content height and left a scrollbar.
+    const chrome = Math.max(0, winH - contentH);
+    const { screen } = require('electron');
+    const maxContentH = Math.max(320, screen.getPrimaryDisplay().workAreaSize.height - chrome - 40);
+    settingsWindow.setContentSize(w, Math.min(Math.max(Math.ceil(h) + 4, 320), maxContentH));
+  } catch {}
+}
+
+// Fired once the settings renderer has built its account rows, and again after
+// a rescan changes how many there are.
+ipcMain.on('settings-fit-to-content', () => { fitSettingsWindowToContent(); });
 
 ipcMain.handle('get-settings', () => loadSettings());
 // Cache (`lastKnown`) and window-position (`x`/`y`) writes happen on every poll /

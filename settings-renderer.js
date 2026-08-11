@@ -241,8 +241,10 @@ document.getElementById('btn-rescan-accounts').addEventListener('click', async (
     const accts = await window.electronAPI.rescanClaudeAccounts();
     await loadAccounts();
     buildAccountRows();
-    wireAccountRowListeners();
     await loadSettings();
+    wireAccountRowListeners();
+    // A rescan changes how many rows there are, so the fitted height is stale.
+    window.electronAPI.settingsFitToContent();
     status(`Found ${accts.length} Claude Code account${accts.length === 1 ? '' : 's'}.`);
   } catch (e) {
     console.error('rescanClaudeAccounts failed:', e);
@@ -273,8 +275,21 @@ document.getElementById('btn-logoff-claude').addEventListener('click', async () 
 });
 
 (async () => {
-  await loadAccounts();
-  buildAccountRows();
-  wireAccountRowListeners();
-  await loadSettings();
+  try {
+    await loadAccounts();
+    buildAccountRows();
+    // After loadSettings, not before: wiring first leaves a window in which a
+    // `change` event fires while `lastSettings` is still `{}`, and the
+    // resulting merge would save a patch built from an unseeded cache — wiping
+    // every saved price/date/multiplier the fields have not been filled with
+    // yet.
+    await loadSettings();
+    wireAccountRowListeners();
+  } finally {
+    // Only now: the account rows are generated, not static markup, so main
+    // measuring at did-finish-load would size the window to a page missing
+    // #account-rows entirely and leave a scrollbar. In `finally` so a failed
+    // load still gets a fitted window rather than the 940px starting guess.
+    window.electronAPI.settingsFitToContent();
+  }
 })();

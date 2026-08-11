@@ -56,6 +56,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Resize window to fit content
   resizeToFit: (h) => ipcRenderer.send('resize-to-fit', h),
+  // Settings only. Separate from resizeToFit because that one resizes the main
+  // window and passes a height the renderer measured; here main does the
+  // measuring, and the renderer's job is just to say "the rows exist now".
+  settingsFitToContent: () => ipcRenderer.send('settings-fit-to-content'),
 
   // Settings / opacity
   getSettings: () => ipcRenderer.invoke('get-settings'),
