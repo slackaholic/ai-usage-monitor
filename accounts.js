@@ -154,6 +154,11 @@ function writeCredentialsAtomic(configDir, creds) {
   const tmp = target + '.tmp-' + process.pid;
   try {
     fs.writeFileSync(tmp, JSON.stringify(creds, null, 2));
+    // Preserve the target's permission bits. On POSIX, Claude Code's CLI creates
+    // .credentials.json with restrictive permissions; renameSync uses the temp file's
+    // default mode (644), which would loosen them to world-readable on every refresh.
+    // Tolerate absence: if target doesn't exist yet, we proceed with the default.
+    try { fs.chmodSync(tmp, fs.statSync(target).mode); } catch {}
     fs.renameSync(tmp, target);
     return true;
   } catch {

@@ -231,3 +231,58 @@ test('writeCredentialsAtomic reports failure instead of throwing', () => {
   const ok = writeCredentialsAtomic(path.join(os.tmpdir(), 'acct-missing-xyz'), { a: 1 });
   assert.strictEqual(ok, false);
 });
+
+test('writeCredentialsAtomic actually creates a temp file and renames it (proves atomicity)', () => {
+  const home = fakeHome({ '.claude': OAUTH });
+  const dir = path.join(home, '.claude');
+  const originalRename = fs.renameSync;
+  let tempFileExistedAtRename = false;
+  let targetExistedAtRename = false;
+
+  try {
+    // Stub fs.renameSync to capture state at the moment rename would occur
+    fs.renameSync = (src, dst) => {
+      // At this moment, the temp file should exist and the target should still exist
+      tempFileExistedAtRename = fs.existsSync(src);
+      targetExistedAtRename = fs.existsSync(dst);
+      // Now call the original rename to complete the operation
+      originalRename(src, dst);
+    };
+
+    const ok = writeCredentialsAtomic(dir, { claudeAiOauth: { accessToken: 'fresh' } });
+
+    assert.strictEqual(ok, true);
+    assert.strictEqual(tempFileExistedAtRename, true, 'temp file must exist at rename time');
+    assert.strictEqual(targetExistedAtRename, true, 'target must exist at rename time (proves not in-place write)');
+  } finally {
+    fs.renameSync = originalRename;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('writeCredentialsAtomic preserves original file on rename failure', () => {
+  const home = fakeHome({ '.claude': OAUTH });
+  const dir = path.join(home, '.claude');
+  const originalContent = readCredentials(dir);
+  const originalRename = fs.renameSync;
+
+  try {
+    // Stub fs.renameSync to simulate a failure
+    fs.renameSync = () => {
+      throw new Error('Simulated rename failure');
+    };
+
+    const ok = writeCredentialsAtomic(dir, { claudeAiOauth: { accessToken: 'fresh' } });
+
+    // The write should have failed
+    assert.strictEqual(ok, false);
+    // The original credentials should still be intact
+    assert.deepStrictEqual(readCredentials(dir), originalContent, 'original credentials must survive failed write');
+    // No temp files should be left behind
+    const entries = fs.readdirSync(dir);
+    assert.ok(!entries.some(e => e.includes('.tmp-')), 'temp file must be cleaned up on failure');
+  } finally {
+    fs.renameSync = originalRename;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
