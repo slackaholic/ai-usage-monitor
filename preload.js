@@ -41,12 +41,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readUsageLog: (account, limit) => ipcRenderer.invoke('read-usage-log', account, limit),
   getBudgetInfo: () => ipcRenderer.invoke('get-budget-info'),
 
-  // Claude Code API usage (reads ~/.claude/.credentials.json directly)
-  fetchClaudeCodeApiUsage: () => ipcRenderer.invoke('fetch-claude-code-api-usage'),
-  fetchClaudeCodeEmail: () => ipcRenderer.invoke('fetch-claude-code-email'),
+  // Claude Code API usage — one call per account config directory
+  fetchClaudeCodeApiUsage: (configDir) => ipcRenderer.invoke('fetch-claude-code-api-usage', configDir),
+  fetchClaudeCodeEmail:    (configDir) => ipcRenderer.invoke('fetch-claude-code-email', configDir),
+
+  // Claude Code account registry. onClaudeAccountsChanged fires when the set of
+  // accounts itself moves — a rescan found or lost a config directory, or a
+  // newly-resolved email collapsed two directories onto one account — which is
+  // the monitor window's cue to re-clone its cards. Distinct from
+  // `settings-changed`, which means "a value changed", not "the cards are wrong".
+  getClaudeAccounts:    () => ipcRenderer.invoke('get-claude-accounts'),
+  rescanClaudeAccounts: () => ipcRenderer.invoke('rescan-claude-accounts'),
+  onClaudeAccountsChanged: (cb) => ipcRenderer.on('claude-accounts-changed', () => cb()),
 
   // Resize window to fit content
   resizeToFit: (h) => ipcRenderer.send('resize-to-fit', h),
+  // Settings only. Separate from resizeToFit because that one resizes the main
+  // window and passes a height the renderer measured; here main does the
+  // measuring, and the renderer's job is just to say "the rows exist now".
+  settingsFitToContent: () => ipcRenderer.send('settings-fit-to-content'),
 
   // Settings / opacity
   getSettings: () => ipcRenderer.invoke('get-settings'),

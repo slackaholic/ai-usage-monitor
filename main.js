@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { readClaudeCodeUsage, readCodexUsage } = require('./usage-reader.js');
+const accounts = require('./accounts.js');
 
 let mainWindow;
 let analyticsWindow = null;
@@ -50,7 +51,6 @@ ipcMain.handle('read-usage-log', (_, account, limit = 200) => {
 // ── Budget info ───────────────────────────────────────────────────────────
 // read-usage-log parses the WHOLE log on every call, so budget data gets its own
 // mtime-cached read: one parse shared by all accounts, re-done only on change.
-const BUDGET_ACCOUNTS = ['codex', 'claude-desktop', 'claude-vscode'];
 let _budgetCache = { mtimeMs: -1, byAccount: null };
 
 function readUsageLogGrouped() {
@@ -64,9 +64,14 @@ function readUsageLogGrouped() {
       .map(l => { try { return JSON.parse(l); } catch { return null; } })
       .filter(Boolean);
   } catch { return null; }
+  // Bucket every account the log actually contains. A fixed list here would
+  // silently drop any account added later, leaving its card permanently on
+  // "budget: need more history".
   const byAccount = {};
-  for (const a of BUDGET_ACCOUNTS) byAccount[a] = [];
-  for (const e of entries) if (byAccount[e.account]) byAccount[e.account].push(e);
+  for (const e of entries) {
+    if (!e.account) continue;
+    (byAccount[e.account] = byAccount[e.account] || []).push(e);
+  }
   _budgetCache = { mtimeMs: st.mtimeMs, byAccount };
   return byAccount;
 }
@@ -92,8 +97,8 @@ ipcMain.handle('get-budget-info', () => {
   midnight.setHours(0, 0, 0, 0);
   const midnightMs = midnight.getTime();
   const out = {};
-  for (const a of BUDGET_ACCOUNTS) {
-    const snaps = (byAccount && byAccount[a]) || [];
+  for (const a of Object.keys(byAccount || {})) {
+    const snaps = byAccount[a];
     const tierMs = tierChangeMs(tierDates[a]);
     out[a] = {
       ratio: weeklyPerFiveHourRatio(snaps, tierMs),
@@ -132,7 +137,8 @@ ipcMain.on('open-settings', () => {
   if (settingsWindow && !settingsWindow.isDestroyed()) { settingsWindow.focus(); return; }
   // Width is measured: the Subscriptions rows need 393px of content, and below
   // ~420 they overflow horizontally — hence minWidth 420. Height is a starting
-  // value only; did-finish-load below fits it to the real content.
+  // value only; fitSettingsWindowToContent below fits it to the real content
+  // once the renderer says its account rows exist.
   // autoHideMenuBar reclaims the stock File/Edit/View bar (still shown on Alt),
   // which is pure chrome on a settings dialog and ~30px of vertical space.
   settingsWindow = new BrowserWindow({
@@ -150,24 +156,39 @@ ipcMain.on('open-settings', () => {
     },
   });
   settingsWindow.loadFile('settings.html');
-  // Size the window to fit its content so everything is visible without scrolling.
-  settingsWindow.webContents.once('did-finish-load', async () => {
-    try {
-      const h = await settingsWindow.webContents.executeJavaScript('document.body.scrollHeight');
-      const [w, contentH] = settingsWindow.getContentSize();
-      const [, winH] = settingsWindow.getSize();
-      // setContentSize sets the CONTENT box, so the frame (titlebar + any menu
-      // bar) is extra — measure it rather than guessing, or the window runs off
-      // the bottom of a short screen. Previously this was a hardcoded 1000 cap,
-      // which sat just under the real content height and left a scrollbar.
-      const chrome = Math.max(0, winH - contentH);
-      const { screen } = require('electron');
-      const maxContentH = Math.max(320, screen.getPrimaryDisplay().workAreaSize.height - chrome - 40);
-      settingsWindow.setContentSize(w, Math.min(Math.max(Math.ceil(h) + 4, 320), maxContentH));
-    } catch {}
-  });
   settingsWindow.on('closed', () => { settingsWindow = null; });
 });
+
+// Size the settings window to fit its content so everything is visible without
+// scrolling.
+//
+// Triggered by the renderer (`settings-fit-to-content`), NOT by
+// `did-finish-load`. The per-account rows are no longer static markup: the
+// settings renderer builds them only after an await on getClaudeAccounts, which
+// on first open also does a filesystem scan. Measuring at did-finish-load wins
+// that race and reads a height with #account-rows still empty — which puts back
+// exactly the scrollbar the measured sizing here exists to remove.
+async function fitSettingsWindowToContent() {
+  if (!settingsWindow || settingsWindow.isDestroyed()) return;
+  try {
+    const h = await settingsWindow.webContents.executeJavaScript('document.body.scrollHeight');
+    if (!settingsWindow || settingsWindow.isDestroyed()) return;
+    const [w, contentH] = settingsWindow.getContentSize();
+    const [, winH] = settingsWindow.getSize();
+    // setContentSize sets the CONTENT box, so the frame (titlebar + any menu
+    // bar) is extra — measure it rather than guessing, or the window runs off
+    // the bottom of a short screen. Previously this was a hardcoded 1000 cap,
+    // which sat just under the real content height and left a scrollbar.
+    const chrome = Math.max(0, winH - contentH);
+    const { screen } = require('electron');
+    const maxContentH = Math.max(320, screen.getPrimaryDisplay().workAreaSize.height - chrome - 40);
+    settingsWindow.setContentSize(w, Math.min(Math.max(Math.ceil(h) + 4, 320), maxContentH));
+  } catch {}
+}
+
+// Fired once the settings renderer has built its account rows, and again after
+// a rescan changes how many there are.
+ipcMain.on('settings-fit-to-content', () => { fitSettingsWindowToContent(); });
 
 ipcMain.handle('get-settings', () => loadSettings());
 // Cache (`lastKnown`) and window-position (`x`/`y`) writes happen on every poll /
@@ -555,12 +576,7 @@ const CLAUDE_SCRAPE_SCRIPT = `
 
 const CLAUDE_PARTITIONS = { desktop: 'persist:claude-web', vscode: 'persist:claude-web-vscode' };
 
-// ── Claude Code API usage (reads ~/.claude/.credentials.json) ─────────────
-const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
-
-function readCredentials() {
-  try { return JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8')); } catch { return null; }
-}
+// ── Claude Code API usage (reads <configDir>/.credentials.json) ───────────
 
 async function refreshOAuthToken(refreshToken) {
   const https = require('https');
@@ -582,18 +598,25 @@ async function refreshOAuthToken(refreshToken) {
   });
 }
 
-// Returns a valid Claude Code OAuth access token (refreshing + persisting if
-// within 5 min of expiry), or null when no credentials are present.
-async function getValidClaudeCodeToken() {
-  const creds = readCredentials();
+// Returns a valid Claude Code OAuth access token for ONE config directory,
+// refreshing and persisting when within 5 min of expiry, or null when that
+// directory has no credentials.
+async function getValidClaudeCodeToken(configDir) {
+  const creds = accounts.readCredentials(configDir);
   if (!creds?.claudeAiOauth?.accessToken) return null;
   let token = creds.claudeAiOauth.accessToken;
   if (creds.claudeAiOauth.expiresAt < Date.now() + 300_000) {
     const refreshed = await refreshOAuthToken(creds.claudeAiOauth.refreshToken);
     if (refreshed?.access_token) {
       token = refreshed.access_token;
-      const updated = { ...creds, claudeAiOauth: { ...creds.claudeAiOauth, accessToken: token, expiresAt: Date.now() + (refreshed.expires_in ?? 3600) * 1000 } };
-      try { fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(updated, null, 2)); } catch {}
+      accounts.writeCredentialsAtomic(configDir, {
+        ...creds,
+        claudeAiOauth: {
+          ...creds.claudeAiOauth,
+          accessToken: token,
+          expiresAt: Date.now() + (refreshed.expires_in ?? 3600) * 1000,
+        },
+      });
     }
   }
   return token;
@@ -673,8 +696,8 @@ function parseUnifiedRateLimitHeaders(h, nowMs) {
   };
 }
 
-ipcMain.handle('fetch-claude-code-api-usage', async () => {
-  const creds = readCredentials();
+ipcMain.handle('fetch-claude-code-api-usage', async (_evt, configDir) => {
+  const creds = accounts.readCredentials(configDir);
   if (!creds?.claudeAiOauth?.accessToken) return { error: 'no-credentials' };
 
   // Build a readable account label from credentials metadata
@@ -682,7 +705,7 @@ ipcMain.handle('fetch-claude-code-api-usage', async () => {
   const sub  = creds.claudeAiOauth?.subscriptionType ?? '';
   const account = tier.replace('default_', '').replace(/_/g, ' ') || sub || 'Claude Code';
 
-  const token = await getValidClaudeCodeToken();
+  const token = await getValidClaudeCodeToken(configDir);
 
   const https = require('https');
   // Minimal inference probe — only to read rate-limit response headers
@@ -703,7 +726,7 @@ ipcMain.handle('fetch-claude-code-api-usage', async () => {
       const limits = parseUnifiedRateLimitHeaders(res.headers, Date.now());
       if (!limits) { resolve({ error: 'no-rate-limit-headers' }); return; }
 
-      resolve({ ...limits, account });
+      resolve({ ...limits, account, configDir });
     });
     req.on('error', e => resolve({ error: e.message }));
     req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'Timeout' }); });
@@ -734,6 +757,40 @@ const EMAIL_ONLY_SCRIPT = `
   })()
 `;
 
+// The home directory and the default config directory in the SAME canonical
+// form every configDir arrives in — realpath'd. Resolved once and memoised:
+// neither moves while the app runs, and re-resolving per poll would put two
+// filesystem round trips on the main thread for a constant. Everything that
+// compares a configDir against "is this the default one?" has to go through
+// these, or a symlinked home / symlinked ~/.claude silently answers no.
+let resolvedHomeDirP = null;
+let resolvedDefaultDirP = null;
+function resolvedHomeDir() {
+  if (!resolvedHomeDirP) resolvedHomeDirP = accounts.resolveHomeDir(os.homedir());
+  return resolvedHomeDirP;
+}
+function resolvedDefaultDir() {
+  if (!resolvedDefaultDirP) resolvedDefaultDirP = accounts.resolveDefaultConfigDir(os.homedir());
+  return resolvedDefaultDirP;
+}
+
+// Persists a resolved email into settings so account grouping (buildClaudeAccounts,
+// below) survives a restart. Only called when an email actually resolves — never
+// on every poll, since 'claudeAccountEmails' sits outside SILENT_SETTINGS_KEYS and
+// a write here broadcasts `settings-changed` to every window. Guarding on "did the
+// value actually change" is what keeps that broadcast from firing on a poll where
+// nothing changed.
+function persistClaudeAccountEmail(configDir, email) {
+  const current = loadSettings().claudeAccountEmails || {};
+  if (current[configDir] === email) return;
+  saveSettings({ claudeAccountEmails: { ...current, [configDir]: email } });
+  BrowserWindow.getAllWindows().forEach(w => w.webContents.send('settings-changed'));
+  // A newly-known email can collapse two config dirs onto one account. Regroup
+  // (pure — no rescan) and tell the windows, but only if the registry's shape
+  // actually moved: see publishClaudeAccountsIfChanged.
+  publishClaudeAccountsIfChanged().catch(e => console.error('claude accounts regroup:', e));
+}
+
 // The renderer asks for the email on every poll, because a fresh `claude login`
 // can swap the account under a running app. Memoising the answer against the
 // access token that produced it keeps that cheap: a repeat poll costs nothing,
@@ -741,57 +798,166 @@ const EMAIL_ONLY_SCRIPT = `
 // is retried on a cooldown, not every poll — the browser fallback below opens a
 // hidden window and can take 20s. Both the memo and the cooldown are keyed by
 // token, so a re-login is never held back by either.
-let claudeCodeEmailMemo = { token: null, email: '' };
-let claudeCodeEmailFailure = { token: null, retryAt: 0 };
+//
+// Per config directory: each account's config dir memoises and cools down
+// independently, so a slow/failing lookup on one account never blocks another.
+const claudeCodeEmailMemo = new Map();     // configDir -> { token, email }
+const claudeCodeEmailFailure = new Map();  // configDir -> { token, retryAt }
 const CLAUDE_CODE_EMAIL_RETRY_MS = 10 * 60 * 1000;
 
-ipcMain.handle('fetch-claude-code-email', async () => {
+ipcMain.handle('fetch-claude-code-email', async (_evt, configDir) => {
   // 1) OAuth profile — same token/account as the usage numbers.
-  const token = await getValidClaudeCodeToken();
-  if (claudeCodeEmailMemo.email && claudeCodeEmailMemo.token === token) return claudeCodeEmailMemo.email;
-  if (claudeCodeEmailFailure.token === token && Date.now() < claudeCodeEmailFailure.retryAt) return '';
+  const token = await getValidClaudeCodeToken(configDir);
+
+  const memo = claudeCodeEmailMemo.get(configDir);
+  if (memo?.email && memo.token === token) return memo.email;
+
+  const failure = claudeCodeEmailFailure.get(configDir);
+  if (failure && failure.token === token && Date.now() < failure.retryAt) return '';
 
   if (token) {
     const email = await fetchClaudeCodeProfileEmail(token);
-    if (email) { claudeCodeEmailMemo = { token, email }; return email; }
+    if (email) {
+      claudeCodeEmailMemo.set(configDir, { token, email });
+      persistClaudeAccountEmail(configDir, email);
+      return email;
+    }
   }
 
-  // 2) Fallback: scrape a logged-in claude.ai browser session.
-  const { session: electronSession } = require('electron');
+  // 2) Fallback: scrape a logged-in claude.ai browser session. Only meaningful
+  // for the default config dir — the Electron partitions below hold at most
+  // one claude.ai login, so running this for a second config dir would label
+  // it with the wrong account's email (the bug already found and fixed once,
+  // 2026-07-07).
+  //
+  // Compared against the RESOLVED default directory, not a raw os.homedir():
+  // `configDir` arrives realpath'd from the registry, so a symlinked home (or a
+  // symlinked ~/.claude) would never match and the fallback would silently stop
+  // firing for the one account it exists for.
+  if (accounts.samePath(configDir, await resolvedDefaultDir())) {
+    const { session: electronSession } = require('electron');
 
-  // Try each partition that might have an active claude.ai session
-  for (const partition of ['persist:claude-web-vscode', 'persist:claude-web']) {
-    const sess = electronSession.fromPartition(partition);
-    const cookies = await sess.cookies.get({ domain: 'claude.ai' });
-    const hasSession = cookies.some(c => c.name.startsWith('__Secure') || c.name === 'sessionKey' || c.httpOnly);
-    if (!hasSession) continue;
+    // Try each partition that might have an active claude.ai session
+    for (const partition of ['persist:claude-web-vscode', 'persist:claude-web']) {
+      const sess = electronSession.fromPartition(partition);
+      const cookies = await sess.cookies.get({ domain: 'claude.ai' });
+      const hasSession = cookies.some(c => c.name.startsWith('__Secure') || c.name === 'sessionKey' || c.httpOnly);
+      if (!hasSession) continue;
 
-    const email = await new Promise((resolve) => {
-      const win = new BrowserWindow({
-        width: 1024, height: 768, show: false, skipTaskbar: true,
-        webPreferences: { nodeIntegration: false, contextIsolation: false, partition },
+      const email = await new Promise((resolve) => {
+        const win = new BrowserWindow({
+          width: 1024, height: 768, show: false, skipTaskbar: true,
+          webPreferences: { nodeIntegration: false, contextIsolation: false, partition },
+        });
+        const timeout = setTimeout(() => { if (!win.isDestroyed()) win.destroy(); resolve(''); }, 20000);
+        win.webContents.on('did-finish-load', async () => {
+          // Bail if redirected to login
+          const url = win.webContents.getURL();
+          if (/login|auth|sign/i.test(url)) { clearTimeout(timeout); win.destroy(); resolve(''); return; }
+          try {
+            await new Promise(r => setTimeout(r, 2000));
+            const result = await win.webContents.executeJavaScript(EMAIL_ONLY_SCRIPT);
+            clearTimeout(timeout);
+            win.destroy();
+            resolve(result || '');
+          } catch { clearTimeout(timeout); win.destroy(); resolve(''); }
+        });
+        win.loadURL('https://claude.ai/settings');
       });
-      const timeout = setTimeout(() => { if (!win.isDestroyed()) win.destroy(); resolve(''); }, 20000);
-      win.webContents.on('did-finish-load', async () => {
-        // Bail if redirected to login
-        const url = win.webContents.getURL();
-        if (/login|auth|sign/i.test(url)) { clearTimeout(timeout); win.destroy(); resolve(''); return; }
-        try {
-          await new Promise(r => setTimeout(r, 2000));
-          const result = await win.webContents.executeJavaScript(EMAIL_ONLY_SCRIPT);
-          clearTimeout(timeout);
-          win.destroy();
-          resolve(result || '');
-        } catch { clearTimeout(timeout); win.destroy(); resolve(''); }
-      });
-      win.loadURL('https://claude.ai/settings');
-    });
 
-    if (email) { claudeCodeEmailMemo = { token, email }; return email; }
+      if (email) {
+        claudeCodeEmailMemo.set(configDir, { token, email });
+        persistClaudeAccountEmail(configDir, email);
+        return email;
+      }
+    }
   }
-  claudeCodeEmailFailure = { token, retryAt: Date.now() + CLAUDE_CODE_EMAIL_RETRY_MS };
+  claudeCodeEmailFailure.set(configDir, { token, retryAt: Date.now() + CLAUDE_CODE_EMAIL_RETRY_MS });
   return '';
 });
+
+// The registry. Scanning touches the filesystem and only runs on demand;
+// grouping is pure and re-runs whenever an email resolves, so a same-account
+// collapse takes effect without waiting for a rescan.
+let scannedConfigDirs = null;
+
+async function buildClaudeAccounts({ rescan = false } = {}) {
+  const settings = loadSettings();
+  // Resolve once, and hand the SAME resolved value to both calls below. The scan
+  // realpath-resolves every directory it returns; groupIntoAccounts compares its
+  // homeDir argument against those directories with plain path.resolve (no
+  // realpath). If the two disagree (Windows 8.3 short names, symlinks,
+  // junctions), the default directory stops being recognised as default and
+  // existing usage-log history detaches from its card.
+  const homeDir = await resolvedHomeDir();
+  // ~/.claude can itself be a symlink or a junction, in which case the scan
+  // returns its TARGET; deriving the default from homeDir alone would yield the
+  // LINK and stop recognising it. groupIntoAccounts stays pure and takes the
+  // resolved answer.
+  const defaultDir = await resolvedDefaultDir();
+  if (rescan || !scannedConfigDirs) {
+    scannedConfigDirs = await accounts.scanClaudeCodeConfigDirs({
+      homeDir,
+      env: process.env,
+      extraPaths: settings.claudeExtraConfigDirs || [],
+    });
+  }
+  // Pass the scan's output straight through — unsorted, unfiltered. The
+  // default directory's lead position (scanClaudeCodeConfigDirs sorts it
+  // first) is what lets groupIntoAccounts keep the 'claude-vscode' log key on
+  // a same-account collapse.
+  const knownEmails = settings.claudeAccountEmails || {};
+  const grouped = accounts.groupIntoAccounts(scannedConfigDirs, { homeDir, defaultDir, knownEmails });
+  if (grouped.length) return grouped;
+
+  // Discovery finding nothing must not empty the screen. The renderer clones a
+  // card per descriptor, so an empty registry means no Claude Code card at all
+  // — where the card previously said "No credentials". Fall back to the default
+  // directory: one descriptor, id 'claude2', logKey 'claude-vscode', whose probe
+  // then reports the missing credentials on a visible card. Built through
+  // groupIntoAccounts rather than by hand so the shape cannot drift from a real
+  // descriptor, and off the already-resolved default dir so it is still
+  // recognised as the default.
+  return accounts.groupIntoAccounts([defaultDir], { homeDir, defaultDir, knownEmails });
+}
+
+// The registry shape the windows were last handed. "Shape" is deliberately just
+// which accounts exist and which directories back them — NOT `label`. Only a
+// shape change needs the monitor window to re-clone its cards; a label landing
+// is painted in place by the renderer's own email refresh.
+let lastAccountsSignature = null;
+
+function accountsSignature(list) {
+  return (list || []).map(a => [a.id, a.logKey, ...(a.configDirs || [])].join('|')).join('\n');
+}
+
+// Rebuild the registry and, when its shape moved, tell every window so the
+// monitor can re-clone its cards. Without this the Settings rescan button
+// refreshes only the Settings rows: the new account's card never appears, and a
+// same-account collapse never lands.
+//
+// The signature guard is what stops a rebuild storm. persistClaudeAccountEmail
+// can fire for several accounts within one poll, and each rebuild clears and
+// re-clones every card — so only a real regroup (a collapse, or a rescan
+// finding/losing a directory) is worth one.
+async function publishClaudeAccountsIfChanged({ rescan = false } = {}) {
+  const list = await buildClaudeAccounts({ rescan });
+  const sig = accountsSignature(list);
+  if (sig !== lastAccountsSignature) {
+    lastAccountsSignature = sig;
+    BrowserWindow.getAllWindows().forEach(w => w.webContents.send('claude-accounts-changed'));
+  }
+  return list;
+}
+
+ipcMain.handle('get-claude-accounts', async () => {
+  const list = await buildClaudeAccounts();
+  // Record what the caller is about to render, so a later regroup compares
+  // against the shape actually on screen instead of re-announcing it.
+  lastAccountsSignature = accountsSignature(list);
+  return list;
+});
+ipcMain.handle('rescan-claude-accounts', () => publishClaudeAccountsIfChanged({ rescan: true }));
 
 const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 

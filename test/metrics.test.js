@@ -376,7 +376,11 @@ test('real log: full pipeline yields sane stats and never throws', () => {
     .map(l => { try { return JSON.parse(l); } catch { return null; } })
     .filter(Boolean);
 
-  for (const acct of ['codex', 'claude-desktop', 'claude-vscode']) {
+  // Every account key actually present in the log — not just the three known
+  // ones — so a `claude-code:*` registry key gets exercised too, instead of
+  // silently skipped.
+  const allAccounts = [...new Set(all.map(e => e.account))];
+  for (const acct of allAccounts) {
     const snaps = all.filter(e => e.account === acct);
     for (const win of ['5h', 'wk']) {
       const stats = segmentCycles(snaps, win).map(c => cycleStats(c, win));

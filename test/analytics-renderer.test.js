@@ -40,6 +40,27 @@ class FakeElement {
   addEventListener() {}
 }
 
+// Minimal stand-ins for the `#account-tabs` host and the `<button>` elements
+// buildAccountTabs() creates via document.createElement — just enough to
+// observe replaceChildren()/appendChild() and the properties set on each
+// button (className, dataset.account, textContent).
+class FakeTabHost {
+  constructor() { this.children = []; }
+  replaceChildren() { this.children = []; }
+  appendChild(el) { this.children.push(el); }
+}
+
+class FakeButton {
+  constructor(tag) {
+    this.tag = tag;
+    this.className = '';
+    this.dataset = {};
+    this.textContent = '';
+    this._listeners = [];
+  }
+  addEventListener(type, cb) { this._listeners.push([type, cb]); }
+}
+
 function loadEfficiencyRenderer(documentStub) {
   const source = fs.readFileSync(path.join(__dirname, '..', 'analytics-renderer.js'), 'utf8');
   const start = source.indexOf('function buildEffWindow');
@@ -93,6 +114,66 @@ function loadStatsRenderer(documentStub, account = 'codex') {
     displayYear: null,
     displayMonth: null,
     console,
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  return context;
+}
+
+// Slices out only buildAccountTabs() — the registry → tab-list builder added
+// in Task 10. `overrides` lets each test supply its own `window.electronAPI`
+// stub, starting VALID_ACCOUNTS/ACCOUNT_LABELS/PLAN_MULTIPLIERS, and
+// currentAccount.
+function loadTabBuilderRenderer(documentStub, overrides = {}) {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'analytics-renderer.js'), 'utf8');
+  const start = source.indexOf('async function buildAccountTabs');
+  const end = source.indexOf('// ── Wire up controls');
+  assert.ok(start >= 0 && end > start, 'expected tab-builder source markers');
+
+  const context = {
+    document: documentStub,
+    console,
+    window: { electronAPI: {} },
+    VALID_ACCOUNTS: ['codex', 'claude-desktop'],
+    ACCOUNT_LABELS: { codex: 'Codex', 'claude-desktop': 'Claude Desktop' },
+    PLAN_MULTIPLIERS: { codex: 1, 'claude-desktop': 1 },
+    CLAUDE_CODE_MULTIPLIER: 20,
+    currentAccount: 'codex',
+    switchTab: () => {},
+    ...overrides,
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  return context;
+}
+
+// Slices from esc() through renderCostCompare() (the account-value table that
+// interpolates ACCOUNT_LABELS into innerHTML). Callers exercise
+// renderCostCompare directly; the intervening functions (renderStats,
+// renderEfficiency, etc.) are pulled in only because they sit between the two
+// markers in file order — they are never invoked by these tests.
+function loadCostCompareRenderer(documentStub, overrides = {}) {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'analytics-renderer.js'), 'utf8');
+  const start = source.indexOf('function esc(s)');
+  const end = source.indexOf('// ── Main render');
+  assert.ok(start >= 0 && end > start, 'expected cost-compare renderer source markers');
+
+  const context = {
+    ...metrics,
+    document: documentStub,
+    Date, Math, Set, Array, String, Number, isFinite,
+    console,
+    window: { electronAPI: {} },
+    VALID_ACCOUNTS: ['codex', 'claude-desktop'],
+    ACCOUNT_LABELS: { codex: 'Codex', 'claude-desktop': 'Claude Desktop' },
+    curSymbol: '$',
+    usdRate: 0.79,
+    windowHours: 24,
+    currentAccount: 'codex',
+    monthEntries: [],
+    displayYear: null,
+    displayMonth: null,
+    ...overrides,
   };
   vm.createContext(context);
   vm.runInContext(source.slice(start, end), context);
@@ -409,4 +490,151 @@ test('renderStats Window Budget omits the scope when no tier change is declared'
 
   assert.match(container.innerHTML, /weekly-equivalent burn this window/);
   assert.doesNotMatch(container.innerHTML, /ratio since/);
+});
+
+// ── buildAccountTabs ─────────────────────────────────────────────────────
+
+test('buildAccountTabs adds one tab per registry account, with its label, active class, and multiplier', async () => {
+  const host = new FakeTabHost();
+  const documentStub = {
+    getElementById: (id) => (id === 'account-tabs' ? host : null),
+    createElement: (tag) => new FakeButton(tag),
+  };
+  const context = loadTabBuilderRenderer(documentStub, {
+    window: {
+      electronAPI: {
+        getClaudeAccounts: async () => [
+          { id: 'cc-work', kind: 'claude-code', configDir: '/x', configDirs: ['/x'], logKey: 'claude-code:work', label: 'work@example.com' },
+        ],
+      },
+    },
+    currentAccount: 'claude-code:work',
+  });
+
+  await context.buildAccountTabs();
+
+  assert.equal(JSON.stringify(context.VALID_ACCOUNTS), JSON.stringify(['codex', 'claude-desktop', 'claude-code:work']));
+  assert.equal(context.ACCOUNT_LABELS['claude-code:work'], 'work@example.com');
+  assert.equal(context.PLAN_MULTIPLIERS['claude-code:work'], 20);
+
+  assert.equal(host.children.length, 3);
+  const workBtn = host.children.find(b => b.dataset.account === 'claude-code:work');
+  assert.ok(workBtn, 'a tab exists for the registry account');
+  assert.equal(workBtn.textContent, 'work@example.com');
+  assert.equal(workBtn.className, 'tab active'); // matches currentAccount
+  // Exactly one tab carries the active class.
+  assert.equal(host.children.filter(b => b.className.includes('active')).length, 1);
+});
+
+test('buildAccountTabs falls back to the two fixed tabs when getClaudeAccounts rejects', async () => {
+  const host = new FakeTabHost();
+  const documentStub = {
+    getElementById: (id) => (id === 'account-tabs' ? host : null),
+    createElement: (tag) => new FakeButton(tag),
+  };
+  const context = loadTabBuilderRenderer(documentStub, {
+    window: {
+      electronAPI: {
+        getClaudeAccounts: async () => { throw new Error('ipc down'); },
+      },
+    },
+    // Points at an account that only existed via a prior registry scan —
+    // buildAccountTabs must revalidate it against the degraded list.
+    currentAccount: 'claude-code:vanished',
+  });
+
+  await assert.doesNotReject(() => context.buildAccountTabs());
+
+  assert.equal(JSON.stringify(context.VALID_ACCOUNTS), JSON.stringify(['codex', 'claude-desktop']));
+  assert.equal(host.children.length, 2);
+  assert.equal(context.currentAccount, 'codex'); // reset — old value no longer valid
+  assert.equal(host.children.filter(b => b.className.includes('active')).length, 1);
+  assert.equal(host.children.find(b => b.dataset.account === 'codex').className, 'tab active');
+});
+
+test('buildAccountTabs does not duplicate entries across repeated invocations', async () => {
+  const host = new FakeTabHost();
+  const documentStub = {
+    getElementById: (id) => (id === 'account-tabs' ? host : null),
+    createElement: (tag) => new FakeButton(tag),
+  };
+  const accts = [{ id: 'cc-work', logKey: 'claude-code:work', label: 'work@example.com' }];
+  const context = loadTabBuilderRenderer(documentStub, {
+    window: { electronAPI: { getClaudeAccounts: async () => accts } },
+    currentAccount: 'codex',
+  });
+
+  await context.buildAccountTabs();
+  await context.buildAccountTabs();
+
+  assert.equal(JSON.stringify(context.VALID_ACCOUNTS), JSON.stringify(['codex', 'claude-desktop', 'claude-code:work']));
+  assert.equal(Object.keys(context.ACCOUNT_LABELS).length, 3);
+  assert.equal(Object.keys(context.PLAN_MULTIPLIERS).length, 3);
+  assert.equal(host.children.length, 3); // replaceChildren() clears the host before rebuilding
+});
+
+test('buildAccountTabs drops PLAN_MULTIPLIERS for an account that disappears from the registry', async () => {
+  // PLAN_MULTIPLIERS is a `const` mutated in place, unlike VALID_ACCOUNTS /
+  // ACCOUNT_LABELS which are reassigned to a fresh base each call — this
+  // guards against exactly that asymmetry regressing.
+  const host = new FakeTabHost();
+  const documentStub = {
+    getElementById: (id) => (id === 'account-tabs' ? host : null),
+    createElement: (tag) => new FakeButton(tag),
+  };
+  let accts = [{ id: 'cc-work', logKey: 'claude-code:work', label: 'work@example.com' }];
+  const context = loadTabBuilderRenderer(documentStub, {
+    window: { electronAPI: { getClaudeAccounts: async () => accts } },
+    currentAccount: 'codex',
+  });
+
+  await context.buildAccountTabs();
+  assert.equal(context.PLAN_MULTIPLIERS['claude-code:work'], 20);
+
+  accts = []; // account removed from the registry on the next scan
+  await context.buildAccountTabs();
+
+  assert.equal(context.PLAN_MULTIPLIERS['claude-code:work'], undefined);
+  assert.equal(JSON.stringify(Object.keys(context.PLAN_MULTIPLIERS).sort()), JSON.stringify(['claude-desktop', 'codex']));
+});
+
+// ── renderCostCompare / ACCOUNT_LABELS innerHTML sink ─────────────────────
+
+test('renderCostCompare escapes a hostile account label before writing innerHTML', async () => {
+  const el = new FakeElement();
+  const hostileLabel = '<img src=x onerror=alert(1)>evil@example.com';
+  const context = loadCostCompareRenderer({ querySelector: () => null }, {
+    VALID_ACCOUNTS: ['codex', 'claude-code:x'],
+    ACCOUNT_LABELS: { codex: 'Codex', 'claude-code:x': hostileLabel },
+    window: {
+      electronAPI: {
+        getSettings: async () => ({}),
+        readUsageLog: async () => [],
+      },
+    },
+  });
+
+  await context.renderCostCompare(el);
+
+  assert.doesNotMatch(el.innerHTML, /<img/);
+  assert.match(el.innerHTML, /&lt;img src=x onerror=alert\(1\)&gt;evil@example\.com/);
+});
+
+test('renderCostCompare shows a normal account label unescaped-looking (no stray entities)', async () => {
+  const el = new FakeElement();
+  const context = loadCostCompareRenderer({ querySelector: () => null }, {
+    VALID_ACCOUNTS: ['codex', 'claude-desktop'],
+    ACCOUNT_LABELS: { codex: 'Codex', 'claude-desktop': 'Claude Desktop' },
+    window: {
+      electronAPI: {
+        getSettings: async () => ({}),
+        readUsageLog: async () => [],
+      },
+    },
+  });
+
+  await context.renderCostCompare(el);
+
+  assert.match(el.innerHTML, /<td>Codex<\/td>/);
+  assert.match(el.innerHTML, /<td>Claude Desktop<\/td>/);
 });
