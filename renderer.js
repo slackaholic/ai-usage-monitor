@@ -1048,8 +1048,14 @@ function renderClaudeCodeApiData(acct, data, stale = false) {
     window.electronAPI.appendUsageLog(entry);
   }
 
-  document.getElementById(id + '-login-prompt').style.display = 'none';
-  document.getElementById(id + '-data').style.display = 'block';
+  // `?.` can't sit on an assignment's left-hand side (that's a SyntaxError),
+  // so the guard here is a plain null check — same intent as the `?.` used
+  // above for fetchStart/fetchStop/setBadge/setPct: a successful fetch that
+  // resolves after a rebuild dropped this account must not throw on `null`.
+  const loginPromptEl = document.getElementById(id + '-login-prompt');
+  if (loginPromptEl) loginPromptEl.style.display = 'none';
+  const dataEl = document.getElementById(id + '-data');
+  if (dataEl) dataEl.style.display = 'block';
   showSection(id + '-section', true);
   resizeToFit();
 }

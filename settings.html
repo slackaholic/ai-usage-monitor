@@ -42,6 +42,12 @@
   .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
   .note { font-size: 10px; color: var(--text-mid); margin-top: 4px; }
   #login-status { font-size: 10px; color: var(--accent); margin-top: 6px; min-height: 12px; }
+  /* One block per account, generated at runtime from the registry (see
+     settings-renderer.js buildAccountRows). Reuses .row for each field so the
+     per-field width/flex rules above are untouched. */
+  .account-row { padding-top: 6px; margin-bottom: 4px; border-top: 1px solid var(--border); }
+  .account-row:first-child { padding-top: 0; border-top: none; }
+  .account-name { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 </style>
 </head>
 <body>
@@ -69,19 +75,9 @@
   </div>
 
   <div class="section">
-    <div class="section-title">Subscriptions (plan price, USD/mo)</div>
-    <div class="row"><label>Codex</label><input type="number" id="price-codex" min="0" step="1" placeholder="—"><input type="date" id="tier-date-codex" class="tier-date" title="Plan/tier changed on"><button class="mini-btn" id="tier-today-codex" type="button" title="Set to today">Today</button></div>
-    <div class="row"><label>Claude Desktop</label><input type="number" id="price-claude-desktop" min="0" step="1" placeholder="—"><input type="date" id="tier-date-claude-desktop" class="tier-date" title="Plan/tier changed on"><button class="mini-btn" id="tier-today-claude-desktop" type="button" title="Set to today">Today</button></div>
-    <div class="row"><label>Claude Code</label><input type="number" id="price-claude-vscode" min="0" step="1" placeholder="—"><input type="date" id="tier-date-claude-vscode" class="tier-date" title="Plan/tier changed on"><button class="mini-btn" id="tier-today-claude-vscode" type="button" title="Set to today">Today</button></div>
-    <div class="note">Plan price drives cost estimates. The date is when that plan/tier last changed — the weekly-budget ratio ignores usage logged before it. Leave blank to use all history.</div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Plan capacity multiplier</div>
-    <div class="row"><label>Codex</label><input type="number" id="mult-codex" min="0.1" step="0.1" value="5"><span class="suffix">x</span></div>
-    <div class="row"><label>Claude Desktop</label><input type="number" id="mult-claude-desktop" min="0.1" step="0.1" value="1"><span class="suffix">x</span></div>
-    <div class="row"><label>Claude Code</label><input type="number" id="mult-claude-vscode" min="0.1" step="0.1" value="1"><span class="suffix">x</span></div>
-    <div class="note">Per account — drives the Analytics <b>Plan Fit</b> card (your plan tier vs. the pace your weekly usage would need). Set to your plan's capacity relative to base (1×).</div>
+    <div class="section-title">Accounts</div>
+    <div id="account-rows"></div>
+    <div class="note">Plan price (USD/mo) drives cost estimates; the date is when that plan/tier last changed — the weekly-budget ratio ignores usage logged before it, leave blank to use all history. Multiplier drives the Analytics <b>Plan Fit</b> card (your plan's capacity relative to base, 1×). Label override replaces the auto-detected account name everywhere in the app.</div>
   </div>
 
   <div class="section">
@@ -92,10 +88,12 @@
   </div>
 
   <div class="section">
-    <div class="section-title">Account label overrides</div>
-    <div class="row"><label>Codex</label><input type="text" id="ov-codex" placeholder="auto-detected"></div>
-    <div class="row"><label>Claude Desktop</label><input type="text" id="ov-claude" placeholder="auto-detected"></div>
-    <div class="row"><label>Claude Code</label><input type="text" id="ov-claude2" placeholder="auto-detected"></div>
+    <div class="section-title">Claude Code accounts</div>
+    <div class="btn-row">
+      <button class="btn" id="btn-rescan-accounts">Rescan for Claude accounts</button>
+    </div>
+    <div class="row" style="margin-top:6px"><label>Extra config directory</label><input type="text" id="claude-extra-dir" placeholder="D:\path\to\config-dir"></div>
+    <div class="note">Rescan picks up accounts logged in via a different <code>CLAUDE_CONFIG_DIR</code> since the app started. The extra directory is an escape hatch for a config dir the automatic scan wouldn't find on its own — save it, then rescan.</div>
   </div>
 
   <div class="section">

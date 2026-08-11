@@ -1,9 +1,74 @@
 'use strict';
 
-const ACCOUNTS = ['codex', 'claude-desktop', 'claude-vscode'];
-const MULT_DEFAULTS = { 'codex': 5, 'claude-desktop': 1, 'claude-vscode': 1 };
+// Two id namespaces, not one:
+//   - price / tier-date / tier-today / mult are keyed by `logKey` (the
+//     usage-log account key: 'codex', 'claude-desktop', 'claude-vscode', ...) —
+//     that is what keeps a previously saved price/date/multiplier attached to
+//     the same account after a registry rebuild.
+//   - the label override is keyed by descriptor `id` (the renderer's DOM/state
+//     prefix: 'codex', 'claude', 'claude2', ...) — that is what `renderer.js`
+//     reads via `accountOverrides[acct.id]`.
+// ACCOUNT_PAIRS carries both keys per account so each block below can pick the
+// right one. Codex and Claude Desktop are fixed; Claude Code accounts come
+// from the registry.
+let ACCOUNT_PAIRS = [
+  { logKey: 'codex', id: 'codex', label: 'Codex' },
+  { logKey: 'claude-desktop', id: 'claude', label: 'Claude Desktop' },
+];
+const MULT_DEFAULTS = { 'codex': 5, 'claude-desktop': 1 };
+const CLAUDE_CODE_MULT_DEFAULT = 20;
 const BUDGET_DEFAULTS = { window: 10, day: 20 };
 const status = (msg) => { document.getElementById('login-status').textContent = msg || ''; };
+
+async function loadAccounts() {
+  const accts = await window.electronAPI.getClaudeAccounts();
+  ACCOUNT_PAIRS = [
+    { logKey: 'codex', id: 'codex', label: 'Codex' },
+    { logKey: 'claude-desktop', id: 'claude', label: 'Claude Desktop' },
+    ...accts.map(a => ({ logKey: a.logKey, id: a.id, label: a.label || 'Claude Code' })),
+  ];
+  for (const a of accts) MULT_DEFAULTS[a.logKey] = CLAUDE_CODE_MULT_DEFAULT;
+  return accts;
+}
+
+function buildAccountRows() {
+  const host = document.getElementById('account-rows');
+  host.replaceChildren();
+  for (const { logKey, id, label } of ACCOUNT_PAIRS) {
+    const row = document.createElement('div');
+    row.className = 'account-row';
+    row.innerHTML = `
+      <div class="account-name"></div>
+      <div class="row"><label>Plan price</label>
+        <input type="number" id="price-${logKey}" min="0" step="1" placeholder="—">
+        <input type="date" id="tier-date-${logKey}" class="tier-date" title="Plan/tier changed on">
+        <button class="mini-btn" id="tier-today-${logKey}" type="button" title="Set to today">Today</button></div>
+      <div class="row"><label>Multiplier</label>
+        <input type="number" id="mult-${logKey}" min="0.1" step="0.1"><span class="suffix">x</span></div>
+      <div class="row"><label>Label override</label>
+        <input type="text" id="ov-${id}" placeholder="auto-detected"></div>`;
+    // textContent, not the innerHTML template above — label can be a live
+    // OAuth email once resolved, so it goes through the DOM API rather than
+    // being interpolated as markup.
+    row.querySelector('.account-name').textContent = label;
+    host.appendChild(row);
+  }
+}
+
+// Attaches the per-row listeners. Must run again after every buildAccountRows()
+// call (initial load and rescan alike): buildAccountRows() replaces the DOM
+// nodes wholesale, so any previously attached listeners go with the old nodes
+// (no leak — but the new nodes have none until this runs).
+function wireAccountRowListeners() {
+  ACCOUNT_PAIRS.forEach(({ logKey }) => document.getElementById('price-' + logKey).addEventListener('change', savePlanPrices));
+  ACCOUNT_PAIRS.forEach(({ logKey }) => document.getElementById('tier-date-' + logKey).addEventListener('change', saveTierDates));
+  ACCOUNT_PAIRS.forEach(({ logKey }) => document.getElementById('tier-today-' + logKey).addEventListener('click', () => {
+    document.getElementById('tier-date-' + logKey).value = todayLocalISO();
+    saveTierDates();
+  }));
+  ACCOUNT_PAIRS.forEach(({ logKey }) => document.getElementById('mult-' + logKey).addEventListener('change', savePlanMultipliers));
+  ACCOUNT_PAIRS.forEach(({ id }) => document.getElementById('ov-' + id).addEventListener('change', saveOverrides));
+}
 
 async function loadSettings() {
   const s = (await window.electronAPI.getSettings()) || {};
@@ -17,29 +82,29 @@ async function loadSettings() {
   document.getElementById('cur-rate').value = s.usdRate != null ? s.usdRate : 0.79;
 
   const pp = s.planPrices || {};
-  ACCOUNTS.forEach(a => { document.getElementById('price-' + a).value = pp[a] != null ? pp[a] : ''; });
+  ACCOUNT_PAIRS.forEach(({ logKey }) => { document.getElementById('price-' + logKey).value = pp[logKey] != null ? pp[logKey] : ''; });
 
   const tc = s.tierChangedAt || {};
-  ACCOUNTS.forEach(a => { document.getElementById('tier-date-' + a).value = tc[a] || ''; });
+  ACCOUNT_PAIRS.forEach(({ logKey }) => { document.getElementById('tier-date-' + logKey).value = tc[logKey] || ''; });
 
   const pm = s.planMultipliers || {};
-  ACCOUNTS.forEach(a => { document.getElementById('mult-' + a).value = pm[a] != null ? pm[a] : MULT_DEFAULTS[a]; });
+  ACCOUNT_PAIRS.forEach(({ logKey }) => { document.getElementById('mult-' + logKey).value = pm[logKey] != null ? pm[logKey] : MULT_DEFAULTS[logKey]; });
 
   const bt = s.budgetTargets || {};
   document.getElementById('budget-window').value = bt.window != null ? bt.window : BUDGET_DEFAULTS.window;
   document.getElementById('budget-day').value    = bt.day    != null ? bt.day    : BUDGET_DEFAULTS.day;
 
   const ov = s.accountOverrides || {};
-  document.getElementById('ov-codex').value = ov.codex || '';
-  document.getElementById('ov-claude').value = ov.claude || '';
-  document.getElementById('ov-claude2').value = ov.claude2 || '';
+  ACCOUNT_PAIRS.forEach(({ id }) => { document.getElementById('ov-' + id).value = ov[id] || ''; });
+
+  document.getElementById('claude-extra-dir').value = (s.claudeExtraConfigDirs || [])[0] || '';
 }
 
 function savePlanPrices() {
   const planPrices = {};
-  ACCOUNTS.forEach(a => {
-    const v = parseFloat(document.getElementById('price-' + a).value);
-    if (!isNaN(v) && v > 0) planPrices[a] = v;
+  ACCOUNT_PAIRS.forEach(({ logKey }) => {
+    const v = parseFloat(document.getElementById('price-' + logKey).value);
+    if (!isNaN(v) && v > 0) planPrices[logKey] = v;
   });
   window.electronAPI.saveSettings({ planPrices });
 }
@@ -54,7 +119,7 @@ function savePlanPrices() {
 // is what makes an active cutoff visible.
 function saveTierDates() {
   const tierChangedAt = {};
-  ACCOUNTS.forEach(a => { tierChangedAt[a] = document.getElementById('tier-date-' + a).value || ''; });
+  ACCOUNT_PAIRS.forEach(({ logKey }) => { tierChangedAt[logKey] = document.getElementById('tier-date-' + logKey).value || ''; });
   window.electronAPI.saveSettings({ tierChangedAt });
 }
 
@@ -68,9 +133,9 @@ function todayLocalISO() {
 
 function savePlanMultipliers() {
   const planMultipliers = {};
-  ACCOUNTS.forEach(a => {
-    const v = parseFloat(document.getElementById('mult-' + a).value);
-    if (!isNaN(v) && v > 0) planMultipliers[a] = v;
+  ACCOUNT_PAIRS.forEach(({ logKey }) => {
+    const v = parseFloat(document.getElementById('mult-' + logKey).value);
+    if (!isNaN(v) && v > 0) planMultipliers[logKey] = v;
   });
   window.electronAPI.saveSettings({ planMultipliers });
 }
@@ -87,13 +152,9 @@ function saveBudgetTargets() {
 }
 
 function saveOverrides() {
-  window.electronAPI.saveSettings({
-    accountOverrides: {
-      codex: document.getElementById('ov-codex').value.trim(),
-      claude: document.getElementById('ov-claude').value.trim(),
-      claude2: document.getElementById('ov-claude2').value.trim(),
-    },
-  });
+  const accountOverrides = {};
+  ACCOUNT_PAIRS.forEach(({ id }) => { accountOverrides[id] = document.getElementById('ov-' + id).value.trim(); });
+  window.electronAPI.saveSettings({ accountOverrides });
 }
 
 document.getElementById('opacity').addEventListener('input', e => {
@@ -111,17 +172,21 @@ document.getElementById('cur-rate').addEventListener('change', e => {
   const r = parseFloat(e.target.value);
   if (!isNaN(r) && r > 0) window.electronAPI.saveSettings({ usdRate: r });
 });
-ACCOUNTS.forEach(a => document.getElementById('price-' + a).addEventListener('change', savePlanPrices));
-ACCOUNTS.forEach(a => document.getElementById('tier-date-' + a).addEventListener('change', saveTierDates));
-ACCOUNTS.forEach(a => document.getElementById('tier-today-' + a).addEventListener('click', () => {
-  document.getElementById('tier-date-' + a).value = todayLocalISO();
-  saveTierDates();
-}));
-ACCOUNTS.forEach(a => document.getElementById('mult-' + a).addEventListener('change', savePlanMultipliers));
 ['budget-window', 'budget-day'].forEach(id =>
   document.getElementById(id).addEventListener('change', saveBudgetTargets));
-['ov-codex', 'ov-claude', 'ov-claude2'].forEach(id =>
-  document.getElementById(id).addEventListener('change', saveOverrides));
+
+document.getElementById('btn-rescan-accounts').addEventListener('click', async () => {
+  const accts = await window.electronAPI.rescanClaudeAccounts();
+  await loadAccounts();
+  buildAccountRows();
+  wireAccountRowListeners();
+  await loadSettings();
+  status(`Found ${accts.length} Claude Code account${accts.length === 1 ? '' : 's'}.`);
+});
+document.getElementById('claude-extra-dir').addEventListener('change', e => {
+  const v = e.target.value.trim();
+  window.electronAPI.saveSettings({ claudeExtraConfigDirs: v ? [v] : [] });
+});
 
 document.getElementById('btn-show-claude').addEventListener('click', () => {
   window.electronAPI.showClaudeWebWindow(); status('Opened Claude login — sign in, then refresh the main window.');
@@ -139,4 +204,9 @@ document.getElementById('btn-logoff-claude').addEventListener('click', async () 
   await window.electronAPI.resetClaudeSession('desktop'); status('Logged off Claude Desktop.');
 });
 
-loadSettings();
+(async () => {
+  await loadAccounts();
+  buildAccountRows();
+  wireAccountRowListeners();
+  await loadSettings();
+})();
