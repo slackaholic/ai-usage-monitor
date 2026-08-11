@@ -1,10 +1,16 @@
 'use strict';
 
 // ── State ──────────────────────────────────────────────────────────────────
-const VALID_ACCOUNTS = ['codex', 'claude-desktop', 'claude-vscode'];
-const ACCOUNT_LABELS = { codex: 'Codex', 'claude-desktop': 'Claude Desktop', 'claude-vscode': 'Claude Code' };
+// VALID_ACCOUNTS / ACCOUNT_LABELS start with the two fixed accounts; every
+// Claude Code account — including the existing `~/.claude` account, whose
+// logKey is 'claude-vscode' — is appended by buildAccountTabs() from the
+// registry below. currentAccount's initializer runs before the registry is
+// known, so it's validated against VALID_ACCOUNTS again inside
+// buildAccountTabs() once the full list exists.
+let VALID_ACCOUNTS = ['codex', 'claude-desktop'];
+let ACCOUNT_LABELS = { codex: 'Codex', 'claude-desktop': 'Claude Desktop' };
 const initialAccount = new URLSearchParams(window.location.search).get('account');
-let currentAccount = VALID_ACCOUNTS.includes(initialAccount) ? initialAccount : 'codex';
+let currentAccount = initialAccount || 'codex';
 let windowHours    = 24;
 let rowLimit       = 200;
 let monthEntries = [];
@@ -14,13 +20,16 @@ let curSymbol = '£';
 let usdRate = 0.79;
 
 // Token consumption multipliers relative to a 1× base (Sonnet-equivalent).
-// Claude Code (VS Code) uses Opus-class models which burn the 5h quota 20× faster
-// than Codex / Claude Desktop at equivalent wallclock usage.
+// Claude Code accounts run Opus-class models which burn the 5h quota 20×
+// faster than Codex / Claude Desktop at equivalent wallclock usage.
 const PLAN_MULTIPLIERS = {
   'codex':          1,
   'claude-desktop': 1,
-  'claude-vscode':  20,
 };
+// Multiplier applied to every Claude Code account pulled from the registry
+// (buildAccountTabs() below) — preserves the value the fixed 'claude-vscode'
+// entry used to carry directly.
+const CLAUDE_CODE_MULTIPLIER = 20;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function fmtDuration(ms) {
@@ -1120,11 +1129,46 @@ function switchTab(account) {
   renderAll();
 }
 
-// ── Wire up controls ───────────────────────────────────────────────────────
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => switchTab(tab.dataset.account));
-});
+// ── Build tabs from the registry ──────────────────────────────────────────
+// Rebuilds VALID_ACCOUNTS / ACCOUNT_LABELS / PLAN_MULTIPLIERS from the two
+// fixed accounts plus whatever getClaudeAccounts() reports, then (re)builds
+// the #account-tabs buttons. A rejecting getClaudeAccounts() must not blank
+// the window — fall back to the two fixed accounts and render in a degraded
+// state; a rescan from Settings can recover the Claude Code tab(s) later.
+async function buildAccountTabs() {
+  let accts = [];
+  try {
+    const result = await window.electronAPI.getClaudeAccounts();
+    if (Array.isArray(result)) accts = result;
+  } catch (e) {
+    console.error('getClaudeAccounts failed:', e);
+  }
 
+  VALID_ACCOUNTS = ['codex', 'claude-desktop'];
+  ACCOUNT_LABELS = { codex: 'Codex', 'claude-desktop': 'Claude Desktop' };
+  for (const a of accts) {
+    VALID_ACCOUNTS.push(a.logKey);
+    ACCOUNT_LABELS[a.logKey] = a.label || 'Claude Code';
+    PLAN_MULTIPLIERS[a.logKey] = CLAUDE_CODE_MULTIPLIER;
+  }
+
+  // currentAccount's initializer ran before the registry was known —
+  // validate it now that VALID_ACCOUNTS is complete.
+  if (!VALID_ACCOUNTS.includes(currentAccount)) currentAccount = 'codex';
+
+  const host = document.getElementById('account-tabs');
+  host.replaceChildren();
+  for (const key of VALID_ACCOUNTS) {
+    const btn = document.createElement('button');
+    btn.className = 'tab' + (key === currentAccount ? ' active' : '');
+    btn.dataset.account = key;
+    btn.textContent = ACCOUNT_LABELS[key];
+    btn.addEventListener('click', () => switchTab(key));
+    host.appendChild(btn);
+  }
+}
+
+// ── Wire up controls ───────────────────────────────────────────────────────
 // Listen for tab-switch messages from main process (when window is already open)
 window.electronAPI.onSwitchAnalyticsTab(switchTab);
 window.electronAPI.onSettingsChanged(() => renderAll());
@@ -1141,8 +1185,8 @@ document.getElementById('rows-select').addEventListener('change', e => {
 
 document.getElementById('refresh-btn').addEventListener('click', renderAll);
 
-// Initial load — activate the correct tab before first render
-document.querySelectorAll('.tab').forEach(t => {
-  t.classList.toggle('active', t.dataset.account === currentAccount);
-});
-renderAll();
+// Initial load — build the tabs from the registry before the first render.
+(async () => {
+  await buildAccountTabs();
+  renderAll();
+})();
