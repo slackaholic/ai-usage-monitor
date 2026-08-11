@@ -20,8 +20,44 @@ const CLAUDE_CODE_MULT_DEFAULT = 20;
 const BUDGET_DEFAULTS = { window: 10, day: 20 };
 const status = (msg) => { document.getElementById('login-status').textContent = msg || ''; };
 
+// The last full settings object we know about, kept in sync by loadSettings()
+// and by every save*() below. save*() needs this because each per-account
+// object (planPrices, tierChangedAt, planMultipliers, accountOverrides) can
+// hold entries for accounts that are not part of the *current* ACCOUNT_PAIRS
+// — e.g. a second Claude Code account whose credentials briefly expired, so
+// this session's registry scan doesn't include it. Building a save patch from
+// scratch over only the visible accounts would silently delete every other
+// account's saved values on the next unrelated edit (mergeAccountPatch below
+// is what prevents that).
+let lastSettings = {};
+
+// Pure and independently testable (see test/settings-renderer.test.js):
+// merges `updates` into `current`, keeping every key `updates` doesn't
+// mention untouched, and deleting a key when `updates` maps it to
+// `undefined` (the "field was cleared/invalid" signal savePlanPrices and
+// savePlanMultipliers use below). Never mutates `current`.
+function mergeAccountPatch(current, updates) {
+  const merged = { ...(current || {}) };
+  for (const key of Object.keys(updates || {})) {
+    const v = updates[key];
+    if (v === undefined) delete merged[key];
+    else merged[key] = v;
+  }
+  return merged;
+}
+
 async function loadAccounts() {
-  const accts = await window.electronAPI.getClaudeAccounts();
+  let accts = [];
+  try {
+    const result = await window.electronAPI.getClaudeAccounts();
+    if (Array.isArray(result)) accts = result;
+  } catch (e) {
+    // A rejected IPC call must not blank the whole settings window — opacity,
+    // refresh interval, currency, budget targets and the two fixed rows
+    // (Codex, Claude Desktop) all still need to render. Fall back to no
+    // Claude Code accounts this load; a rescan can recover later.
+    console.error('getClaudeAccounts failed:', e);
+  }
   ACCOUNT_PAIRS = [
     { logKey: 'codex', id: 'codex', label: 'Codex' },
     { logKey: 'claude-desktop', id: 'claude', label: 'Claude Desktop' },
@@ -37,20 +73,30 @@ function buildAccountRows() {
   for (const { logKey, id, label } of ACCOUNT_PAIRS) {
     const row = document.createElement('div');
     row.className = 'account-row';
+    // logKey is filesystem-controlled (for a non-default account it's the raw
+    // config-dir basename, not scrubbed the way `id` is) and must never be
+    // interpolated into innerHTML markup. The template below carries no id
+    // attributes at all — every dynamic id is assigned afterward via the
+    // `.id` DOM property, a plain string set rather than markup parsing, so
+    // it cannot be used to break out of an attribute the way string
+    // interpolation into innerHTML could. `label` gets the same treatment
+    // via `.textContent` for the same reason.
     row.innerHTML = `
       <div class="account-name"></div>
       <div class="row"><label>Plan price</label>
-        <input type="number" id="price-${logKey}" min="0" step="1" placeholder="—">
-        <input type="date" id="tier-date-${logKey}" class="tier-date" title="Plan/tier changed on">
-        <button class="mini-btn" id="tier-today-${logKey}" type="button" title="Set to today">Today</button></div>
+        <input type="number" class="f-price" min="0" step="1" placeholder="—">
+        <input type="date" class="f-tier-date tier-date" title="Plan/tier changed on">
+        <button class="f-tier-today mini-btn" type="button" title="Set to today">Today</button></div>
       <div class="row"><label>Multiplier</label>
-        <input type="number" id="mult-${logKey}" min="0.1" step="0.1"><span class="suffix">x</span></div>
+        <input type="number" class="f-mult" min="0.1" step="0.1"><span class="suffix">x</span></div>
       <div class="row"><label>Label override</label>
-        <input type="text" id="ov-${id}" placeholder="auto-detected"></div>`;
-    // textContent, not the innerHTML template above — label can be a live
-    // OAuth email once resolved, so it goes through the DOM API rather than
-    // being interpolated as markup.
+        <input type="text" class="f-ov" placeholder="auto-detected"></div>`;
     row.querySelector('.account-name').textContent = label;
+    row.querySelector('.f-price').id = 'price-' + logKey;
+    row.querySelector('.f-tier-date').id = 'tier-date-' + logKey;
+    row.querySelector('.f-tier-today').id = 'tier-today-' + logKey;
+    row.querySelector('.f-mult').id = 'mult-' + logKey;
+    row.querySelector('.f-ov').id = 'ov-' + id;
     host.appendChild(row);
   }
 }
@@ -72,6 +118,7 @@ function wireAccountRowListeners() {
 
 async function loadSettings() {
   const s = (await window.electronAPI.getSettings()) || {};
+  lastSettings = s;
 
   const op = s.opacity != null ? Math.round(Math.max(0.2, Math.min(1, s.opacity)) * 100) : 100;
   document.getElementById('opacity').value = op;
@@ -101,11 +148,13 @@ async function loadSettings() {
 }
 
 function savePlanPrices() {
-  const planPrices = {};
+  const updates = {};
   ACCOUNT_PAIRS.forEach(({ logKey }) => {
     const v = parseFloat(document.getElementById('price-' + logKey).value);
-    if (!isNaN(v) && v > 0) planPrices[logKey] = v;
+    updates[logKey] = (!isNaN(v) && v > 0) ? v : undefined;
   });
+  const planPrices = mergeAccountPatch(lastSettings.planPrices, updates);
+  lastSettings.planPrices = planPrices;
   window.electronAPI.saveSettings({ planPrices });
 }
 
@@ -118,8 +167,10 @@ function savePlanPrices() {
 // '' = "use all history"; the "ratio since <date>" note in the budget readouts
 // is what makes an active cutoff visible.
 function saveTierDates() {
-  const tierChangedAt = {};
-  ACCOUNT_PAIRS.forEach(({ logKey }) => { tierChangedAt[logKey] = document.getElementById('tier-date-' + logKey).value || ''; });
+  const updates = {};
+  ACCOUNT_PAIRS.forEach(({ logKey }) => { updates[logKey] = document.getElementById('tier-date-' + logKey).value || ''; });
+  const tierChangedAt = mergeAccountPatch(lastSettings.tierChangedAt, updates);
+  lastSettings.tierChangedAt = tierChangedAt;
   window.electronAPI.saveSettings({ tierChangedAt });
 }
 
@@ -132,11 +183,13 @@ function todayLocalISO() {
 }
 
 function savePlanMultipliers() {
-  const planMultipliers = {};
+  const updates = {};
   ACCOUNT_PAIRS.forEach(({ logKey }) => {
     const v = parseFloat(document.getElementById('mult-' + logKey).value);
-    if (!isNaN(v) && v > 0) planMultipliers[logKey] = v;
+    updates[logKey] = (!isNaN(v) && v > 0) ? v : undefined;
   });
+  const planMultipliers = mergeAccountPatch(lastSettings.planMultipliers, updates);
+  lastSettings.planMultipliers = planMultipliers;
   window.electronAPI.saveSettings({ planMultipliers });
 }
 
@@ -152,8 +205,10 @@ function saveBudgetTargets() {
 }
 
 function saveOverrides() {
-  const accountOverrides = {};
-  ACCOUNT_PAIRS.forEach(({ id }) => { accountOverrides[id] = document.getElementById('ov-' + id).value.trim(); });
+  const updates = {};
+  ACCOUNT_PAIRS.forEach(({ id }) => { updates[id] = document.getElementById('ov-' + id).value.trim(); });
+  const accountOverrides = mergeAccountPatch(lastSettings.accountOverrides, updates);
+  lastSettings.accountOverrides = accountOverrides;
   window.electronAPI.saveSettings({ accountOverrides });
 }
 
@@ -176,12 +231,25 @@ document.getElementById('cur-rate').addEventListener('change', e => {
   document.getElementById(id).addEventListener('change', saveBudgetTargets));
 
 document.getElementById('btn-rescan-accounts').addEventListener('click', async () => {
-  const accts = await window.electronAPI.rescanClaudeAccounts();
-  await loadAccounts();
-  buildAccountRows();
-  wireAccountRowListeners();
-  await loadSettings();
-  status(`Found ${accts.length} Claude Code account${accts.length === 1 ? '' : 's'}.`);
+  const btn = document.getElementById('btn-rescan-accounts');
+  // Re-entrancy guard: a rapid double-click would otherwise launch two
+  // overlapping rebuild sequences whose status() calls can interleave into a
+  // misleading message. Disabling for the duration also means a slow scan
+  // can't be kicked off a second time before the first finishes.
+  btn.disabled = true;
+  try {
+    const accts = await window.electronAPI.rescanClaudeAccounts();
+    await loadAccounts();
+    buildAccountRows();
+    wireAccountRowListeners();
+    await loadSettings();
+    status(`Found ${accts.length} Claude Code account${accts.length === 1 ? '' : 's'}.`);
+  } catch (e) {
+    console.error('rescanClaudeAccounts failed:', e);
+    status('Rescan failed — see console for details.');
+  } finally {
+    btn.disabled = false;
+  }
 });
 document.getElementById('claude-extra-dir').addEventListener('change', e => {
   const v = e.target.value.trim();
