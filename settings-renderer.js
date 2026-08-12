@@ -61,12 +61,13 @@ async function loadAccounts() {
   ACCOUNT_PAIRS = [
     { logKey: 'codex', id: 'codex', label: 'Codex' },
     { logKey: 'claude-desktop', id: 'claude', label: 'Claude Desktop' },
-    // displayName, not `label || 'Claude Code'`: label is null until the OAuth
-    // profile resolves and permanently if it never does, so two accounts would
-    // render two identically-named rows — and a price or multiplier typed into
-    // the wrong one. accounts.js derives the fallback (the config directory's
-    // own name) once, for all three windows.
-    ...accts.map(a => ({ logKey: a.logKey, id: a.id, label: a.displayName || a.label || 'Claude Code' })),
+    // Every row shows the product name as its heading and the signed-in
+    // account beneath it. `detail` is the email once the OAuth profile
+    // resolves and the config directory's own name until then — never null,
+    // so two accounts can never render two identical rows and take a price or
+    // multiplier meant for the other. accounts.js derives it once, for all
+    // three windows.
+    ...accts.map(a => ({ logKey: a.logKey, id: a.id, label: 'Claude Code', detail: a.detail || a.label || null })),
   ];
   for (const a of accts) MULT_DEFAULTS[a.logKey] = CLAUDE_CODE_MULT_DEFAULT;
   return accts;
@@ -88,6 +89,7 @@ function buildAccountRows() {
     // via `.textContent` for the same reason.
     row.innerHTML = `
       <div class="account-name"></div>
+      <div class="account-detail"></div>
       <div class="row"><label>Plan price</label>
         <input type="number" class="f-price" min="0" step="1" placeholder="—">
         <input type="date" class="f-tier-date tier-date" title="Plan/tier changed on">
@@ -97,12 +99,40 @@ function buildAccountRows() {
       <div class="row"><label>Label override</label>
         <input type="text" class="f-ov" placeholder="auto-detected"></div>`;
     row.querySelector('.account-name').textContent = label;
+    // Filled by applyAccountDetails() — the two fixed accounts' emails live in
+    // settings, which isn't loaded yet at build time.
+    row.querySelector('.account-detail').dataset.for = id;
     row.querySelector('.f-price').id = 'price-' + logKey;
     row.querySelector('.f-tier-date').id = 'tier-date-' + logKey;
     row.querySelector('.f-tier-today').id = 'tier-today-' + logKey;
     row.querySelector('.f-mult').id = 'mult-' + logKey;
     row.querySelector('.f-ov').id = 'ov-' + id;
     host.appendChild(row);
+  }
+}
+
+// Fills the second line of each account row with the signed-in account.
+//
+// Claude Code accounts carry theirs on the descriptor. Codex and Claude Desktop
+// do not go through the registry at all, but the monitor window already
+// resolves their emails as a side effect of each usage fetch and saveCachedData
+// persists them under `lastKnown.<id>.email` — so the value is on disk, it was
+// simply never read here. That is why this runs after loadSettings() rather
+// than inside buildAccountRows(): at build time `lastSettings` is still empty.
+//
+// Falls back to the row's own heading rather than leaving a blank line, so a
+// first run with no cached usage yet doesn't render a stray empty row.
+function applyAccountDetails() {
+  const known = lastSettings.lastKnown || {};
+  const byId = new Map();
+  for (const el of document.querySelectorAll('.account-detail')) byId.set(el.dataset.for, el);
+  for (const { id, detail } of ACCOUNT_PAIRS) {
+    const el = byId.get(id);
+    if (!el) continue;
+    const email = (known[id] && known[id].email) || null;
+    // Describes the app's state, not the user's: they may well be signed in
+    // and simply not polled yet on a fresh install.
+    el.textContent = detail || email || 'account not detected yet';
   }
 }
 
@@ -124,6 +154,7 @@ function wireAccountRowListeners() {
 async function loadSettings() {
   const s = (await window.electronAPI.getSettings()) || {};
   lastSettings = s;
+  applyAccountDetails();
 
   const op = s.opacity != null ? Math.round(Math.max(0.2, Math.min(1, s.opacity)) * 100) : 100;
   document.getElementById('opacity').value = op;

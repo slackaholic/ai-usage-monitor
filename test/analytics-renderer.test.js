@@ -514,16 +514,52 @@ test('buildAccountTabs adds one tab per registry account, with its label, active
   await context.buildAccountTabs();
 
   assert.equal(JSON.stringify(context.VALID_ACCOUNTS), JSON.stringify(['codex', 'claude-desktop', 'claude-code:work']));
-  assert.equal(context.ACCOUNT_LABELS['claude-code:work'], 'work@example.com');
+  // A lone Claude Code account is already unambiguous against Codex and Claude
+  // Desktop, so its tab carries the product name only — no email eating width.
+  assert.equal(context.ACCOUNT_LABELS['claude-code:work'], 'Claude Code');
   assert.equal(context.PLAN_MULTIPLIERS['claude-code:work'], 20);
 
   assert.equal(host.children.length, 3);
   const workBtn = host.children.find(b => b.dataset.account === 'claude-code:work');
   assert.ok(workBtn, 'a tab exists for the registry account');
-  assert.equal(workBtn.textContent, 'work@example.com');
+  assert.equal(workBtn.textContent, 'Claude Code');
   assert.equal(workBtn.className, 'tab active'); // matches currentAccount
   // Exactly one tab carries the active class.
   assert.equal(host.children.filter(b => b.className.includes('active')).length, 1);
+});
+
+test('buildAccountTabs appends the account only when two tabs would read alike', async () => {
+  const host = new FakeTabHost();
+  const documentStub = {
+    getElementById: (id) => (id === 'account-tabs' ? host : null),
+    createElement: (tag) => new FakeButton(tag),
+  };
+  const context = loadTabBuilderRenderer(documentStub, {
+    window: {
+      electronAPI: {
+        getClaudeAccounts: async () => [
+          { id: 'claude2', kind: 'claude-code', configDir: '/home/.claude', configDirs: ['/home/.claude'],
+            logKey: 'claude-vscode', label: 'me@example.com', detail: 'me@example.com' },
+          // No email resolved yet — detail falls back to the config dir's name.
+          { id: 'cc-work', kind: 'claude-code', configDir: '/home/.claude-work', configDirs: ['/home/.claude-work'],
+            logKey: 'claude-code:.claude-work', label: null, detail: '.claude-work' },
+        ],
+      },
+    },
+    currentAccount: 'codex',
+  });
+
+  await context.buildAccountTabs();
+
+  // Codex and Claude Desktop are still bare — only the colliding pair grows.
+  assert.equal(context.ACCOUNT_LABELS['codex'], 'Codex');
+  assert.equal(context.ACCOUNT_LABELS['claude-desktop'], 'Claude Desktop');
+  assert.equal(context.ACCOUNT_LABELS['claude-vscode'], 'Claude Code — me@example.com');
+  assert.equal(context.ACCOUNT_LABELS['claude-code:.claude-work'], 'Claude Code — .claude-work');
+
+  // Every tab reads differently, which is the whole point.
+  const texts = host.children.map(b => b.textContent);
+  assert.equal(new Set(texts).size, texts.length, 'no two tabs share a label');
 });
 
 test('buildAccountTabs falls back to the two fixed tabs when getClaudeAccounts rejects', async () => {

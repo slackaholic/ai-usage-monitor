@@ -99,3 +99,61 @@ test('mergeAccountPatch with an empty update set returns an equal but distinct c
   assert.deepStrictEqual({ ...merged }, current);
   assert.notStrictEqual(merged, current);
 });
+
+// applyAccountDetails fills the second line of each account row. It is worth a
+// test because the precedence is not obvious: Claude Code accounts carry their
+// own `detail` on the descriptor, while Codex and Claude Desktop never go
+// through the registry at all — their emails are resolved by the MONITOR window
+// as a side effect of each usage fetch and persisted under
+// `lastKnown.<id>.email`. Reading that is the whole point of this function.
+function loadApplyAccountDetails(documentStub, pairs, settings) {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'settings-renderer.js'), 'utf8');
+  const start = source.indexOf('function applyAccountDetails');
+  const end = source.indexOf('// Attaches the per-row listeners');
+  assert.ok(start >= 0 && end > start, 'expected applyAccountDetails source markers');
+
+  const context = { document: documentStub, ACCOUNT_PAIRS: pairs, lastSettings: settings, module: {} };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end) + '\nmodule.exports = applyAccountDetails;', context);
+  return context.module.exports;
+}
+
+function fakeDetailRows(ids) {
+  const els = ids.map(id => ({ dataset: { for: id }, textContent: '' }));
+  return { els, document: { querySelectorAll: () => els } };
+}
+
+test('applyAccountDetails reads the fixed accounts\' emails out of lastKnown', () => {
+  const { els, document } = fakeDetailRows(['codex', 'claude', 'claude2']);
+  const applyAccountDetails = loadApplyAccountDetails(
+    document,
+    [
+      { logKey: 'codex', id: 'codex', label: 'Codex' },
+      { logKey: 'claude-desktop', id: 'claude', label: 'Claude Desktop' },
+      { logKey: 'claude-vscode', id: 'claude2', label: 'Claude Code', detail: 'me@example.com' },
+    ],
+    { lastKnown: { codex: { email: 'dev@example.com' }, claude: { email: 'me@example.com' } } },
+  );
+
+  applyAccountDetails();
+
+  assert.strictEqual(els[0].textContent, 'dev@example.com');
+  assert.strictEqual(els[1].textContent, 'me@example.com');
+  // The registry descriptor's own detail wins for a Claude Code row.
+  assert.strictEqual(els[2].textContent, 'me@example.com');
+});
+
+test('applyAccountDetails says so rather than leaving a blank line', () => {
+  // Fresh install: nothing has been fetched yet, so no email is cached. A blank
+  // second line would read as a rendering bug.
+  const { els, document } = fakeDetailRows(['codex']);
+  const applyAccountDetails = loadApplyAccountDetails(
+    document,
+    [{ logKey: 'codex', id: 'codex', label: 'Codex' }],
+    {},
+  );
+
+  applyAccountDetails();
+
+  assert.strictEqual(els[0].textContent, 'account not detected yet');
+});

@@ -47,7 +47,14 @@
      per-field width/flex rules above are untouched. */
   .account-row { padding-top: 6px; margin-bottom: 4px; border-top: 1px solid var(--border); }
   .account-row:first-child { padding-top: 0; border-top: none; }
-  .account-name { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .account-name { font-size: 12px; font-weight: 600; }
+  /* The signed-in account, under the product name. Long addresses must not
+     widen the panel — the window is fitted to its content height at a fixed
+     width, so an overflowing line would raise a horizontal scrollbar. */
+  .account-detail {
+    font-size: 10px; color: var(--text-mid); margin-bottom: 4px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
 </style>
 </head>
 <body>

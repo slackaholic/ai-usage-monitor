@@ -59,10 +59,20 @@ function deriveAccountId(configDir, homeDir) {
 // the fallback. Derived here once and carried ON THE DESCRIPTOR because the
 // three renderer windows run under contextIsolation and cannot require this
 // module; that is also what keeps them from drifting into three fallbacks.
-function deriveDisplayName({ label, configDir, id } = {}) {
+function deriveDisplayName({ label, detail, configDir, id } = {}) {
   if (label) return label;
-  const base = path.basename(configDir || '') || id || '';
+  const base = detail || path.basename(configDir || '') || id || '';
   return base ? 'Claude Code (' + base + ')' : 'Claude Code';
+}
+
+// What distinguishes THIS account from another of the same kind, with no
+// product name attached: the OAuth profile email once it resolves, the config
+// directory's own name until then. Kept separate from displayName because the
+// two windows compose them differently — Settings shows the product name and
+// this on its own line beneath, Analytics shows the product name alone and
+// only appends this when two tabs would otherwise read identically.
+function deriveDetail({ label, configDir, id } = {}) {
+  return label || path.basename(configDir || '') || id || null;
 }
 
 // A short, stable fingerprint of a full path, used to break identity collisions
@@ -205,11 +215,15 @@ function groupIntoAccounts(dirs, { homeDir, defaultDir, knownEmails = {} } = {})
       logKey: logKeyFor(dir, def),
       label: email,
     };
-    descriptor.displayName = deriveDisplayName(descriptor);
+    descriptor.detail = deriveDetail(descriptor);
     if (email) byEmail.set(email, descriptor);
     accounts.push(descriptor);
   }
-  return disambiguateAccounts(accounts, def);
+  // displayName is derived AFTER disambiguation, from the possibly-suffixed
+  // detail — deriving it here would bake in a colliding name that the suffix
+  // then never reaches.
+  return disambiguateAccounts(accounts, def)
+    .map(a => Object.assign(a, { displayName: deriveDisplayName(a) }));
 }
 
 // `id` and `logKey` both come from path.basename, so two config dirs sharing a
@@ -240,12 +254,20 @@ function disambiguateAccounts(accts, defaultDir) {
   };
   const ids = tally('id');
   const keys = tally('logKey');
+  // `detail` collides for the same reason id and logKey do — it falls back to
+  // the config-dir basename when no email has resolved. Left alone, the two
+  // colliding accounts keep distinct data but render identical names, which is
+  // exactly the wrong-row-gets-the-price hazard this function exists to stop.
+  const details = tally('detail');
 
   for (const a of accts) {
     if (samePath(a.configDir, defaultDir)) continue;
     const fp = pathFingerprint(a.configDir);
     if (ids.get(a.id) > 1) a.id += '-' + fp;
     if (keys.get(a.logKey) > 1) a.logKey += '-' + fp;
+    // Only the basename fallback can collide; two accounts sharing an email
+    // would have collapsed into one before reaching here.
+    if (a.detail && details.get(a.detail) > 1) a.detail += ' (' + fp + ')';
   }
   return accts;
 }
@@ -283,7 +305,7 @@ function writeCredentialsAtomic(configDir, creds) {
 }
 
 module.exports = {
-  deriveLogKey, deriveAccountId, deriveDisplayName, isDefaultDir, samePath,
+  deriveLogKey, deriveAccountId, deriveDisplayName, deriveDetail, isDefaultDir, samePath,
   scanClaudeCodeConfigDirs, resolveHomeDir, resolveDefaultConfigDir,
   groupIntoAccounts, readCredentials, writeCredentialsAtomic,
 };

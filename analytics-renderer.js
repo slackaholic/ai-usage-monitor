@@ -1163,13 +1163,28 @@ async function buildAccountTabs() {
   PLAN_MULTIPLIERS['claude-desktop'] = 1;
   for (const a of accts) {
     VALID_ACCOUNTS.push(a.logKey);
-    // displayName, not `label || 'Claude Code'`: label is null until the OAuth
-    // profile resolves and permanently if it never does, so two accounts would
-    // render two identically-named tabs with no way to tell them apart.
-    // accounts.js derives the fallback (the config directory's own name) once,
-    // for all three windows.
-    ACCOUNT_LABELS[a.logKey] = a.displayName || a.label || 'Claude Code';
+    // Product name only. Tabs sit in a horizontal strip, so an email on every
+    // one of them costs width that isn't there — and with a single account per
+    // product there is nothing to disambiguate. The account is appended below,
+    // but only where it's actually needed.
+    ACCOUNT_LABELS[a.logKey] = 'Claude Code';
     PLAN_MULTIPLIERS[a.logKey] = CLAUDE_CODE_MULTIPLIER;
+  }
+
+  // Two Claude Code accounts would now both read "Claude Code". Append each
+  // one's account only in that case, so the common single-account layout stays
+  // narrow and the ambiguous one stays readable. `detail` is the email once the
+  // OAuth profile resolves and the config directory's own name until then,
+  // disambiguated by accounts.js if even those collide.
+  const nameCounts = new Map();
+  for (const key of VALID_ACCOUNTS) {
+    const name = ACCOUNT_LABELS[key];
+    nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+  }
+  for (const a of accts) {
+    if (nameCounts.get(ACCOUNT_LABELS[a.logKey]) > 1) {
+      ACCOUNT_LABELS[a.logKey] = 'Claude Code — ' + (a.detail || a.label || a.id);
+    }
   }
 
   // currentAccount's initializer ran before the registry was known —
