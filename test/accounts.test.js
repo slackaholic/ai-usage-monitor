@@ -265,6 +265,35 @@ test('two config dirs sharing a basename get distinct ids AND distinct log keys'
   assert.ok(accts[1].id.startsWith('cc-claude-work-'), accts[1].id);
 });
 
+test('two config dirs sharing a basename also get distinct display names', () => {
+  // The id and log key were already disambiguated, so no DATA was ever
+  // misattributed — but both rows still READ the same, which is how a plan
+  // price or a multiplier gets typed against the wrong account. The human-facing
+  // half of the collision matters as much as the machine-facing half.
+  const accts = groupIntoAccounts([WORK_A, WORK_B], { homeDir: HOME, knownEmails: {} });
+
+  assert.strictEqual(accts.length, 2);
+  assert.notStrictEqual(accts[0].detail, accts[1].detail, 'two accounts must never read alike');
+  assert.notStrictEqual(accts[0].displayName, accts[1].displayName);
+  // Still recognisable as that directory, just disambiguated.
+  assert.ok(accts[0].detail.startsWith('.claude-work ('), accts[0].detail);
+  assert.ok(accts[0].displayName.startsWith('Claude Code (.claude-work ('), accts[0].displayName);
+});
+
+test('detail is the email once it resolves, the config dir name until then', () => {
+  const accts = groupIntoAccounts([path.join(HOME, '.claude'), WORK_A], {
+    homeDir: HOME,
+    knownEmails: { [path.join(HOME, '.claude')]: 'me@example.com' },
+  });
+
+  assert.strictEqual(accts[0].detail, 'me@example.com');
+  assert.strictEqual(accts[0].displayName, 'me@example.com');
+  // No profile call has landed for this one yet.
+  assert.strictEqual(accts[1].label, null);
+  assert.strictEqual(accts[1].detail, '.claude-work');
+  assert.strictEqual(accts[1].displayName, 'Claude Code (.claude-work)');
+});
+
 test('a basename collision never moves the default dir off claude-vscode/claude2', () => {
   const accts = groupIntoAccounts([path.join(HOME, '.claude'), WORK_A, WORK_B], {
     homeDir: HOME, knownEmails: {},
