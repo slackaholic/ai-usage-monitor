@@ -122,6 +122,12 @@ let budgetInfo = {};
 let budgetTargets = { window: 10, day: 20 };
 const lastPct5h = { codex: null, claude: null };
 
+// Accounts whose PLAN has no 5-hour window at all — as opposed to a meter that
+// failed to arrive this poll. OpenAI removed the Codex 5-hour window on
+// 2026-07-11; Anthropic still reports both. Rewritten on every fetch, so a
+// window that comes back clears the flag on its own.
+const noFiveHourWindow = new Set();
+
 // Per-account session tracking, keyed by usage-log account key. sessionStart
 // persists in each log entry so analytics can group entries by session even
 // after an app restart. Claude Code keys are added in buildClaudeCodeCards.
@@ -569,10 +575,13 @@ function barGradient(pct) {
   return 'linear-gradient(90deg,#7f1d1d,#f87171)';
 }
 
-function setPct(id, pct) {
+// `placeholder` is what shows in place of a missing percentage. The default
+// — means "a number that belongs here is momentarily absent"; callers pass
+// 'n/a' for a meter the plan does not have at all.
+function setPct(id, pct, placeholder = '—') {
   const el = document.getElementById(id);
   if (!el) return;
-  el.textContent = pct != null ? pct + '%' : '—';
+  el.textContent = pct != null ? pct + '%' : placeholder;
   el.style.color = pctColor(pct);
 }
 
@@ -612,10 +621,10 @@ function setBar(id, pct) {
 // Render one usage stat (5h or weekly) across the full card, its bar, and the
 // compact view in one call. prefix: 'codex' | 'claude' | a Claude Code account
 // id (see accountPrefixes); win: '5h' | 'wk'.
-function renderStat(prefix, win, pct) {
-  setPct(`${prefix}-${win}-pct`, pct);
+function renderStat(prefix, win, pct, placeholder) {
+  setPct(`${prefix}-${win}-pct`, pct, placeholder);
   setBar(`${prefix}-${win}-bar`, pct);
-  setPct(`c-${prefix}-${win}`, pct);
+  setPct(`c-${prefix}-${win}`, pct, placeholder);
   // Keep the compact card in place; its value element already shows "—" for a
   // null meter (setPct). A fully-absent/errored account never reaches renderStat
   // (both-null / error early-returns in the fetchers), so no phantom cards.
@@ -632,8 +641,11 @@ function renderBudget(prefix, pct5h) {
   const ratio  = info.ratio;
   const allowance = fiveHourAllowancePct(budgetTargets.window, ratio);
 
+  // Nothing to mark on a bar that measures a window the plan does not have.
+  const no5h = noFiveHourWindow.has(prefix);
+
   if (marker) {
-    if (allowance != null) {
+    if (allowance != null && !no5h) {
       marker.style.left = (100 - allowance) + '%';
       marker.style.display = '';
     } else {
@@ -641,6 +653,13 @@ function renderBudget(prefix, pct5h) {
     }
   }
   if (!note) return;
+  // "need more history" would be a lie here: the ratio is 5h-burn per
+  // weekly-burn, and with no 5h window no amount of waiting can measure it.
+  if (no5h) {
+    note.textContent = 'budget: plan has no 5h window — weekly only';
+    note.className = 'budget-note';
+    return;
+  }
   if (!(ratio > 0) || pct == null) {
     note.textContent = info.tierChangedAt
       ? 'budget: need more history since tier change'
@@ -1159,6 +1178,39 @@ async function fetchClaudeCodeUsage(acct) {
 }
 
 // ── Codex ──────────────────────────────────────────────────────────────────
+// OpenAI reports each rate-limit window's own length in `limit_window_seconds`
+// (18000 = 5 hours, 604800 = weekly). Split at a day: shorter is a session
+// window, longer is a weekly one.
+//
+// Matching on the declared length rather than on the window's POSITION in the
+// response is what keeps this honest. When OpenAI dropped the Codex 5-hour
+// window on 2026-07-11, the weekly window moved into `primary_window` and
+// `secondary_window` vanished — and the old position-based parse relabelled six
+// weeks of weekly figures as 5-hour ones without a single error.
+const CODEX_WINDOW_SPLIT_SECONDS = 24 * 3600;
+// Slack for the reset-distance fallback: a 5-hour window cannot reset more than
+// 5 hours out, but the server's clock and ours are not the same clock.
+const CODEX_5H_RESET_SLACK_MS = 6 * 3_600_000;
+// The page's own 5-hour heading. Its absence is the scraped equivalent of a
+// missing 5h window, and is why `has5h` can be answered from text too.
+const CODEX_5H_LABEL = '5 hour usage limit';
+
+// Which slot a rate-limit window belongs in: '5h', 'wk', or null when the
+// window declares nothing we can judge it by. `now` is a parameter so this
+// never reads the clock behind a test's back.
+function classifyCodexWindow(w, now) {
+  if (!w || typeof w !== 'object') return null;
+  const secs = w.limit_window_seconds;
+  if (typeof secs === 'number' && secs > 0) {
+    return secs <= CODEX_WINDOW_SPLIT_SECONDS ? '5h' : 'wk';
+  }
+  // Undeclared length — judge it by how far away the reset is instead.
+  if (typeof w.reset_at === 'number' && Number.isFinite(now)) {
+    return (w.reset_at * 1000 - now) <= CODEX_5H_RESET_SLACK_MS ? '5h' : 'wk';
+  }
+  return null;
+}
+
 function parseCodexText(text) {
   function pct(label) {
     const m = text.match(new RegExp(label + '[\\s\\S]{0,300}?(\\d+)%\\s*remaining', 'i'));
@@ -1170,29 +1222,48 @@ function parseCodexText(text) {
   }
   const creditsM = text.match(/credits remaining[\s\S]{0,100}?(\d[\d,]*)/i);
   return {
-    shared5h:        pct('5 hour usage limit'),
-    shared5hReset:   resetTime('5 hour usage limit'),
+    shared5h:        pct(CODEX_5H_LABEL),
+    shared5hReset:   resetTime(CODEX_5H_LABEL),
     sharedWeek:      pct('Weekly usage limit'),
     sharedWeekReset: resetTime('Weekly usage limit'),
+    // Agrees with the API path so a fallback poll can't flip the 5h tile
+    // between 'n/a' and '—'. An empty page claims nothing, and the both-null
+    // guard in fetchCodexUsage stops it reaching the render.
+    has5h:           new RegExp(CODEX_5H_LABEL, 'i').test(text),
     credits:         creditsM ? creditsM[1] : null,
   };
 }
 
-// Structured Codex usage from /backend-api/codex/usage.
-// rate_limit.primary_window = 5h (limit_window_seconds 18000),
-// secondary_window = weekly (604800). used_percent is % USED; reset_at is Unix seconds.
-function parseCodexApiUsage(data) {
+// Structured Codex usage from /backend-api/codex/usage. `used_percent` is
+// % USED; `reset_at` is Unix seconds. At most two windows arrive, keyed by
+// position — classifyCodexWindow decides what each one actually is, and the
+// historic position is used only for a window that declares neither a length
+// nor a reset.
+function parseCodexApiUsage(data, now = Date.now()) {
   const rl = data && data.rate_limit;
   if (!rl) return null;
-  const pw = rl.primary_window || {};
-  const sw = rl.secondary_window || {};
-  const remain  = (w) => (typeof w.used_percent === 'number') ? Math.max(0, 100 - w.used_percent) : null;
-  const resetMs = (w) => (w.reset_at) ? w.reset_at * 1000 : 0;
+
+  const slot = { '5h': null, wk: null };
+  for (const [position, w] of [['5h', rl.primary_window], ['wk', rl.secondary_window]]) {
+    if (!w || typeof w !== 'object') continue;
+    const target = classifyCodexWindow(w, now) || position;
+    // First window to claim a slot keeps it: a response that somehow yields two
+    // windows of the same length loses the second rather than overwriting a
+    // reading that is already good.
+    if (!slot[target]) slot[target] = w;
+  }
+
+  const remain  = (w) => (w && typeof w.used_percent === 'number') ? Math.max(0, 100 - w.used_percent) : null;
+  const resetMs = (w) => (w && w.reset_at) ? w.reset_at * 1000 : 0;
   return {
-    shared5h:   remain(pw),
-    sharedWeek: remain(sw),
-    reset5hMs:  resetMs(pw),
-    reset7dMs:  resetMs(sw),
+    shared5h:   remain(slot['5h']),
+    sharedWeek: remain(slot.wk),
+    reset5hMs:  resetMs(slot['5h']),
+    reset7dMs:  resetMs(slot.wk),
+    // Whether the plan HAS a 5-hour window at all — something `shared5h ===
+    // null` cannot express. "No such window" and "momentarily missing" render
+    // differently ('n/a' vs '—').
+    has5h:      slot['5h'] !== null,
     credits:    (data.credits && data.credits.balance != null) ? data.credits.balance : null,
     email:      data.email || null,
   };
@@ -1201,10 +1272,17 @@ function parseCodexApiUsage(data) {
 function renderCodexData(parsed, stale = false) {
   if (!stale) applyAccountLabel('codex', parsed.email);
 
-  renderStat('codex', '5h', parsed.shared5h);
+  // A plan with no 5-hour window reads 'n/a', not —: the tile is not waiting
+  // for a number, there is no such number. A cache written before this flag
+  // existed has has5h undefined, so only an explicit false counts — the next
+  // live poll settles it either way.
+  const no5h = parsed.has5h === false;
+  if (no5h) noFiveHourWindow.add('codex'); else noFiveHourWindow.delete('codex');
+
+  renderStat('codex', '5h', parsed.shared5h, no5h ? 'n/a' : undefined);
   renderStat('codex', 'wk', parsed.sharedWeek);
   renderBudget('codex', parsed.shared5h);
-  setText('codex-5h-reset', parsed.reset5hMs > 0 ? fmtResetIn(parsed.reset5hMs) : (parsed.shared5hReset ? 'Resets ' + parsed.shared5hReset : ''));
+  setText('codex-5h-reset', no5h ? '' : (parsed.reset5hMs > 0 ? fmtResetIn(parsed.reset5hMs) : (parsed.shared5hReset ? 'Resets ' + parsed.shared5hReset : '')));
   setText('codex-wk-reset', parsed.reset7dMs > 0 ? fmtResetOn(parsed.reset7dMs) : (parsed.sharedWeekReset ? 'Resets ' + parsed.sharedWeekReset : ''));
   setText('codex-credits', parsed.credits);
 
@@ -1215,7 +1293,10 @@ function renderCodexData(parsed, stale = false) {
     const fhReset = parsed.reset5hMs > 0 ? parsed.reset5hMs : parseResetToMs(parsed.shared5hReset);
     const wkReset = parsed.reset7dMs > 0 ? parsed.reset7dMs : parseResetToMs(parsed.sharedWeekReset);
     const entry = buildUsageEntry('codex', parsed.shared5h, parsed.sharedWeek, fhReset, wkReset);
-    const cxSession = trackSession('codex', parsed.shared5h);
+    // A "session" IS a 5-hour window. With no such window there is nothing to
+    // track, and carrying the last one forward would freeze the session count
+    // at whatever it happened to be the day the window disappeared.
+    const cxSession = no5h ? null : trackSession('codex', parsed.shared5h);
     if (cxSession) entry.sessionStart = cxSession;
     window.electronAPI.appendUsageLog(entry);
   }
