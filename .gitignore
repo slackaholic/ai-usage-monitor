@@ -8,3 +8,4 @@ codex-api-debug.json
 claude-login-debug.json
 *.lnk
 claude-borrow-debug.json
+usage-log.jsonl.bak-*
