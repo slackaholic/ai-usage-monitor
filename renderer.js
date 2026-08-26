@@ -1177,7 +1177,7 @@ async function fetchClaudeCodeUsage(acct) {
   refreshClaudeCodeEmail(acct).catch(e => console.error('claude code email refresh:', e));
 }
 
-// ── Codex ─────────────────────────────────────────────────────
+// ── Codex ──────────────────────────────────────────────────────────────────
 // OpenAI reports each rate-limit window's own length in `limit_window_seconds`
 // (18000 = 5 hours, 604800 = weekly). Split at a day: shorter is a session
 // window, longer is a weekly one.
