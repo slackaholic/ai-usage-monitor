@@ -33,6 +33,27 @@ function loadParsers() {
   return context;
 }
 
+// Slices the registration block. It touches only module-level objects, so the
+// stub context needs no DOM. The block declares its registries with `const`,
+// and a `const` in a vm script is not a property of the context, so a second
+// script copies them across; that same copy fails loudly (ReferenceError) if a
+// registry is ever declared outside the block, which is what the slice depends
+// on.
+function loadRegistration() {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+  const start = source.indexOf('// ── REGISTRATION ──');
+  const end = source.indexOf('// ── REGISTRATION END ──');
+  assert.ok(start >= 0 && end > start, 'expected registration source markers');
+  const context = { console, Object, Array, Set, Map };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  vm.runInContext(
+    'Object.assign(globalThis, { accountOverrides, hasData, cachedData, ' +
+    'trendHistory, LOG_ACCOUNT, lastPct5h, registry, PROVIDERS });',
+    context);
+  return context;
+}
+
 const NOW = Date.parse('2026-10-07T09:00:00Z');
 const HOUR = 3_600_000;
 
@@ -225,4 +246,74 @@ test('claude code reports a missing weekly header as no window, not a gap', () =
   const r = normaliseClaudeCodeReading({ pct5h: 55, pct7d: null, hasWk: false });
   assert.strictEqual(r.pctWk, null);
   assert.strictEqual(r.hasWk, false);
+});
+
+test('registering an account seeds every registry it needs', () => {
+  const c = loadRegistration();
+  c.registerAccount({ id: 'gemini', logKey: 'gemini', label: 'Gemini' });
+
+  assert.strictEqual(c.hasData.gemini, false);
+  assert.strictEqual(c.cachedData.gemini, null);
+  assert.strictEqual(c.lastPct5h.gemini, null);
+  assert.strictEqual(c.accountOverrides.gemini, '');
+  assert.strictEqual(c.LOG_ACCOUNT.gemini, 'gemini');
+  // The series were built inside the vm context, so their prototype is that
+  // realm's Array.prototype; spreading re-homes them for deepStrictEqual.
+  assert.deepStrictEqual([...c.trendHistory['gemini-5h']], []);
+  assert.deepStrictEqual([...c.trendHistory['gemini-wk']], []);
+  assert.deepStrictEqual(c.registry.gemini.start, null);
+});
+
+// The session store is keyed by logKey, every other registry by id. Conflating
+// them would detach 7,000 log entries.
+test('the session store is keyed by logKey while the rest key by id', () => {
+  const c = loadRegistration();
+  c.registerAccount({ id: 'claude2', logKey: 'claude-vscode', label: 'Claude Code' });
+  assert.ok('claude-vscode' in c.registry, 'session store keys by logKey');
+  assert.ok(!('claude2' in c.registry), 'and never by id');
+  assert.ok('claude2' in c.hasData, 'display registries key by id');
+  // The bridge between the namespaces, and the negative half of the split. With
+  // id === logKey (every other test here) these cannot be told apart.
+  assert.strictEqual(c.LOG_ACCOUNT.claude2, 'claude-vscode', 'LOG_ACCOUNT maps id to logKey');
+  assert.ok(!('claude-vscode' in c.hasData), 'display registries never key by logKey');
+});
+
+test('re-registering an account preserves the data it already has', () => {
+  const c = loadRegistration();
+  c.registerAccount({ id: 'codex', logKey: 'codex', label: 'Codex' });
+  c.hasData.codex = true;
+  c.trendHistory['codex-wk'].push(90);
+  // The registries the brief's own two assertions leave unwatched. Each is
+  // state a card rebuild would silently blank if registration reset it.
+  c.cachedData.codex = { pctWk: 90 };
+  c.lastPct5h.codex = 42;
+  c.accountOverrides.codex = 'Work';
+  c.trendHistory['codex-5h'].push(55);
+  c.registry.codex.start = '2026-10-07T08:00:00.000Z';
+  c.registry.codex.lastPct = 42;
+
+  c.registerAccount({ id: 'codex', logKey: 'codex', label: 'Codex' });
+
+  assert.strictEqual(c.hasData.codex, true, 'a rescan must not blank live state');
+  assert.deepStrictEqual([...c.trendHistory['codex-wk']], [90]);
+  assert.deepStrictEqual([...c.trendHistory['codex-5h']], [55]);
+  assert.strictEqual(c.cachedData.codex.pctWk, 90);
+  assert.strictEqual(c.lastPct5h.codex, 42);
+  assert.strictEqual(c.accountOverrides.codex, 'Work');
+  assert.strictEqual(c.registry.codex.start, '2026-10-07T08:00:00.000Z');
+  assert.strictEqual(c.registry.codex.lastPct, 42);
+});
+
+test('the fixed providers are registered with their immutable log keys', () => {
+  const c = loadRegistration();
+  const byId = Object.fromEntries(c.PROVIDERS.map(p => [p.id, p.logKey]));
+  assert.strictEqual(byId.codex, 'codex');
+  assert.strictEqual(byId.claude, 'claude-desktop');
+
+  // And they are already registered when the module finishes loading: init()
+  // reads these registries before it could have populated them.
+  assert.deepStrictEqual(Object.keys(c.hasData), ['codex', 'claude']);
+  assert.strictEqual(c.LOG_ACCOUNT.codex, 'codex');
+  assert.strictEqual(c.LOG_ACCOUNT.claude, 'claude-desktop');
+  assert.deepStrictEqual(Object.keys(c.registry), ['codex', 'claude-desktop']);
 });

@@ -232,7 +232,7 @@ function groupIntoAccounts(dirs, { homeDir, defaultDir, knownEmails = {} } = {})
 // by realpath, so both survive the scan as separate accounts. The duplicate id
 // collides in the DOM; the duplicate log key is far worse, interleaving two
 // accounts' entries under one key in usage-log.jsonl and silently corrupting the
-// budget ratio, session tracking (`_ss`) and every analytics figure for both.
+// budget ratio, session tracking (`registry`) and every analytics figure for both.
 //
 // BOTH members of a colliding group get the suffix, not just the later one: the
 // resulting key is then a pure function of that directory's own full path, so it

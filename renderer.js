@@ -1,7 +1,72 @@
+// ── REGISTRATION ───────────────────────────────────────────────────────────
+// Seven registries have to learn about every account. Codex and Claude
+// Desktop used to hardcode their slots in literals scattered through the top
+// of this file while Claude Code seeded its own in a loop, so adding a
+// provider meant remembering seven separate places, and forgetting one
+// produced a card that looked fine until something downstream read an
+// undefined slot. They are declared together here, beside the one function
+// that fills them.
+//
+// Two key namespaces, and they are not interchangeable. `registry` (the
+// session store) is keyed by logKey; every other registry is keyed by
+// descriptor id. logKey addresses 7,000+ usage-log entries and must never
+// change; id addresses DOM elements. LOG_ACCOUNT maps one to the other.
+
+// Account label overrides, keyed by render prefix (descriptor id).
+const accountOverrides = {};
+
+// Whether each account has ever returned real data.
+const hasData = {};
+
+// Last-known value per account, shown immediately on startup while the live
+// fetch runs.
+const cachedData = {};
+
+// Two series per account: '<id>-5h' and '<id>-wk'.
+const trendHistory = {};
+
+// Render prefix -> usage-log account key.
+const LOG_ACCOUNT = {};
+
+// Latest 5h remaining % per account, so renderBudget can repaint between
+// fetches.
+const lastPct5h = {};
+
+// Per-account session tracking, keyed by usage-log account key. sessionStart
+// persists in each log entry so analytics can group entries by session even
+// after an app restart.
+const registry = {};
+
+// Idempotent: buildClaudeCodeCards calls this on every card rebuild, and a
+// rebuild must never blank state an account already has.
+function registerAccount(acct) {
+  if (!(acct.id in hasData))          hasData[acct.id] = false;
+  if (!(acct.id in cachedData))       cachedData[acct.id] = null;
+  if (!(acct.id in lastPct5h))        lastPct5h[acct.id] = null;
+  if (!(acct.id in accountOverrides)) accountOverrides[acct.id] = '';
+  LOG_ACCOUNT[acct.id] = acct.logKey;
+  trendHistory[acct.id + '-5h'] = trendHistory[acct.id + '-5h'] || [];
+  trendHistory[acct.id + '-wk'] = trendHistory[acct.id + '-wk'] || [];
+  registry[acct.logKey] = registry[acct.logKey] || { start: null, lastPct: null };
+}
+
+// The providers that are always present: { id, logKey, label }. Claude Code
+// accounts are discovered at runtime and registered by buildClaudeCodeCards.
+const PROVIDERS = [
+  { id: 'codex',  logKey: 'codex',          label: 'Codex' },
+  { id: 'claude', logKey: 'claude-desktop', label: 'Claude Desktop' },
+];
+
+// At module level, not in init(): init() consults these registries before any
+// of its own statements could have filled them (applyClaudeCardSettings reads
+// accountPrefixes, loadCachedStaticData reaches renderBudget), and
+// registration order is the order accountPrefixes() reports.
+PROVIDERS.forEach(registerAccount);
+// ── REGISTRATION END ──
+
 // ── Account label overrides ────────────────────────────────────────────────
-// Keyed by render prefix. Codex and Claude Desktop are fixed; one key per
-// Claude Code account is added by buildClaudeCodeCards.
-const accountOverrides = { codex: '', claude: '' };
+// The overrides live in `accountOverrides`, declared with the other
+// per-account registries in REGISTRATION at the top of this file.
 
 function applyAccountLabel(key, autoValue) {
   const override = accountOverrides[key];
@@ -48,11 +113,9 @@ let codexRetryTimer   = null;
 let refreshIntervalIds = [];
 let refreshSeconds = 120;
 
-// Track whether each account has ever returned real data
-const hasData = { codex: false, claude: false };
-
-// Last-known cache (shown immediately on startup while live fetch runs)
-const cachedData = { codex: null, claude: null };
+// Persists one account's last-known value. `cachedData` (declared in
+// REGISTRATION) is what gets shown immediately on startup while the live fetch
+// runs.
 function saveCachedData(key, parsed) {
   cachedData[key] = parsed;
   window.electronAPI.saveSettings({ lastKnown: { ...cachedData } });
@@ -64,20 +127,18 @@ function saveCachedData(key, parsed) {
 let claudeAccounts = [];
 const claudeRetryTimers = {};   // account id -> retry timer
 
-// Every render prefix currently on screen. Codex and Claude Desktop are always
-// present; the Claude Code half is however many accounts were discovered.
+// Every render prefix registered so far, derived from what was actually
+// registered rather than from a literal. A literal is how the August rebuild
+// path came to be unreachable: a provider added in one place and forgotten in
+// another. A rescan that drops a Claude Code account does not unregister it,
+// so its prefix stays listed; every consumer reaches the DOM through a
+// null-checked lookup, so a prefix with no card is a no-op.
 function accountPrefixes() {
-  return ['codex', 'claude', ...claudeAccounts.map(a => a.id)];
+  return Object.keys(hasData);
 }
 
 // ── Trend history ──────────────────────────────────────────────────────────
-// Two series per prefix. Claude Code accounts add theirs in buildClaudeCodeCards.
-const trendHistory = {
-  'codex-5h':   [],
-  'codex-wk':   [],
-  'claude-5h':  [],
-  'claude-wk':  [],
-};
+// The series live in `trendHistory`, declared in REGISTRATION.
 
 function pushTrend(key, value) {
   if (value == null) return;
@@ -114,13 +175,8 @@ function applyTrendDisplay(key, delta) {
 }
 
 // ── Analytics / sparkline ──────────────────────────────────────────────────
-// Render prefix -> usage-log account key. Claude Code accounts are added from
-// their descriptors' logKey in buildClaudeCodeCards.
-const LOG_ACCOUNT = { codex: 'codex', claude: 'claude-desktop' };
-
 let budgetInfo = {};
 let budgetTargets = { window: 10, day: 20 };
-const lastPct5h = { codex: null, claude: null };
 
 // Accounts whose PLAN has no 5-hour window at all — as opposed to a meter that
 // failed to arrive this poll. OpenAI removed the Codex 5-hour window on
@@ -128,18 +184,11 @@ const lastPct5h = { codex: null, claude: null };
 // window that comes back clears the flag on its own.
 const noFiveHourWindow = new Set();
 
-// Per-account session tracking, keyed by usage-log account key. sessionStart
-// persists in each log entry so analytics can group entries by session even
-// after an app restart. Claude Code keys are added in buildClaudeCodeCards.
-const _ss = {
-  'claude-desktop': { start: null, lastPct: null },
-  'codex':          { start: null, lastPct: null },
-};
-
-// Update session state for scraped accounts (Codex, Claude Desktop).
+// Update session state for scraped accounts (Codex, Claude Desktop). `account`
+// is a usage-log key, the session store's own namespace (see REGISTRATION).
 // Returns the current sessionStart ISO string.
 function trackSession(account, pct5h) {
-  const s = _ss[account];
+  const s = registry[account];
   if (s.lastPct !== null && pct5h != null && pct5h - s.lastPct > 15) {
     s.start = new Date().toISOString(); // quota jumped up → new 5H window
   }
@@ -1073,14 +1122,7 @@ async function buildClaudeCodeCards() {
     stampCompactIds(compact, acct.id);       // stat containers
     compactHost.appendChild(compact);
 
-    if (!(acct.id in hasData))         hasData[acct.id] = false;
-    if (!(acct.id in cachedData))      cachedData[acct.id] = null;
-    if (!(acct.id in lastPct5h))       lastPct5h[acct.id] = null;
-    if (!(acct.id in accountOverrides)) accountOverrides[acct.id] = '';
-    LOG_ACCOUNT[acct.id] = acct.logKey;
-    trendHistory[acct.id + '-5h'] = trendHistory[acct.id + '-5h'] || [];
-    trendHistory[acct.id + '-wk'] = trendHistory[acct.id + '-wk'] || [];
-    _ss[acct.logKey] = _ss[acct.logKey] || { start: null, lastPct: null };
+    registerAccount(acct);
 
     // Handlers the template cannot carry, because each needs its own account.
     const section = document.getElementById(acct.id + '-section');
@@ -1130,8 +1172,8 @@ function renderClaudeCodeApiData(acct, data, stale = false) {
     if (data.reset5hMs > 0) {
       const vsSession = new Date(data.reset5hMs - 5 * 3_600_000).toISOString();
       entry.sessionStart = vsSession;
-      _ss[acct.logKey].start   = vsSession;
-      _ss[acct.logKey].lastPct = data.pct5h;
+      registry[acct.logKey].start   = vsSession;
+      registry[acct.logKey].lastPct = data.pct5h;
     } else {
       const vsSession = trackSession(acct.logKey, data.pct5h);
       if (vsSession) entry.sessionStart = vsSession;
