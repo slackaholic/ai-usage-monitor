@@ -354,6 +354,49 @@ test('a legacy claude code cache reads through pct7d', () => {
   assert.strictEqual(r.label, 'max 20x');
 });
 
+// Precedence, not just coverage. Every legacy key is a fallback for the new
+// one, so when both are present the new key must win. This is not a purely
+// theoretical case: a cache written by the new code and then touched by an
+// older build can carry both, and the order of the `??` chains is the only
+// thing deciding which figure the startup render shows. One field per chain,
+// each key given a distinct value so a swap shows up as the wrong number.
+test('a new-shape key beats the legacy key it replaces', () => {
+  const { normaliseCachedReading } = loadParsers();
+  const r = normaliseCachedReading({
+    pct5h: 10, shared5h: 99, sessionUsed: 1,
+    pctWk: 20, sharedWeek: 88, pct7d: 77, weeklyUsed: 2,
+    reset5hMs: 1, sessionResetMs: 2,
+    resetWkMs: 3, reset7dMs: 4, weeklyResetMs: 5,
+    label: 'new@example.com', email: 'old@example.com', account: 'max 20x',
+    extra: { credits: '1' }, credits: '2',
+  });
+  assert.strictEqual(r.pct5h, 10);
+  assert.strictEqual(r.pctWk, 20);
+  assert.strictEqual(r.reset5hMs, 1);
+  assert.strictEqual(r.resetWkMs, 3);
+  assert.strictEqual(r.label, 'new@example.com');
+  assert.deepStrictEqual({ ...r.extra }, { credits: '1' });
+});
+
+test('legacy keys keep their own order among themselves', () => {
+  const { normaliseCachedReading } = loadParsers();
+  // No new-shape keys at all: the older of two legacy spellings must not
+  // outrank the newer one by accident of how the chain was written.
+  const r = normaliseCachedReading({
+    shared5h: 64, sessionUsed: 1,
+    sharedWeek: 88, pct7d: 77, weeklyUsed: 2,
+    sessionResetMs: 2, reset7dMs: 4, weeklyResetMs: 5,
+    email: 'old@example.com', account: 'max 20x',
+    credits: '2',
+  });
+  assert.strictEqual(r.pct5h, 64);
+  assert.strictEqual(r.pctWk, 88);
+  assert.strictEqual(r.reset5hMs, 2);
+  assert.strictEqual(r.resetWkMs, 4);
+  assert.strictEqual(r.label, 'old@example.com');
+  assert.deepStrictEqual({ ...r.extra }, { credits: '2' });
+});
+
 // A cache cannot support the claim "this plan has no 5h window". Only a live
 // poll can. Rendering n/a from a stale cache would assert something the data
 // does not know.

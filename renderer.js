@@ -56,8 +56,9 @@ function registerAccount(acct) {
 // render path calls it instead of branching on the id, on every render, with
 // `extra` null when the reading carries none — so the hook clears its display
 // rather than leaving the last value up as if it were current. Claude Code
-// accounts are discovered at runtime and registered by buildClaudeCodeCards,
-// which also sets exactSessionFromReset on each.
+// accounts are discovered at runtime and registered by buildClaudeCodeCards;
+// their descriptors come from accounts.js already carrying
+// exactSessionFromReset, which the shared render path reads the same way.
 const PROVIDERS = [
   { id: 'codex', logKey: 'codex', label: 'Codex',
     renderExtra: (_acct, extra) => setText('codex-credits', extra?.credits) },
@@ -1131,8 +1132,6 @@ async function buildClaudeCodeCards() {
     stampCompactIds(compact, acct.id);       // stat containers
     compactHost.appendChild(compact);
 
-    // Claude Code's 5h reset header is the exact end of the window.
-    acct.exactSessionFromReset = true;
     registerAccount(acct);
 
     // Handlers the template cannot carry, because each needs its own account.

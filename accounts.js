@@ -210,6 +210,11 @@ function groupIntoAccounts(dirs, { homeDir, defaultDir, knownEmails = {} } = {})
     const descriptor = {
       id: accountIdFor(dir, def),
       kind: 'claude-code',
+      // Claude Code's 5h reset header is the exact END of the window, so a
+      // session started five hours before it; providers without one infer the
+      // start from a quota jump. A fact about what the account is, declared here
+      // with the rest of it because the render path reads it off the descriptor.
+      exactSessionFromReset: true,
       configDir: dir,
       configDirs: [dir],
       logKey: logKeyFor(dir, def),

@@ -28,6 +28,7 @@ function loadRenderer() {
   const budgets = [];
   const saved = [];
   const shown = [];
+  const trackCalls = [];
   let resizes = 0;
   const context = {
     document: { getElementById: (id) => el(id) },
@@ -44,7 +45,9 @@ function loadRenderer() {
     pushTrend: (k, v) => trends.push([k, v]),
     saveCachedData: (id, r) => saved.push([id, r]),
     buildUsageEntry: (account, p5, pw, r5, rw) => ({ account, '5h': p5, wk: pw, r5, rw }),
-    trackSession: () => '2026-10-07T00:00:00.000Z',
+    // Records what it was asked, so a test can tell which key the render path
+    // sessions a reading under (the log key, never the descriptor id).
+    trackSession: (key, pct) => { trackCalls.push([key, pct]); return '2026-10-07T00:00:00.000Z'; },
     showSection: (id, v) => shown.push([id, v]),
     resizeToFit: () => { resizes++; },
     noFiveHourWindow: new Set(),
@@ -55,7 +58,7 @@ function loadRenderer() {
   };
   vm.createContext(context);
   vm.runInContext(source.slice(start, end), context);
-  return { ...context, el, logged, trends, labels, budgets, saved, shown,
+  return { ...context, el, logged, trends, labels, budgets, saved, shown, trackCalls,
            resizeCount: () => resizes };
 }
 
@@ -104,6 +107,10 @@ test('the usage log is written against logKey, never the descriptor id', () => {
   assert.strictEqual(c.logged[0].account, 'claude-vscode');
   assert.strictEqual(c.logged[0]['5h'], 55);
   assert.strictEqual(c.logged[0].wk, 86);
+  // The session store is keyed the same way: trackSession(acct.logKey, ...),
+  // not trackSession(acct.id, ...). Both keys exist in the harness's store, so
+  // only the recorded call tells them apart.
+  assert.deepStrictEqual([...c.trackCalls.map((call) => [...call])], [['claude-vscode', 55]]);
 });
 
 test('a stale render paints but never writes', () => {

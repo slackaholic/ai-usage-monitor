@@ -165,7 +165,9 @@ test('applyAccountDetails reads the fixed accounts\' emails out of what a poll p
     { lastKnown: persistLastKnown({
       codex: { pctWk: 86, label: 'dev@example.com' },
       claude: { pct5h: 64, pctWk: 87, label: 'me@example.com' },
-      claude2: { pct5h: 55, pctWk: 86, label: 'cached@example.com' },
+      // The label a Claude Code poll really persists: the plan name main.js
+      // builds from the credentials' rateLimitTier, never an email.
+      claude2: { pct5h: 55, pctWk: 86, label: 'max 20x' },
     }) },
   );
 
@@ -173,9 +175,26 @@ test('applyAccountDetails reads the fixed accounts\' emails out of what a poll p
 
   assert.strictEqual(els[0].textContent, 'dev@example.com');
   assert.strictEqual(els[1].textContent, 'me@example.com');
-  // The registry descriptor's own detail wins for a Claude Code row, even over
-  // an email its cached slot happens to hold.
+  // A Claude Code row shows the descriptor's own detail; its cached slot only
+  // holds a plan name, which is not an identity and is never shown.
   assert.strictEqual(els[2].textContent, 'me@example.com');
+});
+
+// Nothing a real poll writes puts an email into a Claude Code slot, so the
+// fixture above cannot exercise this. The precedence is still the contract: the
+// descriptor knows which account the row is for, a cached slot only remembers
+// the last poll. Hand-written, as the older-shape test below is.
+test('applyAccountDetails lets the descriptor detail win over whatever its slot holds', () => {
+  const { els, document } = fakeDetailRows(['claude2']);
+  const applyAccountDetails = loadApplyAccountDetails(
+    document,
+    [{ logKey: 'claude-vscode', id: 'claude2', label: 'Claude Code', detail: 'me@example.com' }],
+    { lastKnown: { claude2: { email: 'stale@example.com', label: 'other@example.com' } } },
+  );
+
+  applyAccountDetails();
+
+  assert.strictEqual(els[0].textContent, 'me@example.com');
 });
 
 // settings.json is not rewritten until the next poll, so on the first run after
