@@ -111,6 +111,28 @@ test('claude scraped text also emits remaining', () => {
   assert.strictEqual(r.pctWk, 85);
 });
 
+// metrics.js:44 clamps to [0,100] for DISPLAY; the reading itself stays raw.
+// test/rate-limit-headers.test.js pins this for the Claude Code header path
+// ("over-quota stays negative — that is a real reading, not a sentinel").
+// These two cover the Claude Desktop paths, which had no such test and so did
+// not catch a clamp being introduced at the parse boundary.
+test('claude org usage keeps an over-quota reading negative', () => {
+  const { parseClaudeOrgUsage } = loadParsers();
+  const r = parseClaudeOrgUsage({
+    five_hour: { utilization: 102 },
+    seven_day: { utilization: 110 },
+  });
+  assert.strictEqual(r.pct5h, -2);
+  assert.strictEqual(r.pctWk, -10);
+});
+
+test('claude scraped text keeps an over-quota reading negative', () => {
+  const { parseClaudeWebText } = loadParsers();
+  const r = parseClaudeWebText('Current session\n102% used\nWeekly\n110% used');
+  assert.strictEqual(r.pct5h, -2);
+  assert.strictEqual(r.pctWk, -10);
+});
+
 test('claude code headers pass through as remaining', () => {
   const { normaliseClaudeCodeReading } = loadParsers();
   const r = normaliseClaudeCodeReading({

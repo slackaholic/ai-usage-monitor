@@ -840,7 +840,9 @@ function parseClaudeOrgUsage(data) {
   const fh = data?.five_hour;
   const sd = data?.seven_day;
   const ms = (iso) => (iso && !isNaN(new Date(iso))) ? new Date(iso).getTime() : 0;
-  const remain = (u) => (typeof u === 'number') ? Math.max(0, 100 - u) : null;
+  // Deliberately unclamped: over-quota (utilization > 100) is a real reading and
+  // stays negative in the data. metrics.js clamps to [0,100] for display.
+  const remain = (u) => (typeof u === 'number') ? 100 - u : null;
   return makeReading({
     pct5h:     remain(fh?.utilization),
     pctWk:     remain(sd?.utilization),
@@ -868,7 +870,9 @@ function parseClaudeWebText(text) {
   const weeklyRemaining  = pctRemaining(WEEKLY_RE);
 
   const used = (u, r) => (u != null ? u : (r != null ? 100 - r : null));
-  const remain = (v) => (v != null ? Math.max(0, 100 - v) : null);
+  // Unclamped for the same reason as parseClaudeOrgUsage: raw over-quota stays
+  // negative; only display and metrics clamp.
+  const remain = (v) => (v != null ? 100 - v : null);
   return makeReading({
     pct5h: remain(used(sessionUsed, sessionRemaining)),
     pctWk: remain(used(weeklyUsed, weeklyRemaining)),
