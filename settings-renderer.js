@@ -116,9 +116,16 @@ function buildAccountRows() {
 // Claude Code accounts carry theirs on the descriptor. Codex and Claude Desktop
 // do not go through the registry at all, but the monitor window already
 // resolves their emails as a side effect of each usage fetch and saveCachedData
-// persists them under `lastKnown.<id>.email` — so the value is on disk, it was
-// simply never read here. That is why this runs after loadSettings() rather
-// than inside buildAccountRows(): at build time `lastSettings` is still empty.
+// persists them in `lastKnown.<id>` — so the value is on disk, it was simply
+// never read here. That is why this runs after loadSettings() rather than
+// inside buildAccountRows(): at build time `lastSettings` is still empty.
+//
+// The slot holds whichever shape wrote it. The current code persists a reading,
+// whose account is `label`; a settings.json written before that still has
+// `email`, and survives until the next poll rewrites it. Both are read, as
+// normaliseCachedReading does in renderer.js. `label` is only trusted when it
+// looks like an email: Claude Code puts its plan name there ('max 20x'), and a
+// plan is not an account identity.
 //
 // Falls back to the row's own heading rather than leaving a blank line, so a
 // first run with no cached usage yet doesn't render a stray empty row.
@@ -129,7 +136,9 @@ function applyAccountDetails() {
   for (const { id, detail } of ACCOUNT_PAIRS) {
     const el = byId.get(id);
     if (!el) continue;
-    const email = (known[id] && known[id].email) || null;
+    const slot = known[id] || {};
+    const labelEmail = (typeof slot.label === 'string' && slot.label.includes('@')) ? slot.label : null;
+    const email = slot.email || labelEmail;
     // Describes the app's state, not the user's: they may well be signed in
     // and simply not polled yet on a fresh install.
     el.textContent = detail || email || 'account not detected yet';

@@ -236,6 +236,44 @@ test('a missing weekly window reads n/a and blanks its reset line', () => {
   assert.strictEqual(c.el('codex-wk-reset').textContent, '');
 });
 
+// The hook runs on every render, with a null extra when the reading has none.
+// If it only ran when there was something to show, a provider could never
+// clear what an earlier reading put up, and the stale value would sit on screen
+// looking exactly like a live one.
+test('a provider hook still runs when the reading has no extra, so it can clear', () => {
+  const c = loadRenderer();
+  const seen = [];
+  c.renderAccountData(
+    { id: 'codex', logKey: 'codex', renderExtra: (a, x) => seen.push(x) },
+    { ...READING, extra: null });
+  assert.deepStrictEqual(seen, [null]);
+});
+
+// The descriptor under test is the real one, taken from the REGISTRATION block
+// with the harness's setText wired in, so the hook that ships is the hook run.
+function loadProviders(setText) {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+  const start = source.indexOf('// ── REGISTRATION ──');
+  const end = source.indexOf('// ── REGISTRATION END ──');
+  assert.ok(start >= 0 && end > start, 'expected registration source markers');
+  const context = { console, Object, Array, Set, Map, setText };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end) + '\nglobalThis.PROVIDERS = PROVIDERS;', context);
+  return [...context.PROVIDERS];
+}
+
+test('a Codex poll with no credits clears a previously rendered balance', () => {
+  const c = loadRenderer();
+  const codex = loadProviders(c.setText).find(p => p.id === 'codex');
+
+  c.renderAccountData(codex, { ...READING, extra: { credits: 9 } });
+  assert.strictEqual(String(c.el('codex-credits').textContent), '9');
+
+  c.renderAccountData(codex, { ...READING, extra: null });
+  assert.strictEqual(c.el('codex-credits').textContent, '—',
+    'a cached 9 shown as current is worse than a dash');
+});
+
 // ── The callers of the render path ─────────────────────────────────────────
 // renderAccountData is only as good as what feeds it. The fetchers decide
 // whether a poll has data at all, and the cache loaders decide what a cold

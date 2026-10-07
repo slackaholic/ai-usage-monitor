@@ -53,12 +53,14 @@ function registerAccount(acct) {
 
 // The providers that are always present: { id, logKey, label, renderExtra? }.
 // renderExtra(acct, extra) paints a display only that provider has; the shared
-// render path calls it instead of branching on the id. Claude Code accounts are
-// discovered at runtime and registered by buildClaudeCodeCards, which also sets
-// exactSessionFromReset on each.
+// render path calls it instead of branching on the id, on every render, with
+// `extra` null when the reading carries none — so the hook clears its display
+// rather than leaving the last value up as if it were current. Claude Code
+// accounts are discovered at runtime and registered by buildClaudeCodeCards,
+// which also sets exactSessionFromReset on each.
 const PROVIDERS = [
   { id: 'codex', logKey: 'codex', label: 'Codex',
-    renderExtra: (_acct, extra) => setText('codex-credits', extra.credits) },
+    renderExtra: (_acct, extra) => setText('codex-credits', extra?.credits) },
   { id: 'claude', logKey: 'claude-desktop', label: 'Claude Desktop' },
 ];
 
@@ -1389,8 +1391,10 @@ function renderAccountData(acct, reading, stale = false) {
   }
 
   // Provider-specific display stays on the descriptor. Putting it here as
-  // `if (acct.id === 'codex')` is the branch this whole refactor removes.
-  if (acct.renderExtra && reading.extra) acct.renderExtra(acct, reading.extra);
+  // `if (acct.id === 'codex')` is the branch this whole refactor removes. The
+  // hook runs even when there is no extra, so it can clear what an earlier
+  // reading put up: a stale figure looks exactly like a live one.
+  if (acct.renderExtra) acct.renderExtra(acct, reading.extra);
 
   // Null-checked: a fetch that resolves after a card rebuild dropped this
   // account must not throw on a card that no longer exists.
