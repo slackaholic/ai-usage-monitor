@@ -54,6 +54,45 @@ function loadRegistration() {
   return context;
 }
 
+// Slices clearRetryTimers alone. `retryTimers` comes from the context rather
+// than the file, so the test can seed timers and read the map afterwards.
+function loadRetryTimers() {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+  const start = source.indexOf('function clearRetryTimers');
+  assert.ok(start >= 0, 'expected clearRetryTimers in renderer.js');
+  const end = source.indexOf('\n}', start) + 2;
+  const context = { retryTimers: {}, clearTimeout: () => {} };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  return context;
+}
+
+// Slices clearRetryTimers and buildClaudeCodeCards, and stops the latter at its
+// first await: the scan it requests rejects with a sentinel, so none of the DOM
+// work below it runs. The retry timers are cleared before that await, which is
+// all this needs. `retryTimers` and `claudeAccounts` come from the context so
+// the test seeds the previous scan and reads the map afterwards.
+function loadRescan({ previous, timers }) {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+  const code = ['function clearRetryTimers', 'async function buildClaudeCodeCards']
+    .map((signature) => {
+      const start = source.indexOf(signature);
+      assert.ok(start >= 0, `expected ${signature} in renderer.js`);
+      return source.slice(start, source.indexOf('\n}', start) + 2);
+    })
+    .join('\n');
+  const stopped = new Error('scan stopped by the test');
+  const context = {
+    retryTimers: { ...timers },
+    claudeAccounts: previous,
+    clearTimeout: () => {},
+    window: { electronAPI: { getClaudeAccounts: async () => { throw stopped; } } },
+  };
+  vm.createContext(context);
+  vm.runInContext(code, context);
+  return { context, stopped };
+}
+
 const NOW = Date.parse('2026-10-07T09:00:00Z');
 const HOUR = 3_600_000;
 
@@ -456,4 +495,48 @@ test('a legacy cache with only relative reset prose reports unknown, not a stale
   // Unknown, not absent: the window exists, the cache just cannot date it.
   assert.strictEqual(r.has5h, true);
   assert.strictEqual(r.hasWk, true);
+});
+
+// The regression this guards: unifying three timer stores into one map makes
+// it tempting to clear every key. A Claude Code rescan must not cancel the
+// fixed providers' retries, because those cards never vanish.
+test('clearing Claude Code retry timers leaves the fixed providers alone', () => {
+  const { clearRetryTimers, retryTimers } = loadRetryTimers();
+  retryTimers.codex    = 1;
+  retryTimers.claude   = 2;
+  retryTimers.claude2  = 3;
+  retryTimers.claude3  = 4;
+
+  clearRetryTimers(['claude2', 'claude3']);
+
+  assert.strictEqual(retryTimers.codex, 1, 'a pending Codex retry survives');
+  assert.strictEqual(retryTimers.claude, 2, 'so does Claude Desktop\'s');
+  assert.ok(!('claude2' in retryTimers), 'the rescanned accounts are cleared');
+  assert.ok(!('claude3' in retryTimers));
+});
+
+test('clearing an account with no pending timer is a no-op', () => {
+  const { clearRetryTimers, retryTimers } = loadRetryTimers();
+  retryTimers.codex = 1;
+  clearRetryTimers(['claude2']);          // never had one
+  assert.strictEqual(retryTimers.codex, 1);
+});
+
+// The two tests above pin clearRetryTimers, not the call that feeds it, and the
+// call is where the defect would be written: clearRetryTimers(Object.keys(
+// retryTimers)) passes them both. buildClaudeCodeCards is unreachable from any
+// other test, so this runs the real function up to its first await.
+test('a Claude Code rescan cancels its own retries and not the fixed providers\'', async () => {
+  const { context, stopped } = loadRescan({
+    previous: [{ id: 'claude2' }, { id: 'cc-work' }],
+    timers: { codex: 1, claude: 2, claude2: 3, 'cc-work': 4 },
+  });
+
+  await assert.rejects(context.buildClaudeCodeCards(), (e) => e === stopped);
+
+  const { retryTimers } = context;
+  assert.strictEqual(retryTimers.codex, 1, 'a pending Codex retry survives a rescan');
+  assert.strictEqual(retryTimers.claude, 2, 'so does Claude Desktop\'s');
+  assert.ok(!('claude2' in retryTimers), 'the previous scan\'s accounts are cleared');
+  assert.ok(!('cc-work' in retryTimers));
 });

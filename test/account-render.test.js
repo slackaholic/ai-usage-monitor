@@ -324,13 +324,12 @@ function loadCallers(api) {
     openPanels: new Set(),
     hasData: { codex: false, claude: false, claude2: false },
     cachedData: {},
-    claudeRetryTimers: {},
+    retryTimers: {},
     refreshClaudeCodeEmail: async () => {},
     document: { getElementById: () => null },
     showSection: () => {}, resizeToFit: () => {},
     claudeAccounts: [{ id: 'claude2', logKey: 'claude-vscode' }],
     PROVIDERS: [{ id: 'codex', logKey: 'codex' }, { id: 'claude', logKey: 'claude-desktop' }],
-    claudeRetryTimer: null, codexRetryTimer: null,
   };
   vm.createContext(context);
   vm.runInContext(code, context);

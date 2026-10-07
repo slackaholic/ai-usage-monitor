@@ -116,8 +116,6 @@ const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 // ── State ──────────────────────────────────────────────────────────────────
 let claudeEntries = [];
 let isCompact = false;
-let claudeRetryTimer  = null;
-let codexRetryTimer   = null;
 let refreshIntervalIds = [];
 let refreshSeconds = 120;
 
@@ -133,7 +131,20 @@ function saveCachedData(key, parsed) {
 // Descriptors from the main process: { id, kind, configDir, configDirs,
 // logKey, label }. Empty until buildClaudeCodeCards() has run.
 let claudeAccounts = [];
-const claudeRetryTimers = {};   // account id -> retry timer
+
+// One timer per account id. Three patterns previously existed for one concept:
+// two module-level scalars and a map.
+const retryTimers = {};
+
+// Scoped deliberately: only the per-account Claude Code timers. The two fixed
+// cards never vanish, so cancelling their retries here would drop a pending
+// one and leave that card on "Error" until the next refresh tick.
+function clearRetryTimers(ids) {
+  for (const id of ids) {
+    clearTimeout(retryTimers[id]);
+    delete retryTimers[id];
+  }
+}
 
 // Every render prefix registered so far, derived from what was actually
 // registered rather than from a literal. A literal is how the August rebuild
@@ -984,7 +995,7 @@ function parseClaudeWebText(text) {
 
 // ── Claude Desktop ─────────────────────────────────────────────────────────
 async function fetchClaudeWebUsage() {
-  clearTimeout(claudeRetryTimer); claudeRetryTimer = null;
+  clearTimeout(retryTimers.claude); retryTimers.claude = null;
   fetchStart('claude');
 
   const result = await window.electronAPI.fetchClaudeWebUsage();
@@ -1003,13 +1014,13 @@ async function fetchClaudeWebUsage() {
     return;
   }
   if (result.error === 'window-in-use') {
-    claudeRetryTimer = setTimeout(fetchClaudeWebUsage, 30_000);
+    retryTimers.claude = setTimeout(fetchClaudeWebUsage, 30_000);
     return;
   }
   if (result.error) {
     setBadge('claude-badge', 'Error', 'error');
     showToast('Claude fetch error — retrying in 45s: ' + result.error);
-    claudeRetryTimer = setTimeout(fetchClaudeWebUsage, 45_000);
+    retryTimers.claude = setTimeout(fetchClaudeWebUsage, 45_000);
     return;
   }
 
@@ -1023,7 +1034,7 @@ async function fetchClaudeWebUsage() {
     const diagUrl  = result.url ? result.url.replace('https://', '') : '?';
     const diagText = (result.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     showToast(`[${diagUrl}] ${diagText || 'No usage data found'}`);
-    claudeRetryTimer = setTimeout(fetchClaudeWebUsage, 45_000);
+    retryTimers.claude = setTimeout(fetchClaudeWebUsage, 45_000);
     return;
   }
 
@@ -1104,10 +1115,7 @@ function applyAccountHeadings(acct) {
 async function buildClaudeCodeCards() {
   // Before anything else: a retry pending for an account that is about to
   // vanish would fire into a card that no longer exists.
-  for (const id of Object.keys(claudeRetryTimers)) {
-    clearTimeout(claudeRetryTimers[id]);
-    delete claudeRetryTimers[id];
-  }
+  clearRetryTimers(claudeAccounts.map(a => a.id));
   const found = await window.electronAPI.getClaudeAccounts();
   // A malformed reply must not leave claudeAccounts non-iterable: the catch in
   // init() would swallow the throw here and every later accountPrefixes() call
@@ -1198,7 +1206,7 @@ async function refreshClaudeCodeEmail(acct) {
 }
 
 async function fetchClaudeCodeUsage(acct) {
-  clearTimeout(claudeRetryTimers[acct.id]); claudeRetryTimers[acct.id] = null;
+  clearTimeout(retryTimers[acct.id]); retryTimers[acct.id] = null;
   fetchStart(acct.id);
 
   const result = await window.electronAPI.fetchClaudeCodeApiUsage(acct.configDir);
@@ -1226,7 +1234,7 @@ async function fetchClaudeCodeUsage(acct) {
   if (result.error) {
     setBadge(acct.id + '-badge', 'Error', 'error');
     showToast(`Claude Code API error (${who}) — retrying in 45s: ` + result.error);
-    claudeRetryTimers[acct.id] = setTimeout(() => fetchClaudeCodeUsage(acct), 45_000);
+    retryTimers[acct.id] = setTimeout(() => fetchClaudeCodeUsage(acct), 45_000);
     return;
   }
 
@@ -1407,7 +1415,7 @@ function renderAccountData(acct, reading, stale = false) {
 // ── RENDER END ──
 
 async function fetchCodexUsage() {
-  clearTimeout(codexRetryTimer); codexRetryTimer = null;
+  clearTimeout(retryTimers.codex); retryTimers.codex = null;
   fetchStart('codex');
 
   const result = await window.electronAPI.fetchCodexUsage();
@@ -1420,7 +1428,7 @@ async function fetchCodexUsage() {
     }
     setBadge('codex-badge', 'Error', 'error');
     showToast('Codex error — retrying in 45s: ' + result.error);
-    codexRetryTimer = setTimeout(fetchCodexUsage, 45_000);
+    retryTimers.codex = setTimeout(fetchCodexUsage, 45_000);
     return;
   }
 
@@ -1432,7 +1440,7 @@ async function fetchCodexUsage() {
   if (parsed.pct5h === null && parsed.pctWk === null) {
     setBadge('codex-badge', 'No data', 'warn');
     showToast('Could not find usage data — try opening the login window.');
-    codexRetryTimer = setTimeout(fetchCodexUsage, 45_000);
+    retryTimers.codex = setTimeout(fetchCodexUsage, 45_000);
     return;
   }
 
