@@ -24,23 +24,54 @@ is reachable solely through the interactive `/stats model` command. The consumer
 web surface is a different and much better source. The CLI path is not used
 here.
 
-## Account assumption, and the discovery step that tests it
+## The account, and the discovery step that confirms it
 
-The user reports a **paid Google AI plan (Pro / Ultra / Plus)**. This design is
-built for that.
+A **paid Google AI plan (Pro / Ultra / Plus)** on a **personal Gmail account**.
 
-It is not yet verified, and one specific risk stands out: the account email is
-on a Google **Workspace** domain, and Workspace Gemini Business licences are
-metered at **1,000 uses per month, resetting on the 1st** — a monthly counter,
-not a 5h/weekly pair. If the usage page renders that instead, the two-meter card
-model does not fit and this design needs revisiting before any parser is
-written.
+That personal-account detail retires the main design risk. Google **Workspace**
+Gemini Business licences are metered at 1,000 uses per month resetting on the
+1st — a monthly counter that would not fit the two-meter card at all. A consumer
+Google AI plan uses the 5-hour-into-weekly structure this design is built for.
 
-**Implementation therefore opens with a discovery task the user performs**, not
-with code. Only they can load that page authenticated. Nothing downstream is
-built until the discovery output confirms which meters exist. This is a hard
-gate: writing a parser against assumed page text is how the Codex integration
-spent six weeks silently mislabelling its own data.
+It raises a different hazard instead, and this one is sharp.
+
+### The Gemini account is a different identity from every other card
+
+Every other account in this app belongs to the user's Workspace domain. The
+Gemini plan sits on an unrelated personal Google account. Google's multi-login
+(`/u/0`, `/u/1`, …) means a browser session can be signed into several accounts
+at once and silently serve whichever is "first".
+
+**This repo has already been bitten by exactly this failure.** Claude Code's
+email was once scraped from any stray `claude.ai` browser session and reported
+the wrong account — a Gmail that was logged into a browser but not into Claude
+Code. The fix was to resolve identity from the authoritative source rather than
+from whatever session happened to be lying around.
+
+Two requirements follow, both non-negotiable:
+
+1. **The `persist:gemini` partition is signed in as the Gemini-plan account and
+   nothing else.** An isolated partition helps here rather than hindering: it
+   starts empty, so the user signs in once as the intended account and it stays
+   that way, independent of whatever the Workspace sessions are doing.
+2. **Every scrape returns the signed-in email, and a mismatch is an error, not a
+   reading.** If the page is serving a different Google account than the one
+   the card was set up for, the card must show an error state and refuse to log
+   a reading. Reporting another account's quota under this card is worse than
+   reporting nothing — it is wrong data written permanently into
+   `usage-log.jsonl`, and the user has no way to tell from the number alone.
+
+The expected account's email is stored in settings alongside the other
+per-account values rather than hardcoded, so switching plans later is a settings
+change rather than a code change.
+
+### Discovery comes before any parser
+
+**Implementation opens with a discovery task the user performs**, not with code.
+Only they can load that page authenticated. Nothing downstream is built until
+the discovery output confirms which meters exist and what the page text looks
+like. This is a hard gate: writing a parser against assumed page text is how the
+Codex integration spent six weeks silently mislabelling its own data.
 
 ## Transport
 
@@ -129,6 +160,10 @@ Desktop's existing behaviour. This is correct, not a gap.
 - A regression test that Gemini's usage-log entries carry `account: "gemini"`
   and the standard `5h` / `wk` keys, so the existing metrics read them with no
   special-casing.
+- **An identity-mismatch test: a scrape returning a different signed-in email
+  than the configured one produces an error state and writes nothing to the
+  usage log.** Mutation-check it — a build that logs the reading anyway must
+  fail this test, since that is the actual failure mode being guarded.
 - `npm test` green; `node --check` on changed files.
 - **GUI verification is the user's step.** Specifically: the login flow on first
   run, the card appearing with both meters, and the numbers matching what
