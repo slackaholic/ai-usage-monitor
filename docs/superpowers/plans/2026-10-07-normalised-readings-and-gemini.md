@@ -1167,12 +1167,18 @@ Replace every use:
 
 The loop also sits inside `buildClaudeCodeCards`, which no test in the suite can reach (its only appearance in `test/` is as a slice *terminator* in `test/renderer.test.js`). So extract it, beside the `retryTimers` declaration:
 
+**As built, this is `clearClaudeCodeRetryTimers()` with no parameter.** The `ids` version below was the first design and it leaked: passing `claudeAccounts.map(a => a.id)` is strictly narrower than the `claudeRetryTimers` map it replaced, which held *only* Claude Code timers and so swept orphans too. The leak is an account dropped from a scan while its fetch is in flight — the fetch then fails, sets its timer, and nothing ever names that id again, so it retries every 45s into a card that no longer exists. Deriving the exclusion set from `PROVIDERS` fixes it and removes the load-bearing "called before `claudeAccounts` is reassigned" subtlety:
+
 ```js
-// Scoped deliberately: only the per-account Claude Code timers. The two fixed
-// cards never vanish, so cancelling their retries here would drop a pending
-// one and leave that card on "Error" until the next refresh tick.
-function clearRetryTimers(ids) {
-  for (const id of ids) {
+// Every per-account Claude Code timer, including one left behind by an account
+// that has already vanished: the old per-account map held only these, so
+// clearing all of it was the behaviour, and a retry firing into a card that no
+// longer exists is what this prevents. The two fixed cards never vanish, so
+// their pending retries must survive a rescan.
+function clearClaudeCodeRetryTimers() {
+  const fixed = new Set(PROVIDERS.map(p => p.id));
+  for (const id of Object.keys(retryTimers)) {
+    if (fixed.has(id)) continue;
     clearTimeout(retryTimers[id]);
     delete retryTimers[id];
   }
@@ -1182,7 +1188,7 @@ function clearRetryTimers(ids) {
 and in `buildClaudeCodeCards` the loop becomes one call. `claudeAccounts` is not reassigned until after this point, so it still holds the previous scan — precisely the accounts whose cards are about to be rebuilt:
 
 ```js
-  clearRetryTimers(claudeAccounts.map(a => a.id));
+  clearClaudeCodeRetryTimers();
 ```
 
 - [ ] **Step 4: Pin the scope with a test**
@@ -1782,6 +1788,30 @@ In the `PROVIDERS` array:
 
 ```js
   { id: 'gemini', logKey: 'gemini', label: 'Gemini' },
+```
+
+**Also pin that Gemini's retry survives a Claude Code rescan.** `clearClaudeCodeRetryTimers` (Task 5) clears every `retryTimers` key whose id is not in `PROVIDERS`. That is correct only because the fixed set is *derived* from `PROVIDERS` — hard-coding `['codex', 'claude']` passed every test at the end of Phase 1, because back then `PROVIDERS` was exactly those two. Adding Gemini is the moment that stops being true: a literal list would cancel `retryTimers.gemini` on every rescan, and the card would sit on "Error" until the next refresh tick with nothing failing.
+
+Add to `test/account-reading.test.js`, beside the other retry-timer tests:
+
+```js
+// Gemini is the third fixed provider, and the first one that would expose a
+// hard-coded exclusion list in clearClaudeCodeRetryTimers. Mutation to check:
+// replace `new Set(PROVIDERS.map(p => p.id))` with
+// `new Set(['codex', 'claude'])` — this test must fail, and before Gemini
+// existed it would not have.
+test('a rescan spares every fixed provider, Gemini included', () => {
+  const { clearClaudeCodeRetryTimers, retryTimers, cancelled } = loadRetryTimers();
+  retryTimers.codex   = 1;
+  retryTimers.claude  = 2;
+  retryTimers.gemini  = 3;
+  retryTimers.claude2 = 4;
+
+  clearClaudeCodeRetryTimers();
+
+  assert.strictEqual(retryTimers.gemini, 3, 'a pending Gemini retry survives');
+  assert.deepStrictEqual(cancelled, [4], 'only the Claude Code timer is cancelled');
+});
 ```
 
 - [ ] **Step 3: Write the fetch function with the identity check**
