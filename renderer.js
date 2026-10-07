@@ -789,30 +789,64 @@ function renderClaudeTokens() {
   document.getElementById('5h-msgs').textContent   = agg.count;
 }
 
+// ── READING SHAPE ──
+// One shape for every provider. Three providers previously invented their own
+// names for the same four numbers — shared5h / sessionUsed / pct5h, two of them
+// polarity-inverted — which is why three render functions existed to perform
+// the same ten steps. Every parse function converts to this shape; nothing
+// above the render layer ever sees a provider's own vocabulary again.
+//
+// pct* are REMAINING percentages, always. A source reporting "used" converts
+// here, at the parse boundary, and never downstream.
+//
+// has5h / hasWk default TRUE: a window exists unless a parser positively knows
+// it does not. That keeps "momentarily missing" (renders —) distinct from "the
+// plan has no such window" (renders n/a), a distinction a null percentage alone
+// cannot carry.
+function makeReading(p = {}) {
+  return {
+    pct5h:     p.pct5h     ?? null,
+    pctWk:     p.pctWk     ?? null,
+    reset5hMs: p.reset5hMs ?? 0,
+    resetWkMs: p.resetWkMs ?? 0,
+    has5h:     p.has5h     ?? true,
+    hasWk:     p.hasWk     ?? true,
+    label:     p.label     ?? null,
+    extra:     p.extra     ?? null,
+  };
+}
+
+// Claude Code arrives already shaped by main.js (pct5h / pct7d from the
+// anthropic-ratelimit-unified-* headers). Only the names differ.
+function normaliseClaudeCodeReading(data) {
+  return makeReading({
+    pct5h:     data.pct5h ?? null,
+    pctWk:     data.pct7d ?? null,
+    reset5hMs: data.reset5hMs ?? 0,
+    resetWkMs: data.reset7dMs ?? 0,
+    has5h:     data.has5h,
+    hasWk:     data.hasWk,
+    label:     data.account ?? null,
+  });
+}
+// ── READING SHAPE END ──
+
+// ── CLAUDE PARSERS ──
 // ── Claude org usage API parser ────────────────────────────────────────────
 // Parses the /api/organizations/{orgId}/usage JSON response.
-// five_hour.utilization and seven_day.utilization are % USED (not remaining).
+// five_hour.utilization and seven_day.utilization are % USED (not remaining);
+// they are converted to remaining here, at the parse boundary.
 function parseClaudeOrgUsage(data) {
-  const fh  = data?.five_hour;
-  const sd  = data?.seven_day;
-  const fmtReset = (iso) => {
-    if (!iso) return null;
-    const d = new Date(iso);
-    if (isNaN(d)) return null;
-    const diff = d - Date.now();
-    if (diff <= 0) return null;
-    const h = Math.floor(diff / 3_600_000);
-    const m = Math.floor((diff % 3_600_000) / 60_000);
-    return h > 0 ? `${h} hr ${m} min` : `${m} min`;
-  };
-  return {
-    sessionUsed:   fh?.utilization  ?? null,
-    sessionReset:  fmtReset(fh?.resets_at),
-    sessionResetMs: fh?.resets_at ? new Date(fh.resets_at).getTime() : null,
-    weeklyUsed:    sd?.utilization  ?? null,
-    weeklyReset:   sd?.resets_at ? new Date(sd.resets_at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : null,
-    weeklyResetMs:  sd?.resets_at ? new Date(sd.resets_at).getTime() : null,
-  };
+  const fh = data?.five_hour;
+  const sd = data?.seven_day;
+  const ms = (iso) => (iso && !isNaN(new Date(iso))) ? new Date(iso).getTime() : 0;
+  const remain = (u) => (typeof u === 'number') ? Math.max(0, 100 - u) : null;
+  return makeReading({
+    pct5h:     remain(fh?.utilization),
+    pctWk:     remain(sd?.utilization),
+    reset5hMs: ms(fh?.resets_at),
+    resetWkMs: ms(sd?.resets_at),
+  });
 }
 
 // ── Claude web usage parser (shared) ──────────────────────────────────────
@@ -833,13 +867,14 @@ function parseClaudeWebText(text) {
   const weeklyUsed       = pctUsed(WEEKLY_RE);
   const weeklyRemaining  = pctRemaining(WEEKLY_RE);
 
-  return {
-    sessionUsed:  sessionUsed  != null ? sessionUsed  : (sessionRemaining != null ? 100 - sessionRemaining : null),
-    sessionReset: (text.match(/[Rr]esets in ([^\n\r]+)/i) || [])[1]?.trim() ?? null,
-    weeklyUsed:   weeklyUsed   != null ? weeklyUsed   : (weeklyRemaining  != null ? 100 - weeklyRemaining  : null),
-    weeklyReset:  (text.match(/(?:All models|[Ww]eekly)[\s\S]{0,500}?[Rr]esets?\s+([^\n\r]+)/i) || [])[1]?.trim() ?? null,
-  };
+  const used = (u, r) => (u != null ? u : (r != null ? 100 - r : null));
+  const remain = (v) => (v != null ? Math.max(0, 100 - v) : null);
+  return makeReading({
+    pct5h: remain(used(sessionUsed, sessionRemaining)),
+    pctWk: remain(used(weeklyUsed, weeklyRemaining)),
+  });
 }
+// ── CLAUDE PARSERS END ──
 
 // ── Claude Desktop ─────────────────────────────────────────────────────────
 function renderClaudeWebData(parsed, stale = false) {
@@ -1178,6 +1213,7 @@ async function fetchClaudeCodeUsage(acct) {
 }
 
 // ── Codex ──────────────────────────────────────────────────────────────────
+// ── CODEX PARSERS ──
 // OpenAI reports each rate-limit window's own length in `limit_window_seconds`
 // (18000 = 5 hours, 604800 = weekly). Split at a day: shorter is a session
 // window, longer is a weekly one.
@@ -1216,22 +1252,16 @@ function parseCodexText(text) {
     const m = text.match(new RegExp(label + '[\\s\\S]{0,300}?(\\d+)%\\s*remaining', 'i'));
     return m ? parseInt(m[1], 10) : null;
   }
-  function resetTime(label) {
-    const m = text.match(new RegExp(label + '[\\s\\S]{0,500}?[Rr]esets?\\s+([^\\n\\r]+)', 'i'));
-    return m ? m[1].trim() : null;
-  }
   const creditsM = text.match(/credits remaining[\s\S]{0,100}?(\d[\d,]*)/i);
-  return {
-    shared5h:        pct(CODEX_5H_LABEL),
-    shared5hReset:   resetTime(CODEX_5H_LABEL),
-    sharedWeek:      pct('Weekly usage limit'),
-    sharedWeekReset: resetTime('Weekly usage limit'),
+  return makeReading({
+    pct5h:  pct(CODEX_5H_LABEL),
+    pctWk:  pct('Weekly usage limit'),
     // Agrees with the API path so a fallback poll can't flip the 5h tile
     // between 'n/a' and '—'. An empty page claims nothing, and the both-null
     // guard in fetchCodexUsage stops it reaching the render.
-    has5h:           new RegExp(CODEX_5H_LABEL, 'i').test(text),
-    credits:         creditsM ? creditsM[1] : null,
-  };
+    has5h:  new RegExp(CODEX_5H_LABEL, 'i').test(text),
+    extra:  creditsM ? { credits: creditsM[1] } : null,
+  });
 }
 
 // Structured Codex usage from /backend-api/codex/usage. `used_percent` is
@@ -1255,19 +1285,22 @@ function parseCodexApiUsage(data, now = Date.now()) {
 
   const remain  = (w) => (w && typeof w.used_percent === 'number') ? Math.max(0, 100 - w.used_percent) : null;
   const resetMs = (w) => (w && w.reset_at) ? w.reset_at * 1000 : 0;
-  return {
-    shared5h:   remain(slot['5h']),
-    sharedWeek: remain(slot.wk),
-    reset5hMs:  resetMs(slot['5h']),
-    reset7dMs:  resetMs(slot.wk),
-    // Whether the plan HAS a 5-hour window at all — something `shared5h ===
-    // null` cannot express. "No such window" and "momentarily missing" render
+  return makeReading({
+    pct5h:     remain(slot['5h']),
+    pctWk:     remain(slot.wk),
+    reset5hMs: resetMs(slot['5h']),
+    resetWkMs: resetMs(slot.wk),
+    // Whether the plan HAS a 5-hour window at all — something `pct5h === null`
+    // cannot express. "No such window" and "momentarily missing" render
     // differently ('n/a' vs '—').
-    has5h:      slot['5h'] !== null,
-    credits:    (data.credits && data.credits.balance != null) ? data.credits.balance : null,
-    email:      data.email || null,
-  };
+    has5h:     slot['5h'] !== null,
+    hasWk:     slot.wk !== null,
+    label:     data.email || null,
+    extra:     (data.credits && data.credits.balance != null)
+      ? { credits: data.credits.balance } : null,
+  });
 }
+// ── CODEX PARSERS END ──
 
 function renderCodexData(parsed, stale = false) {
   if (!stale) applyAccountLabel('codex', parsed.email);
