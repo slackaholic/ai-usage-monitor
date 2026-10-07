@@ -1163,26 +1163,89 @@ Replace every use:
 | `clearTimeout(claudeRetryTimers[acct.id]); claudeRetryTimers[acct.id] = null;` | `clearTimeout(retryTimers[acct.id]); retryTimers[acct.id] = null;` |
 | `claudeRetryTimers[acct.id] = setTimeout(…)` | `retryTimers[acct.id] = setTimeout(…)` |
 
-In `buildClaudeCodeCards`, the loop that clears pending timers becomes:
+**The clear loop must stay scoped to Claude Code accounts, and it needs a testable home.** `renderer.js:1107-1110` currently iterates `claudeRetryTimers`, which holds *only* the per-account Claude Code timers. Iterating `Object.keys(retryTimers)` on the unified map would also clear `retryTimers.codex` and `retryTimers.claude` — so a rescan landing inside a 45-second Codex retry window would cancel that retry and never reschedule it, leaving the card on "Error" until the next refresh tick. The two fixed cards never vanish, which is the loop's entire stated purpose.
+
+The loop also sits inside `buildClaudeCodeCards`, which no test in the suite can reach (its only appearance in `test/` is as a slice *terminator* in `test/renderer.test.js`). So extract it, beside the `retryTimers` declaration:
 
 ```js
-  for (const id of Object.keys(retryTimers)) {
+// Scoped deliberately: only the per-account Claude Code timers. The two fixed
+// cards never vanish, so cancelling their retries here would drop a pending
+// one and leave that card on "Error" until the next refresh tick.
+function clearRetryTimers(ids) {
+  for (const id of ids) {
     clearTimeout(retryTimers[id]);
     delete retryTimers[id];
   }
+}
 ```
 
-- [ ] **Step 4: Verify nothing references the old names**
+and in `buildClaudeCodeCards` the loop becomes one call. `claudeAccounts` is not reassigned until after this point, so it still holds the previous scan — precisely the accounts whose cards are about to be rebuilt:
+
+```js
+  clearRetryTimers(claudeAccounts.map(a => a.id));
+```
+
+- [ ] **Step 4: Pin the scope with a test**
+
+Append to `test/account-reading.test.js`. Add this loader beside the others. It slices only the function and supplies `retryTimers` through the context: the `const` is declared outside the slice, and a `const` in a vm script is not a property of the context object, so passing it in is both simpler than copying it across and lets the test inspect the exact object the function closes over.
+
+```js
+// Slices clearRetryTimers alone. `retryTimers` comes from the context rather
+// than the file, so the test can seed timers and read the map afterwards.
+function loadRetryTimers() {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+  const start = source.indexOf('function clearRetryTimers');
+  assert.ok(start >= 0, 'expected clearRetryTimers in renderer.js');
+  const end = source.indexOf('\n}', start) + 2;
+  const context = { retryTimers: {}, clearTimeout: () => {} };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  return context;
+}
+```
+
+Then the tests:
+
+```js
+// The regression this guards: unifying three timer stores into one map makes
+// it tempting to clear every key. A Claude Code rescan must not cancel the
+// fixed providers' retries, because those cards never vanish.
+test('clearing Claude Code retry timers leaves the fixed providers alone', () => {
+  const { clearRetryTimers, retryTimers } = loadRetryTimers();
+  retryTimers.codex    = 1;
+  retryTimers.claude   = 2;
+  retryTimers.claude2  = 3;
+  retryTimers.claude3  = 4;
+
+  clearRetryTimers(['claude2', 'claude3']);
+
+  assert.strictEqual(retryTimers.codex, 1, 'a pending Codex retry survives');
+  assert.strictEqual(retryTimers.claude, 2, 'so does Claude Desktop\'s');
+  assert.ok(!('claude2' in retryTimers), 'the rescanned accounts are cleared');
+  assert.ok(!('claude3' in retryTimers));
+});
+
+test('clearing an account with no pending timer is a no-op', () => {
+  const { clearRetryTimers, retryTimers } = loadRetryTimers();
+  retryTimers.codex = 1;
+  clearRetryTimers(['claude2']);          // never had one
+  assert.strictEqual(retryTimers.codex, 1);
+});
+```
+
+Mutation-check it: change the call to `clearRetryTimers(Object.keys(retryTimers))` and confirm the first test fails. That mutation is the exact defect this step exists to prevent.
+
+- [ ] **Step 5: Verify nothing references the old names**
 
 Run: `grep -n "claudeRetryTimer\b\|codexRetryTimer\|claudeRetryTimers" renderer.js`
 Expected: no output.
 
-- [ ] **Step 5: Syntax check and full suite**
+- [ ] **Step 6: Syntax check and full suite**
 
 Run: `node --check renderer.js && node --check main.js && npm test`
-Expected: PASS, 190 tests.
+Expected: PASS. Baseline is **235** at the start of this task; the two new tests above make it 237. The plan's original "190" predates Tasks 1-3, which added 63 tests between them.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 Write the message below to `$MSGFILE` with the Write tool (not a heredoc - see Global Constraints), then:
 
