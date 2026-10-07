@@ -872,10 +872,11 @@ function parseClaudeWebText(text) {
   const weeklyRemaining  = pctRemaining(WEEKLY_RE);
 
   // The scrape path has no timestamps, only prose ("Resets in 3 hr 20 min").
-  // parseResetToMs turns that into epoch ms, so the fallback keeps both its
-  // reset label and its logged reset timestamp. The plan dropped these on the
-  // claim that the text path's resets were Codex-only — renderClaudeWebData's
-  // parseResetToMs fallback reached them for Claude too.
+  // parseResetToMs turns that into epoch ms because the render layer's reset
+  // fallback reads it: dropping it would blank the "Resets ..." label and stop
+  // the reset timestamp reaching usage-log.jsonl. An earlier pass dropped these
+  // fields on the assumption that only Codex's text path needed them; the
+  // Claude scrape path needed them too.
   const sessionResetStr = (text.match(/[Rr]esets in ([^\n\r]+)/i) || [])[1]?.trim() ?? null;
   const weeklyResetStr  = (text.match(/(?:All models|[Ww]eekly)[\s\S]{0,500}?[Rr]esets?\s+([^\n\r]+)/i) || [])[1]?.trim() ?? null;
 
@@ -1274,10 +1275,11 @@ function parseCodexText(text) {
   }
   const creditsM = text.match(/credits remaining[\s\S]{0,100}?(\d[\d,]*)/i);
   // Like the Claude scrape, the Codex page gives prose ("Resets in 2 hr 10 min"),
-  // not timestamps. parseResetToMs converts it to epoch ms so the fallback keeps
-  // its reset label and its logged reset timestamps — renderCodexData's
-  // parseResetToMs fallback reached these strings. A page with no such section
-  // yields null, which parseResetToMs maps to 0: the shape's "unknown".
+  // not timestamps. parseResetToMs converts it to epoch ms because the render
+  // layer's reset fallback reads it: dropping it would blank the "Resets ..."
+  // label and stop the reset timestamps reaching usage-log.jsonl. A page with no
+  // such section yields null, which parseResetToMs maps to 0: the shape's
+  // "unknown".
   return makeReading({
     pct5h:     pct(CODEX_5H_LABEL),
     pctWk:     pct('Weekly usage limit'),

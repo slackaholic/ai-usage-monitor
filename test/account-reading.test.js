@@ -139,8 +139,13 @@ test('claude scraped text carries its reset prose through as epoch ms', () => {
   const offset = 3 * 3_600_000 + 20 * 60_000;
   assert.ok(r.reset5hMs >= before + offset - 5000, `too early: ${r.reset5hMs}`);
   assert.ok(r.reset5hMs <= Date.now() + offset + 5000, `too late: ${r.reset5hMs}`);
-  // "Sat 4:59 PM" resolves to the next Saturday — a real future timestamp.
-  assert.ok(r.resetWkMs > before, `not in the future: ${r.resetWkMs}`);
+  // "Sat 4:59 PM" resolves to the next Saturday at 16:59 local time. Asserting
+  // the resolved day and time — not merely "in the future" — is what catches
+  // resetWkMs being wired to the wrong label's prose.
+  const wk = new Date(r.resetWkMs);
+  assert.strictEqual(wk.getDay(), 6, `expected Saturday, got ${wk}`);
+  assert.strictEqual(wk.getHours(), 16, `expected 16:xx, got ${wk}`);
+  assert.strictEqual(wk.getMinutes(), 59, `expected xx:59, got ${wk}`);
 });
 
 test('claude scraped text with no reset prose reports 0, not a bogus timestamp', () => {
@@ -161,7 +166,13 @@ test('codex scraped text carries its reset prose through as epoch ms', () => {
   const offset = 2 * 3_600_000 + 10 * 60_000;
   assert.ok(r.reset5hMs >= before + offset - 5000, `too early: ${r.reset5hMs}`);
   assert.ok(r.reset5hMs <= Date.now() + offset + 5000, `too late: ${r.reset5hMs}`);
-  assert.ok(r.resetWkMs > before, `not in the future: ${r.resetWkMs}`);
+  // "Sat 4:59 PM" resolves to the next Saturday at 16:59 local time. Asserting
+  // the resolved day and time — not merely "in the future" — is what catches
+  // resetWkMs being wired to the wrong label's prose.
+  const wk = new Date(r.resetWkMs);
+  assert.strictEqual(wk.getDay(), 6, `expected Saturday, got ${wk}`);
+  assert.strictEqual(wk.getHours(), 16, `expected 16:xx, got ${wk}`);
+  assert.strictEqual(wk.getMinutes(), 59, `expected xx:59, got ${wk}`);
 });
 
 test('codex scraped text with no reset prose reports 0', () => {
