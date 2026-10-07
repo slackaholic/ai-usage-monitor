@@ -148,6 +148,7 @@ function trackSession(account, pct5h) {
   return s.start;
 }
 
+// ── RESET PARSING ──
 // Parse reset strings from scrapers into epoch ms.
 // Handles: absolute dates ("Jun 25, 2026 8:14 AM"), day-time ("Sat 4:59 PM"),
 // relative ("in 5d", "5 days").
@@ -198,6 +199,7 @@ function parseResetToMs(str) {
   }
   return 0;
 }
+// ── RESET PARSING END ──
 
 function fmtDuration(ms) {
   if (ms < 0) return 'now';
@@ -820,13 +822,13 @@ function makeReading(p = {}) {
 // anthropic-ratelimit-unified-* headers). Only the names differ.
 function normaliseClaudeCodeReading(data) {
   return makeReading({
-    pct5h:     data.pct5h ?? null,
-    pctWk:     data.pct7d ?? null,
-    reset5hMs: data.reset5hMs ?? 0,
-    resetWkMs: data.reset7dMs ?? 0,
+    pct5h:     data.pct5h,
+    pctWk:     data.pct7d,
+    reset5hMs: data.reset5hMs,
+    resetWkMs: data.reset7dMs,
     has5h:     data.has5h,
     hasWk:     data.hasWk,
-    label:     data.account ?? null,
+    label:     data.account,
   });
 }
 // ── READING SHAPE END ──
@@ -869,13 +871,23 @@ function parseClaudeWebText(text) {
   const weeklyUsed       = pctUsed(WEEKLY_RE);
   const weeklyRemaining  = pctRemaining(WEEKLY_RE);
 
+  // The scrape path has no timestamps, only prose ("Resets in 3 hr 20 min").
+  // parseResetToMs turns that into epoch ms, so the fallback keeps both its
+  // reset label and its logged reset timestamp. The plan dropped these on the
+  // claim that the text path's resets were Codex-only — renderClaudeWebData's
+  // parseResetToMs fallback reached them for Claude too.
+  const sessionResetStr = (text.match(/[Rr]esets in ([^\n\r]+)/i) || [])[1]?.trim() ?? null;
+  const weeklyResetStr  = (text.match(/(?:All models|[Ww]eekly)[\s\S]{0,500}?[Rr]esets?\s+([^\n\r]+)/i) || [])[1]?.trim() ?? null;
+
   const used = (u, r) => (u != null ? u : (r != null ? 100 - r : null));
   // Unclamped for the same reason as parseClaudeOrgUsage: raw over-quota stays
   // negative; only display and metrics clamp.
   const remain = (v) => (v != null ? 100 - v : null);
   return makeReading({
-    pct5h: remain(used(sessionUsed, sessionRemaining)),
-    pctWk: remain(used(weeklyUsed, weeklyRemaining)),
+    pct5h:     remain(used(sessionUsed, sessionRemaining)),
+    pctWk:     remain(used(weeklyUsed, weeklyRemaining)),
+    reset5hMs: parseResetToMs(sessionResetStr),
+    resetWkMs: parseResetToMs(weeklyResetStr),
   });
 }
 // ── CLAUDE PARSERS END ──

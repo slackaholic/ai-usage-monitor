@@ -6,16 +6,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-// The parse functions are not contiguous in renderer.js — Claude's sit at ~795
-// and Codex's at ~1190, with the Claude Desktop and Claude Code render layers
-// in between. Three marked regions are concatenated rather than relocating
-// ~400 lines of working code to suit a test harness. READING SHAPE comes first
-// because the parsers call makeReading. Nothing in any region touches the DOM,
-// so no stubs are needed beyond the globals the parsers actually use.
+// The parse functions are not contiguous in renderer.js — Claude's and Codex's
+// sit in separate sections, with the Claude Desktop and Claude Code render
+// layers in between, and parseResetToMs lives with the shared utilities. Four
+// marked regions are concatenated rather than relocating working code to suit
+// a test harness. READING SHAPE comes first because the parsers call
+// makeReading; RESET PARSING precedes CLAUDE PARSERS, which calls it. Nothing
+// in any region touches the DOM, so no stubs are needed beyond the globals the
+// parsers actually use.
 function loadCodexParsers() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
   const REGIONS = [
     ['// ── READING SHAPE ──',  '// ── READING SHAPE END ──'],
+    ['// ── RESET PARSING ──',  '// ── RESET PARSING END ──'],
     ['// ── CLAUDE PARSERS ──', '// ── CLAUDE PARSERS END ──'],
     ['// ── CODEX PARSERS ──',  '// ── CODEX PARSERS END ──'],
   ];

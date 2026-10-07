@@ -6,15 +6,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-// The parse functions are not contiguous in renderer.js — Claude's sit at ~795
-// and Codex's at ~1190, with the Claude Desktop and Claude Code render layers
-// in between. Three marked regions are concatenated rather than relocating
-// ~400 lines of working code to suit a test harness. READING SHAPE comes first
-// because the parsers call makeReading.
+// The parse functions are not contiguous in renderer.js — Claude's and Codex's
+// sit in separate sections, with the Claude Desktop and Claude Code render
+// layers in between, and parseResetToMs lives with the shared utilities. Four
+// marked regions are concatenated rather than relocating working code to suit
+// a test harness. READING SHAPE comes first because the parsers call
+// makeReading; RESET PARSING precedes CLAUDE PARSERS, which calls it.
 function loadParsers() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
   const REGIONS = [
     ['// ── READING SHAPE ──',  '// ── READING SHAPE END ──'],
+    ['// ── RESET PARSING ──',  '// ── RESET PARSING END ──'],
     ['// ── CLAUDE PARSERS ──', '// ── CLAUDE PARSERS END ──'],
     ['// ── CODEX PARSERS ──',  '// ── CODEX PARSERS END ──'],
   ];
@@ -81,6 +83,23 @@ test('codex emits the normalised shape with the weekly value in the weekly slot'
   assert.deepStrictEqual({ ...r.extra }, { credits: 0 });
 });
 
+test('a codex response with no weekly window reports hasWk false', () => {
+  const { parseCodexApiUsage } = loadParsers();
+  const r = parseCodexApiUsage({
+    rate_limit: {
+      primary_window: {
+        limit_window_seconds: 5 * 3600,
+        used_percent: 20,
+        reset_at: Math.floor((NOW + 2 * HOUR) / 1000),
+      },
+    },
+  }, NOW);
+  assert.strictEqual(r.pct5h, 80);
+  assert.strictEqual(r.has5h, true);
+  assert.strictEqual(r.pctWk, null);
+  assert.strictEqual(r.hasWk, false, 'an absent window is n/a, not an em-dash');
+});
+
 // The polarity bug the whole refactor exists to remove: Claude's sources report
 // percentage USED, and that must be converted at the parse boundary so nothing
 // downstream ever sees a "used" figure.
@@ -109,6 +128,26 @@ test('claude scraped text also emits remaining', () => {
   const r = parseClaudeWebText('Current session\n46% used\nWeekly\n15% used');
   assert.strictEqual(r.pct5h, 54);
   assert.strictEqual(r.pctWk, 85);
+});
+
+test('claude scraped text carries its reset prose through as epoch ms', () => {
+  const { parseClaudeWebText } = loadParsers();
+  const before = Date.now();
+  const r = parseClaudeWebText(
+    'Current session\n46% used\nResets in 3 hr 20 min\n' +
+    'Weekly\n15% used\nResets Sat 4:59 PM');
+  const offset = 3 * 3_600_000 + 20 * 60_000;
+  assert.ok(r.reset5hMs >= before + offset - 5000, `too early: ${r.reset5hMs}`);
+  assert.ok(r.reset5hMs <= Date.now() + offset + 5000, `too late: ${r.reset5hMs}`);
+  // "Sat 4:59 PM" resolves to the next Saturday — a real future timestamp.
+  assert.ok(r.resetWkMs > before, `not in the future: ${r.resetWkMs}`);
+});
+
+test('claude scraped text with no reset prose reports 0, not a bogus timestamp', () => {
+  const { parseClaudeWebText } = loadParsers();
+  const r = parseClaudeWebText('Current session\n46% used\nWeekly\n15% used');
+  assert.strictEqual(r.reset5hMs, 0);
+  assert.strictEqual(r.resetWkMs, 0);
 });
 
 // metrics.js:44 clamps to [0,100] for DISPLAY; the reading itself stays raw.
