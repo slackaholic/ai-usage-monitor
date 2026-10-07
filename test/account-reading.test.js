@@ -388,3 +388,29 @@ test('a reading in the new shape survives the round trip field for field', () =>
   const r = normaliseCachedReading({ ...saved });
   assert.deepStrictEqual({ ...r, extra: { ...r.extra } }, saved);
 });
+
+// The operator's real settings.json carries exactly this shape in its
+// `claude2` slot: percentages plus RELATIVE reset prose and no epoch
+// timestamp, written by the pre-refactor renderer. The old code rendered that
+// prose verbatim on the cached first paint ("Resets in " + data.reset5h), so
+// a duration captured hours or days earlier was presented as if current. It
+// is dropped deliberately: 0 means unknown, which renders blank, and blank is
+// the honest rendering of a figure the cache cannot stand behind. The card
+// fills in on the first live poll, which also rewrites the slot with epoch ms
+// so this shape never recurs. Do not "restore" the prose.
+test('a legacy cache with only relative reset prose reports unknown, not a stale duration', () => {
+  const { normaliseCachedReading } = loadParsers();
+  const r = normaliseCachedReading({
+    sessionUsed: 32, weeklyUsed: 23,
+    sessionReset: '4 hours 32 minutes', weeklyReset: 'Sat, 4:59 PM',
+    account: 'claude max 20x',
+  });
+  assert.strictEqual(r.pct5h, 68, 'the percentages still convert');
+  assert.strictEqual(r.pctWk, 77);
+  assert.strictEqual(r.reset5hMs, 0, 'relative prose is not a timestamp');
+  assert.strictEqual(r.resetWkMs, 0);
+  assert.strictEqual(r.label, 'claude max 20x');
+  // Unknown, not absent: the window exists, the cache just cannot date it.
+  assert.strictEqual(r.has5h, true);
+  assert.strictEqual(r.hasWk, true);
+});
