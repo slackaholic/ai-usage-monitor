@@ -481,11 +481,11 @@ In `renderer.js`, change these five declarations to empty containers. They are a
 | `const LOG_ACCOUNT = { codex: 'codex', claude: 'claude-desktop' };` | `const LOG_ACCOUNT = {};` |
 | `const lastPct5h = { codex: null, claude: null };` | `const lastPct5h = {};` |
 
-Also empty the `_ss` literal to `const _ss = {};` — its two seeded keys now come from registration.
+Also empty the `_ss` literal — its two seeded keys now come from registration — and rename it to `sessionStore` in the same pass. Four live references: the declaration, `registerAccount`, `trackSession` and `renderClaudeCodeApiData`. **As built, Task 2 named it `registry`; Task 3 Step 1 renames it to `sessionStore`.** Do not sed blindly: `renderer.js:1148` and `:1589` say "registry" about the account-descriptor set, which is a different thing and must not change.
 
 - [ ] **Step 4: Add the registration block**
 
-Insert immediately after the `_ss` declaration:
+Insert immediately after the session-store declaration. **It must be module-level, not inside `init()`** — see Step 6:
 
 ```js
 // ── REGISTRATION ──────────────────────────────────────────────────────────
@@ -495,11 +495,10 @@ Insert immediately after the `_ss` declaration:
 // remembering seven separate places, and forgetting one produced a card that
 // looked fine until something downstream read an undefined slot.
 //
-// `registry` is the session store, aliased as _ss for the existing callers. It
-// is keyed by logKey; everything else is keyed by descriptor id. Those two
-// namespaces are not interchangeable: logKey addresses 7,000+ usage-log
-// entries, id addresses DOM elements.
-const registry = _ss;
+// `sessionStore` is keyed by logKey; everything else is keyed by
+// descriptor id. Those two namespaces are not interchangeable: logKey
+// addresses 7,000+ usage-log entries, id addresses DOM elements.
+// (Declared above as part of Step 3's rename — no alias survives.)
 
 function registerAccount(acct) {
   if (!(acct.id in hasData))          hasData[acct.id] = false;
@@ -509,7 +508,7 @@ function registerAccount(acct) {
   LOG_ACCOUNT[acct.id] = acct.logKey;
   trendHistory[acct.id + '-5h'] = trendHistory[acct.id + '-5h'] || [];
   trendHistory[acct.id + '-wk'] = trendHistory[acct.id + '-wk'] || [];
-  registry[acct.logKey] = registry[acct.logKey] || { start: null, lastPct: null };
+  sessionStore[acct.logKey] = sessionStore[acct.logKey] || { start: null, lastPct: null };
 }
 
 // The two providers that are always present. Claude Code descriptors are
@@ -539,14 +538,16 @@ function accountPrefixes() {
 
 - [ ] **Step 6: Call `registerAccount` for the fixed providers at startup**
 
-In `init()`, before the first fetch is dispatched, add:
+At **module level**, immediately after the `PROVIDERS` array — not inside `init()`:
 
 ```js
-  PROVIDERS.forEach(registerAccount);
+PROVIDERS.forEach(registerAccount);
 ```
 
+`init()` is too late. It calls `applyClaudeCardSettings` and `loadCachedStaticData` before dispatching any fetch, and the latter reaches `renderBudget('codex')` — which would read an unregistered slot. Registering at module level also means the seven registries are never observable in a half-populated state.
+
 In `buildClaudeCodeCards`, replace the inline seeding block (the eight lines from
-`if (!(acct.id in hasData))` through `_ss[acct.logKey] = …`) with:
+`if (!(acct.id in hasData))` through the session-store line) with:
 
 ```js
     registerAccount(acct);
@@ -592,8 +593,9 @@ git commit -F "$MSGFILE"
 ## Task 3: One render path, and the cache that feeds it
 
 **Files:**
-- Modify: `renderer.js` — add `renderAccountData` and `normaliseCachedReading`; delete `renderCodexData`, `renderClaudeWebData`, `renderClaudeCodeApiData`; rewrite `loadCachedStaticData` and `loadCachedClaudeCodeData`; repoint the three fetch callers
-- Test: `test/account-render.test.js` (create), `test/account-reading.test.js` (extend)
+- Modify: `renderer.js` — rename `registry` to `sessionStore`; add `renderAccountData` and `normaliseCachedReading`; delete `renderCodexData`, `renderClaudeWebData`, `renderClaudeCodeApiData`; rewrite `loadCachedStaticData` and `loadCachedClaudeCodeData`; repoint the three fetch callers
+- Modify: `accounts.js` — one comment, as part of the rename
+- Test: `test/account-render.test.js` (create), `test/account-reading.test.js` (extend + rename accessors)
 
 **Interfaces:**
 - Consumes: `makeReading` (Task 1), `registerAccount`, `PROVIDERS` (Task 2)
@@ -603,7 +605,41 @@ git commit -F "$MSGFILE"
 
 **Why these are one task.** The two cache loaders call all three render functions this task deletes (`renderer.js:1355`, `:1356`, `:1374`). Splitting the deletion from the cache rewrite would commit a renderer that throws on startup — and `node --check` would not catch it, because a dangling function reference is a runtime error, not a syntax error. Both replacements are written and green before anything is deleted.
 
-- [ ] **Step 1: Write the failing render test**
+- [ ] **Step 1: Rename `registry` to `sessionStore`**
+
+Task 2 named the session store `registry`. That name is already taken: in this
+codebase "the registry" means the account-descriptor set from `accounts.js`.
+`renderer.js:1148` and `renderer.js:1589` both use it that way, as do
+`accounts.js:235` and tests in `analytics-renderer`, `settings-renderer` and
+`metrics`. Two different things under one name, in the one refactor whose
+purpose is unambiguous vocabulary.
+
+Rename the **session store only**. It has four live references in
+`renderer.js` — find them by exact text, do not sed the file:
+
+| Line | Current |
+| --- | --- |
+| ~38 | `const registry = {};` |
+| ~50 | `registry[acct.logKey] = registry[acct.logKey] \|\| { … }` (inside `registerAccount`) |
+| ~191 | `const s = registry[account];` (inside `trackSession`) |
+| ~1175-1176 | `registry[acct.logKey].start` / `.lastPct` (inside `renderClaudeCodeApiData`) |
+
+Also update the comment at `renderer.js:10-11`, and `accounts.js:235`, which
+says "session tracking (`registry`)".
+
+**Leave `renderer.js:1148` and `renderer.js:1589` alone** — those say
+"registry" about the descriptor set, correctly.
+
+Then the test accessors in `test/account-reading.test.js`: the `c.registry`
+reads at lines ~264, ~272, ~273, ~292, ~293, ~303, ~304, ~318, the context
+handoff string at ~52, and the comment at ~40.
+
+Run: `npm test`
+Expected: PASS, 191 tests. A pure rename changes no behaviour, so a failure
+here means a reference was missed or one of the two descriptor-registry
+comments was caught by mistake.
+
+- [ ] **Step 2: Write the failing render test**
 
 Create `test/account-render.test.js`:
 
@@ -730,12 +766,12 @@ test('an account with no extras and no hook renders without error', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 3: Run the test to verify it fails**
 
 Run: `node --test test/account-render.test.js`
 Expected: all FAIL with `expected render source markers`.
 
-- [ ] **Step 3: Write `renderAccountData`**
+- [ ] **Step 4: Write `renderAccountData`**
 
 Insert where `renderCodexData` currently sits:
 
@@ -778,8 +814,8 @@ function renderAccountData(acct, reading, stale = false) {
     } else if (acct.exactSessionFromReset && reading.reset5hMs > 0) {
       const start = new Date(reading.reset5hMs - 5 * 3_600_000).toISOString();
       entry.sessionStart = start;
-      registry[acct.logKey].start   = start;
-      registry[acct.logKey].lastPct = reading.pct5h;
+      sessionStore[acct.logKey].start   = start;
+      sessionStore[acct.logKey].lastPct = reading.pct5h;
     } else {
       const start = trackSession(acct.logKey, reading.pct5h);
       if (start) entry.sessionStart = start;
@@ -802,12 +838,12 @@ function renderAccountData(acct, reading, stale = false) {
 // ── RENDER END ──
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 5: Run the test to verify it passes**
 
 Run: `node --test test/account-render.test.js`
 Expected: PASS, 7 tests.
 
-- [ ] **Step 5: Write the failing cache test**
+- [ ] **Step 6: Write the failing cache test**
 
 Append to `test/account-reading.test.js`:
 
@@ -862,12 +898,12 @@ test('a reading already in the new shape passes through unchanged', () => {
 });
 ```
 
-- [ ] **Step 6: Run the test to verify it fails**
+- [ ] **Step 7: Run the test to verify it fails**
 
 Run: `node --test test/account-reading.test.js`
 Expected: the six new tests FAIL with `normaliseCachedReading is not a function`.
 
-- [ ] **Step 7: Implement `normaliseCachedReading`**
+- [ ] **Step 8: Implement `normaliseCachedReading`**
 
 Add inside the READING PARSERS section, before the closing marker:
 
@@ -902,7 +938,7 @@ function normaliseCachedReading(raw) {
 }
 ```
 
-- [ ] **Step 8: Delete the three old render functions and repoint their callers**
+- [ ] **Step 9: Delete the three old render functions and repoint their callers**
 
 Delete `renderCodexData`, `renderClaudeWebData` and `renderClaudeCodeApiData` entirely. Then:
 
@@ -932,7 +968,7 @@ In `fetchClaudeCodeUsage`, replace `renderClaudeCodeApiData(acct, result);` with
   renderAccountData(acct, normaliseClaudeCodeReading(result));
 ```
 
-- [ ] **Step 9: Rewrite both cache loaders**
+- [ ] **Step 10: Rewrite both cache loaders**
 
 Replace `loadCachedStaticData` and `loadCachedClaudeCodeData` with:
 
@@ -966,7 +1002,7 @@ function loadCachedClaudeCodeData(settings) {
 }
 ```
 
-- [ ] **Step 10: Give Codex its `renderExtra` hook and Claude Code its session flag**
+- [ ] **Step 11: Give Codex its `renderExtra` hook and Claude Code its session flag**
 
 In the `PROVIDERS` array, change the Codex entry to:
 
@@ -982,22 +1018,22 @@ In `buildClaudeCodeCards`, before `registerAccount(acct)`, add:
     acct.exactSessionFromReset = true;
 ```
 
-- [ ] **Step 11: Verify no caller of the deleted functions remains**
+- [ ] **Step 12: Verify no caller of the deleted functions remains**
 
 Run: `grep -n "renderCodexData\|renderClaudeWebData\|renderClaudeCodeApiData" renderer.js`
-Expected: no output. All three call sites in the two cache loaders were repointed in Steps 8 and 9, so a hit here means one was missed — and `node --check` will not catch it.
+Expected: no output. All three call sites in the two cache loaders were repointed in Steps 9 and 10, so a hit here means one was missed — and `node --check` will not catch it.
 
-- [ ] **Step 12: Syntax check**
+- [ ] **Step 13: Syntax check**
 
 Run: `node --check renderer.js`
 Expected: no output.
 
-- [ ] **Step 13: Run the full suite**
+- [ ] **Step 14: Run the full suite**
 
 Run: `npm test`
 Expected: PASS, 190 tests.
 
-- [ ] **Step 14: Commit**
+- [ ] **Step 15: Commit**
 
 Write the message below to `$MSGFILE` with the Write tool (not a heredoc - see Global Constraints), then:
 
@@ -1910,5 +1946,5 @@ Phase 2 is complete but **not merged**. Report:
 4. **`ACCOUNT_PAIRS`, `VALID_ACCOUNTS`, `ACCOUNT_LABELS` and `PLAN_MULTIPLIERS` each exist twice** — a literal for first paint and a rebuild that runs on a Claude Code rescan. The draft edited only the literals, so a Gemini entry would have silently vanished the first time the user rescanned. `PLAN_MULTIPLIERS` was the worst case: its keys are deleted and re-added wholesale in the rebuild, so the literal entry alone would always be wiped. Task 10 Step 5 now names all five sites and says why.
 5. Commit steps used shell heredocs, which global CLAUDE.md §14 forbids for multi-line content. All nine converted to the Write-then-`-F` form.
 
-**Type consistency.** `Reading` field names are identical across Tasks 1, 3 and 8. `registerAccount`, `renderAccountData`, `normaliseCachedReading`, `parseGeminiUsage` and `isExpectedAccount` are each defined once and referenced with matching signatures. `registry` is introduced in Task 2 as the alias for `_ss` and used under that name in Task 3. `renderBudget(prefix, pct5h)` matches the real signature at `renderer.js:635`. `isExpectedAccount` is used in Task 10 but defined in Task 11 — Task 10 Step 3 says to write it early if the tasks run in order.
+**Type consistency.** `Reading` field names are identical across Tasks 1, 3 and 8. `registerAccount`, `renderAccountData`, `normaliseCachedReading`, `parseGeminiUsage` and `isExpectedAccount` are each defined once and referenced with matching signatures. The session store is introduced in Task 2 (as built: `registry`) and renamed to `sessionStore` by Task 3 Step 1, which is the name every later task uses. `renderBudget(prefix, pct5h)` matches the real signature at `renderer.js:635`. `isExpectedAccount` is used in Task 10 but defined in Task 11 — Task 10 Step 3 says to write it early if the tasks run in order.
 
