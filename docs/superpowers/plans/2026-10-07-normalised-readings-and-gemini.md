@@ -589,17 +589,21 @@ git commit -F "$MSGFILE"
 
 ---
 
-## Task 3: One render path
+## Task 3: One render path, and the cache that feeds it
 
 **Files:**
-- Modify: `renderer.js` — add `renderAccountData`; delete `renderCodexData`, `renderClaudeWebData`, `renderClaudeCodeApiData`; update their callers
-- Test: `test/account-render.test.js` (create)
+- Modify: `renderer.js` — add `renderAccountData` and `normaliseCachedReading`; delete `renderCodexData`, `renderClaudeWebData`, `renderClaudeCodeApiData`; rewrite `loadCachedStaticData` and `loadCachedClaudeCodeData`; repoint the three fetch callers
+- Test: `test/account-render.test.js` (create), `test/account-reading.test.js` (extend)
 
 **Interfaces:**
 - Consumes: `makeReading` (Task 1), `registerAccount`, `PROVIDERS` (Task 2)
-- Produces: `renderAccountData(acct, reading, stale) -> void`
+- Produces:
+  - `renderAccountData(acct, reading, stale = false) -> void`
+  - `normaliseCachedReading(raw) -> Reading|null`
 
-- [ ] **Step 1: Write the failing test**
+**Why these are one task.** The two cache loaders call all three render functions this task deletes (`renderer.js:1355`, `:1356`, `:1374`). Splitting the deletion from the cache rewrite would commit a renderer that throws on startup — and `node --check` would not catch it, because a dangling function reference is a runtime error, not a syntax error. Both replacements are written and green before anything is deleted.
+
+- [ ] **Step 1: Write the failing render test**
 
 Create `test/account-render.test.js`:
 
@@ -803,108 +807,7 @@ function renderAccountData(acct, reading, stale = false) {
 Run: `node --test test/account-render.test.js`
 Expected: PASS, 7 tests.
 
-- [ ] **Step 5: Delete the three old render functions and repoint their callers**
-
-Delete `renderCodexData`, `renderClaudeWebData` and `renderClaudeCodeApiData` entirely. Then:
-
-In `fetchCodexUsage`, replace `renderCodexData(parsed);` with:
-
-```js
-  renderAccountData(PROVIDERS.find(p => p.id === 'codex'), parsed);
-```
-
-In `fetchClaudeWebUsage`, replace the both-null guard and render call. The guard now reads the normalised names:
-
-```js
-  if (parsed.pct5h === null && parsed.pctWk === null) {
-```
-
-and the render call becomes:
-
-```js
-  if (result.email) parsed.label = result.email;
-  hasData.claude = true;
-  renderAccountData(PROVIDERS.find(p => p.id === 'claude'), parsed);
-```
-
-In `fetchClaudeCodeUsage`, replace `renderClaudeCodeApiData(acct, result);` with:
-
-```js
-  renderAccountData(acct, normaliseClaudeCodeReading(result));
-```
-
-- [ ] **Step 6: Give Codex its `renderExtra` hook and Claude Code its session flag**
-
-In the `PROVIDERS` array, change the Codex entry to:
-
-```js
-  { id: 'codex', logKey: 'codex', label: 'Codex',
-    renderExtra: (_acct, extra) => setText('codex-credits', extra.credits) },
-```
-
-In `buildClaudeCodeCards`, before `registerAccount(acct)`, add:
-
-```js
-    // Claude Code's 5h reset header is the exact end of the window.
-    acct.exactSessionFromReset = true;
-```
-
-- [ ] **Step 7: Verify no caller of the deleted functions remains**
-
-Run: `grep -n "renderCodexData\|renderClaudeWebData\|renderClaudeCodeApiData" renderer.js`
-Expected: no output. If `loadCachedStaticData` or `loadCachedClaudeCodeData` still reference them, leave them failing — Task 4 rewrites both.
-
-- [ ] **Step 8: Syntax check**
-
-Run: `node --check renderer.js`
-Expected: no output.
-
-- [ ] **Step 9: Commit**
-
-Write the message below to `$MSGFILE` with the Write tool (not a heredoc - see Global Constraints), then:
-
-```
-refactor(readings): collapse three render functions into one
-
-renderCodexData, renderClaudeWebData and renderClaudeCodeApiData
-performed the same ten steps in the same order, differing only in field
-names and hardcoded ids. One renderAccountData(acct, reading, stale)
-replaces all three.
-
-The test that proves it: give three providers an identical reading and
-assert the resulting DOM, trend pushes and log entry are
-indistinguishable. That fails against the previous code, because Claude
-Desktop inverted polarity — so it discriminates rather than restating
-the implementation.
-
-The two behaviours that genuinely differ became descriptor properties
-rather than branches: exactSessionFromReset for Claude Code, whose 5h
-header gives the window's exact end, and renderExtra for Codex's
-credits line. Keeping the credits line here would have meant
-`if (acct.id === 'codex')` inside the one function whose purpose is to
-know nothing about any single provider.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-```
-
-```bash
-git add renderer.js test/account-render.test.js
-git commit -F "$MSGFILE"
-```
-
----
-
-## Task 4: Read-tolerant cache, no settings migration
-
-**Files:**
-- Modify: `renderer.js` — add `normaliseCachedReading`; rewrite `loadCachedStaticData` and `loadCachedClaudeCodeData`
-- Test: `test/account-reading.test.js` (extend)
-
-**Interfaces:**
-- Consumes: `makeReading` (Task 1), `renderAccountData` (Task 3)
-- Produces: `normaliseCachedReading(raw) -> Reading|null`
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 5: Write the failing cache test**
 
 Append to `test/account-reading.test.js`:
 
@@ -959,12 +862,12 @@ test('a reading already in the new shape passes through unchanged', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 6: Run the test to verify it fails**
 
 Run: `node --test test/account-reading.test.js`
 Expected: the six new tests FAIL with `normaliseCachedReading is not a function`.
 
-- [ ] **Step 3: Implement `normaliseCachedReading`**
+- [ ] **Step 7: Implement `normaliseCachedReading`**
 
 Add inside the READING PARSERS section, before the closing marker:
 
@@ -999,7 +902,37 @@ function normaliseCachedReading(raw) {
 }
 ```
 
-- [ ] **Step 4: Rewrite both cache loaders**
+- [ ] **Step 8: Delete the three old render functions and repoint their callers**
+
+Delete `renderCodexData`, `renderClaudeWebData` and `renderClaudeCodeApiData` entirely. Then:
+
+In `fetchCodexUsage`, replace `renderCodexData(parsed);` with:
+
+```js
+  renderAccountData(PROVIDERS.find(p => p.id === 'codex'), parsed);
+```
+
+In `fetchClaudeWebUsage`, replace the both-null guard and render call. The guard now reads the normalised names:
+
+```js
+  if (parsed.pct5h === null && parsed.pctWk === null) {
+```
+
+and the render call becomes:
+
+```js
+  if (result.email) parsed.label = result.email;
+  hasData.claude = true;
+  renderAccountData(PROVIDERS.find(p => p.id === 'claude'), parsed);
+```
+
+In `fetchClaudeCodeUsage`, replace `renderClaudeCodeApiData(acct, result);` with:
+
+```js
+  renderAccountData(acct, normaliseClaudeCodeReading(result));
+```
+
+- [ ] **Step 9: Rewrite both cache loaders**
 
 Replace `loadCachedStaticData` and `loadCachedClaudeCodeData` with:
 
@@ -1033,35 +966,75 @@ function loadCachedClaudeCodeData(settings) {
 }
 ```
 
-- [ ] **Step 5: Run the full suite**
+- [ ] **Step 10: Give Codex its `renderExtra` hook and Claude Code its session flag**
+
+In the `PROVIDERS` array, change the Codex entry to:
+
+```js
+  { id: 'codex', logKey: 'codex', label: 'Codex',
+    renderExtra: (_acct, extra) => setText('codex-credits', extra.credits) },
+```
+
+In `buildClaudeCodeCards`, before `registerAccount(acct)`, add:
+
+```js
+    // Claude Code's 5h reset header is the exact end of the window.
+    acct.exactSessionFromReset = true;
+```
+
+- [ ] **Step 11: Verify no caller of the deleted functions remains**
+
+Run: `grep -n "renderCodexData\|renderClaudeWebData\|renderClaudeCodeApiData" renderer.js`
+Expected: no output. All three call sites in the two cache loaders were repointed in Steps 8 and 9, so a hit here means one was missed — and `node --check` will not catch it.
+
+- [ ] **Step 12: Syntax check**
+
+Run: `node --check renderer.js`
+Expected: no output.
+
+- [ ] **Step 13: Run the full suite**
 
 Run: `npm test`
 Expected: PASS, 190 tests.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 14: Commit**
 
 Write the message below to `$MSGFILE` with the Write tool (not a heredoc - see Global Constraints), then:
 
 ```
-refactor(readings): one read-tolerant cache path, no migration
+refactor(readings): collapse three render paths into one, with its cache
 
-settings.json holds three legacy shapes plus the new one.
-normaliseCachedReading reads all four, so settings.json needs no
-migration — saveCachedData rewrites it wholesale on the first poll, and
-a legacy shape only has to survive one startup render. The dual-shape
-handling previously inlined in loadCachedClaudeCodeData is deleted
-rather than duplicated.
+renderCodexData, renderClaudeWebData and renderClaudeCodeApiData
+performed the same ten steps in the same order, differing only in field
+names and hardcoded ids. One renderAccountData(acct, reading, stale)
+replaces all three.
 
-A cached reading never claims a window is ABSENT. The cache can only
-record that it saw no number, which renders an em-dash; asserting n/a
-from data written weeks ago would be a claim the cache cannot support.
-An explicit has5h/hasWk is trusted only when the new code wrote it.
+The test that proves it: give three providers an identical reading and
+assert the resulting DOM, trend pushes and log entry are
+indistinguishable. That fails against the previous code, because Claude
+Desktop converted used-to-remaining inside its own render function - so
+it discriminates rather than restating the implementation.
+
+The two behaviours that genuinely differ became descriptor properties
+rather than branches: exactSessionFromReset for Claude Code, whose 5h
+header gives the window's exact end, and renderExtra for Codex's
+credits line. Keeping the credits line in the shared path would have
+meant `if (acct.id === 'codex')` inside the one function whose purpose
+is to know nothing about any single provider.
+
+normaliseCachedReading lands in the same commit because the two cache
+loaders call all three deleted functions. settings.json still needs no
+migration: saveCachedData rewrites it wholesale on the first poll, so a
+legacy shape has to survive exactly one startup render. A cached
+reading never claims a window is ABSENT - it can only record that it
+saw no number, which renders an em-dash, where asserting n/a from weeks
+-old data would be a claim the cache cannot support.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ```
 
 ```bash
-git add renderer.js test/account-reading.test.js
+git add renderer.js test/account-render.test.js test/account-reading.test.js
 git commit -F "$MSGFILE"
 ```
 
@@ -1925,7 +1898,7 @@ Phase 2 is complete but **not merged**. Report:
 
 ## Self-review notes
 
-**Spec coverage.** Normalised reading → Task 1. `registerAccount` + descriptors → Task 2. Single render path + `renderExtra` + `exactSessionFromReset` → Task 3. Read-tolerant cache → Task 4. `fetch-url` deletion + retry timers → Task 5. Gemini transport → Task 9; parse → Task 8; registration → Task 10; identity guard → Tasks 10 and 11; discovery gate → Task 7. Every verification bullet in both specs maps to a step.
+**Spec coverage.** Normalised reading → Task 1. `registerAccount` + descriptors → Task 2. Single render path + `renderExtra` + `exactSessionFromReset` + read-tolerant cache → Task 3 (Tasks 3 and 4 were merged at pre-flight; see that task's rationale). `fetch-url` deletion + retry timers → Task 5. Gemini transport → Task 9; parse → Task 8; registration → Task 10; identity guard → Tasks 10 and 11; discovery gate → Task 7. Every verification bullet in both specs maps to a step.
 
 **Known gap, deliberate.** Task 8's test contains three bracketed values that come from Task 7's discovery output. They are a data dependency on a user-performed task, not placeholders — Task 8 cannot start until they are filled, and Step 3 states that none may remain.
 
@@ -1937,5 +1910,5 @@ Phase 2 is complete but **not merged**. Report:
 4. **`ACCOUNT_PAIRS`, `VALID_ACCOUNTS`, `ACCOUNT_LABELS` and `PLAN_MULTIPLIERS` each exist twice** — a literal for first paint and a rebuild that runs on a Claude Code rescan. The draft edited only the literals, so a Gemini entry would have silently vanished the first time the user rescanned. `PLAN_MULTIPLIERS` was the worst case: its keys are deleted and re-added wholesale in the rebuild, so the literal entry alone would always be wiped. Task 10 Step 5 now names all five sites and says why.
 5. Commit steps used shell heredocs, which global CLAUDE.md §14 forbids for multi-line content. All nine converted to the Write-then-`-F` form.
 
-**Type consistency.** `Reading` field names are identical across Tasks 1, 3, 4 and 8. `registerAccount`, `renderAccountData`, `normaliseCachedReading`, `parseGeminiUsage` and `isExpectedAccount` are each defined once and referenced with matching signatures. `registry` is introduced in Task 2 as the alias for `_ss` and used under that name in Task 3. `renderBudget(prefix, pct5h)` matches the real signature at `renderer.js:635`. `isExpectedAccount` is used in Task 10 but defined in Task 11 — Task 10 Step 3 says to write it early if the tasks run in order.
+**Type consistency.** `Reading` field names are identical across Tasks 1, 3 and 8. `registerAccount`, `renderAccountData`, `normaliseCachedReading`, `parseGeminiUsage` and `isExpectedAccount` are each defined once and referenced with matching signatures. `registry` is introduced in Task 2 as the alias for `_ss` and used under that name in Task 3. `renderBudget(prefix, pct5h)` matches the real signature at `renderer.js:635`. `isExpectedAccount` is used in Task 10 but defined in Task 11 — Task 10 Step 3 says to write it early if the tasks run in order.
 
