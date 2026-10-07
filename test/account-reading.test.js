@@ -49,7 +49,7 @@ function loadRegistration() {
   vm.runInContext(source.slice(start, end), context);
   vm.runInContext(
     'Object.assign(globalThis, { accountOverrides, hasData, cachedData, ' +
-    'trendHistory, LOG_ACCOUNT, lastPct5h, registry, PROVIDERS });',
+    'trendHistory, LOG_ACCOUNT, lastPct5h, sessionStore, PROVIDERS });',
     context);
   return context;
 }
@@ -261,7 +261,7 @@ test('registering an account seeds every registry it needs', () => {
   // realm's Array.prototype; spreading re-homes them for deepStrictEqual.
   assert.deepStrictEqual([...c.trendHistory['gemini-5h']], []);
   assert.deepStrictEqual([...c.trendHistory['gemini-wk']], []);
-  assert.deepStrictEqual(c.registry.gemini.start, null);
+  assert.deepStrictEqual(c.sessionStore.gemini.start, null);
 });
 
 // The session store is keyed by logKey, every other registry by id. Conflating
@@ -269,8 +269,8 @@ test('registering an account seeds every registry it needs', () => {
 test('the session store is keyed by logKey while the rest key by id', () => {
   const c = loadRegistration();
   c.registerAccount({ id: 'claude2', logKey: 'claude-vscode', label: 'Claude Code' });
-  assert.ok('claude-vscode' in c.registry, 'session store keys by logKey');
-  assert.ok(!('claude2' in c.registry), 'and never by id');
+  assert.ok('claude-vscode' in c.sessionStore, 'session store keys by logKey');
+  assert.ok(!('claude2' in c.sessionStore), 'and never by id');
   assert.ok('claude2' in c.hasData, 'display registries key by id');
   // The bridge between the namespaces, and the negative half of the split. With
   // id === logKey (every other test here) these cannot be told apart.
@@ -289,8 +289,8 @@ test('re-registering an account preserves the data it already has', () => {
   c.lastPct5h.codex = 42;
   c.accountOverrides.codex = 'Work';
   c.trendHistory['codex-5h'].push(55);
-  c.registry.codex.start = '2026-10-07T08:00:00.000Z';
-  c.registry.codex.lastPct = 42;
+  c.sessionStore.codex.start = '2026-10-07T08:00:00.000Z';
+  c.sessionStore.codex.lastPct = 42;
 
   c.registerAccount({ id: 'codex', logKey: 'codex', label: 'Codex' });
 
@@ -300,8 +300,8 @@ test('re-registering an account preserves the data it already has', () => {
   assert.strictEqual(c.cachedData.codex.pctWk, 90);
   assert.strictEqual(c.lastPct5h.codex, 42);
   assert.strictEqual(c.accountOverrides.codex, 'Work');
-  assert.strictEqual(c.registry.codex.start, '2026-10-07T08:00:00.000Z');
-  assert.strictEqual(c.registry.codex.lastPct, 42);
+  assert.strictEqual(c.sessionStore.codex.start, '2026-10-07T08:00:00.000Z');
+  assert.strictEqual(c.sessionStore.codex.lastPct, 42);
 });
 
 test('the fixed providers are registered with their immutable log keys', () => {
@@ -315,5 +315,76 @@ test('the fixed providers are registered with their immutable log keys', () => {
   assert.deepStrictEqual(Object.keys(c.hasData), ['codex', 'claude']);
   assert.strictEqual(c.LOG_ACCOUNT.codex, 'codex');
   assert.strictEqual(c.LOG_ACCOUNT.claude, 'claude-desktop');
-  assert.deepStrictEqual(Object.keys(c.registry), ['codex', 'claude-desktop']);
+  assert.deepStrictEqual(Object.keys(c.sessionStore), ['codex', 'claude-desktop']);
+});
+
+test('a legacy codex cache reads as a normalised reading', () => {
+  const { normaliseCachedReading } = loadParsers();
+  const r = normaliseCachedReading({
+    shared5h: null, sharedWeek: 100, reset7dMs: 123, credits: '0',
+    email: 'a@example.com',
+  });
+  assert.strictEqual(r.pctWk, 100);
+  assert.strictEqual(r.resetWkMs, 123);
+  assert.strictEqual(r.label, 'a@example.com');
+  // The cached credits line paints on the startup render; losing it here would
+  // blank the line until the first live poll.
+  assert.deepStrictEqual({ ...r.extra }, { credits: '0' });
+});
+
+test('a legacy codex cache keeps a 5h reading when it has one', () => {
+  const { normaliseCachedReading } = loadParsers();
+  const r = normaliseCachedReading({ shared5h: 64, sharedWeek: 87 });
+  assert.strictEqual(r.pct5h, 64);
+  assert.strictEqual(r.pctWk, 87);
+});
+
+test('a legacy claude cache converts used to remaining', () => {
+  const { normaliseCachedReading } = loadParsers();
+  const r = normaliseCachedReading({ sessionUsed: 36, weeklyUsed: 13 });
+  assert.strictEqual(r.pct5h, 64);
+  assert.strictEqual(r.pctWk, 87);
+});
+
+test('a legacy claude code cache reads through pct7d', () => {
+  const { normaliseCachedReading } = loadParsers();
+  const r = normaliseCachedReading({ pct5h: 55, pct7d: 86, account: 'max 20x' });
+  assert.strictEqual(r.pct5h, 55);
+  assert.strictEqual(r.pctWk, 86);
+  assert.strictEqual(r.label, 'max 20x');
+});
+
+// A cache cannot support the claim "this plan has no 5h window". Only a live
+// poll can. Rendering n/a from a stale cache would assert something the data
+// does not know.
+test('a cached reading never claims a window is absent', () => {
+  const { normaliseCachedReading } = loadParsers();
+  assert.strictEqual(normaliseCachedReading({ shared5h: null, sharedWeek: 100 }).has5h, true);
+  assert.strictEqual(normaliseCachedReading({ pct5h: 55 }).hasWk, true);
+});
+
+test('an empty or absent cache yields nothing to render', () => {
+  const { normaliseCachedReading } = loadParsers();
+  assert.strictEqual(normaliseCachedReading(null), null);
+  assert.strictEqual(normaliseCachedReading({}), null);
+});
+
+test('a reading already in the new shape passes through unchanged', () => {
+  const { normaliseCachedReading } = loadParsers();
+  const r = normaliseCachedReading({ pct5h: 10, pctWk: 20, has5h: false });
+  assert.strictEqual(r.pct5h, 10);
+  assert.strictEqual(r.pctWk, 20);
+  assert.strictEqual(r.has5h, false, 'a cache written by the new code is trusted');
+});
+
+// The steady state: after the first poll every cached slot is in this shape, so
+// a field dropped here is a field missing from every startup render.
+test('a reading in the new shape survives the round trip field for field', () => {
+  const { normaliseCachedReading } = loadParsers();
+  const saved = {
+    pct5h: 10, pctWk: 20, reset5hMs: 111, resetWkMs: 222,
+    has5h: false, hasWk: true, label: 'a@example.com', extra: { credits: 5 },
+  };
+  const r = normaliseCachedReading({ ...saved });
+  assert.deepStrictEqual({ ...r, extra: { ...r.extra } }, saved);
 });
