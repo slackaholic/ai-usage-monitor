@@ -150,6 +150,28 @@ test('claude scraped text with no reset prose reports 0, not a bogus timestamp',
   assert.strictEqual(r.resetWkMs, 0);
 });
 
+test('codex scraped text carries its reset prose through as epoch ms', () => {
+  const { parseCodexText } = loadParsers();
+  const before = Date.now();
+  const r = parseCodexText(
+    '5 hour usage limit\n40% remaining\nResets in 2 hr 10 min\n' +
+    'Weekly usage limit\n75% remaining\nResets Sat 4:59 PM');
+  assert.strictEqual(r.pct5h, 40);
+  assert.strictEqual(r.pctWk, 75);
+  const offset = 2 * 3_600_000 + 10 * 60_000;
+  assert.ok(r.reset5hMs >= before + offset - 5000, `too early: ${r.reset5hMs}`);
+  assert.ok(r.reset5hMs <= Date.now() + offset + 5000, `too late: ${r.reset5hMs}`);
+  assert.ok(r.resetWkMs > before, `not in the future: ${r.resetWkMs}`);
+});
+
+test('codex scraped text with no reset prose reports 0', () => {
+  const { parseCodexText } = loadParsers();
+  const r = parseCodexText(
+    '5 hour usage limit\n40% remaining\nWeekly usage limit\n75% remaining');
+  assert.strictEqual(r.reset5hMs, 0);
+  assert.strictEqual(r.resetWkMs, 0);
+});
+
 // metrics.js:44 clamps to [0,100] for DISPLAY; the reading itself stays raw.
 // test/rate-limit-headers.test.js pins this for the Claude Code header path
 // ("over-quota stays negative — that is a real reading, not a sentinel").

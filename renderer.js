@@ -1268,15 +1268,26 @@ function parseCodexText(text) {
     const m = text.match(new RegExp(label + '[\\s\\S]{0,300}?(\\d+)%\\s*remaining', 'i'));
     return m ? parseInt(m[1], 10) : null;
   }
+  function resetTime(label) {
+    const m = text.match(new RegExp(label + '[\\s\\S]{0,500}?[Rr]esets?\\s+([^\\n\\r]+)', 'i'));
+    return m ? m[1].trim() : null;
+  }
   const creditsM = text.match(/credits remaining[\s\S]{0,100}?(\d[\d,]*)/i);
+  // Like the Claude scrape, the Codex page gives prose ("Resets in 2 hr 10 min"),
+  // not timestamps. parseResetToMs converts it to epoch ms so the fallback keeps
+  // its reset label and its logged reset timestamps — renderCodexData's
+  // parseResetToMs fallback reached these strings. A page with no such section
+  // yields null, which parseResetToMs maps to 0: the shape's "unknown".
   return makeReading({
-    pct5h:  pct(CODEX_5H_LABEL),
-    pctWk:  pct('Weekly usage limit'),
+    pct5h:     pct(CODEX_5H_LABEL),
+    pctWk:     pct('Weekly usage limit'),
+    reset5hMs: parseResetToMs(resetTime(CODEX_5H_LABEL)),
+    resetWkMs: parseResetToMs(resetTime('Weekly usage limit')),
     // Agrees with the API path so a fallback poll can't flip the 5h tile
     // between 'n/a' and '—'. An empty page claims nothing, and the both-null
     // guard in fetchCodexUsage stops it reaching the render.
-    has5h:  new RegExp(CODEX_5H_LABEL, 'i').test(text),
-    extra:  creditsM ? { credits: creditsM[1] } : null,
+    has5h:     new RegExp(CODEX_5H_LABEL, 'i').test(text),
+    extra:     creditsM ? { credits: creditsM[1] } : null,
   });
 }
 
