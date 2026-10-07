@@ -272,7 +272,10 @@ function parseClaudeOrgUsage(data) {
   const fh = data?.five_hour;
   const sd = data?.seven_day;
   const ms = (iso) => (iso && !isNaN(new Date(iso))) ? new Date(iso).getTime() : 0;
-  const remain = (u) => (typeof u === 'number') ? Math.max(0, 100 - u) : null;
+  // Unclamped: over-quota is a real reading, not a sentinel. Clamping
+  // here destroyed it; test/rate-limit-headers.test.js:68 now pins this,
+  // and metrics.js:44-46 clamps for display.
+  const remain = (u) => (typeof u === 'number') ? 100 - u : null;
   return makeReading({
     pct5h:     remain(fh?.utilization),
     pctWk:     remain(sd?.utilization),
@@ -286,7 +289,7 @@ Replace the `return { … }` block of `parseClaudeWebText` with:
 
 ```js
   const used = (u, r) => (u != null ? u : (r != null ? 100 - r : null));
-  const remain = (v) => (v != null ? Math.max(0, 100 - v) : null);
+  const remain = (v) => (v != null ? 100 - v : null);   // unclamped, as above
   return makeReading({
     pct5h: remain(used(sessionUsed, sessionRemaining)),
     pctWk: remain(used(weeklyUsed, weeklyRemaining)),
@@ -603,7 +606,7 @@ git commit -F "$MSGFILE"
   - `renderAccountData(acct, reading, stale = false) -> void`
   - `normaliseCachedReading(raw) -> Reading|null`
 
-**Why these are one task.** The two cache loaders call all three render functions this task deletes (`renderer.js:1355`, `:1356`, `:1374`). Splitting the deletion from the cache rewrite would commit a renderer that throws on startup — and `node --check` would not catch it, because a dangling function reference is a runtime error, not a syntax error. Both replacements are written and green before anything is deleted.
+**Why these are one task.** The two cache loaders call all three render functions this task deletes (`renderer.js:1459`, `:1460`, `:1478` as of HEAD — Tasks 1 and 2 shifted them; find them by exact text, not by line). Splitting the deletion from the cache rewrite would commit a renderer that throws on startup — and `node --check` would not catch it, because a dangling function reference is a runtime error, not a syntax error. Both replacements are written and green before anything is deleted.
 
 - [ ] **Step 1: Rename `registry` to `sessionStore`**
 
@@ -689,6 +692,10 @@ function loadRenderer() {
     showSection: () => {},
     resizeToFit: () => {},
     noFiveHourWindow: new Set(),
+    // Declared at renderer.js:38, outside this slice, so the context has
+    // to supply it or the exact-session branch throws ReferenceError.
+    sessionStore: { 'lk-claude2': { start: null, lastPct: null },
+                    'claude-vscode': { start: null, lastPct: null } },
   };
   vm.createContext(context);
   vm.runInContext(source.slice(start, end), context);
@@ -757,6 +764,42 @@ test('a provider-specific extra renders through its own hook, not a branch', () 
     { id: 'codex', logKey: 'codex', renderExtra: (a, x) => seen.push(x) },
     { ...READING, extra: { credits: 0 } });
   assert.deepStrictEqual(seen, [{ credits: 0 }]);
+});
+
+// The one behaviour that genuinely differs between providers, and the reason
+// it is a descriptor property rather than a branch. Claude Code's 5h header
+// gives the window's END, so the start is exactly five hours earlier; every
+// other provider has to infer it from a quota jump. Without this test the
+// refactor could drop the exact path entirely and stay green.
+test('exactSessionFromReset places the session from the reset, not a jump', () => {
+  const c = loadRenderer();
+  c.renderAccountData(
+    { id: 'claude2', logKey: 'claude-vscode', exactSessionFromReset: true },
+    { ...READING, reset5hMs: Date.UTC(2026, 9, 7, 17, 0, 0) });
+
+  const expected = new Date(Date.UTC(2026, 9, 7, 12, 0, 0)).toISOString();
+  assert.strictEqual(c.logged[0].sessionStart, expected,
+    'five hours before the reset, not trackSession\'s stub value');
+  assert.strictEqual(c.sessionStore['claude-vscode'].start, expected,
+    'and the session store is advanced too');
+  assert.strictEqual(c.sessionStore['claude-vscode'].lastPct, 55);
+});
+
+test('without the flag the session comes from trackSession', () => {
+  const c = loadRenderer();
+  c.renderAccountData({ id: 'codex', logKey: 'codex' },
+    { ...READING, reset5hMs: Date.UTC(2026, 9, 7, 17, 0, 0) });
+  assert.strictEqual(c.logged[0].sessionStart, '2026-10-07T00:00:00.000Z',
+    'the stub, so the exact path did not run');
+});
+
+test('a provider with no 5h window records no session at all', () => {
+  const c = loadRenderer();
+  c.renderAccountData(
+    { id: 'claude2', logKey: 'claude-vscode', exactSessionFromReset: true },
+    { ...READING, pct5h: null, has5h: false });
+  assert.ok(!('sessionStart' in c.logged[0]),
+    'carrying the last session forward would freeze the session count');
 });
 
 test('an account with no extras and no hook renders without error', () => {
@@ -916,7 +959,10 @@ Add inside the READING PARSERS section, before the closing marker:
 function normaliseCachedReading(raw) {
   if (!raw || typeof raw !== 'object') return null;
 
-  const fromUsed = (u) => (typeof u === 'number') ? Math.max(0, 100 - u) : null;
+  // Unclamped, like the parse boundary: over-quota is a real reading,
+  // not a sentinel (test/rate-limit-headers.test.js:68). Display clamps
+  // downstream at metrics.js:44-46.
+  const fromUsed = (u) => (typeof u === 'number') ? 100 - u : null;
   const pct5h = raw.pct5h  ?? raw.shared5h   ?? fromUsed(raw.sessionUsed);
   const pctWk = raw.pctWk  ?? raw.sharedWeek ?? raw.pct7d ?? fromUsed(raw.weeklyUsed);
 
