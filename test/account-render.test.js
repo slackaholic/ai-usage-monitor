@@ -288,7 +288,13 @@ test('a Codex poll with no credits clears a previously rendered balance', () => 
 // one, and a missed field name there fails silently — an undefined never
 // equals null, so a guard written against the old names simply stops firing.
 // These slice the callers and run them against a spy for the render path.
-function loadCallers(api) {
+//
+// `pending` seeds the retry-timer map, and `cancelled` records every timer
+// clearTimeout was asked to stop, so a test can pin which key each fetcher
+// clears and which it schedules under. The map is one namespace keyed by
+// descriptor id; a fetcher using another account's key (or a logKey) would
+// cancel or overwrite the wrong card's retry.
+function loadCallers(api, pending = {}) {
   const source = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
   const slice = (open, close) => {
     const a = source.indexOf(open);
@@ -308,7 +314,7 @@ function loadCallers(api) {
     slice('async function fetchCodexUsage', '// ── Cached data (stale display on startup)') + '\n' +
     slice('function loadCachedStaticData', '// ── Refresh interval');
 
-  const calls = [], badges = [], toasts = [], retries = [], applied = [];
+  const calls = [], badges = [], toasts = [], retries = [], applied = [], cancelled = [];
   const context = {
     console, Math, Number, RegExp, Date, parseInt, isNaN, Object,
     window: { electronAPI: { readUsageLog: async () => [], ...api } },
@@ -316,7 +322,7 @@ function loadCallers(api) {
     setBadge: (id, text, cls) => badges.push([id, text, cls]),
     showToast: (m) => toasts.push(m),
     setTimeout: (fn, ms) => { retries.push(ms); return retries.length; },
-    clearTimeout: () => {},
+    clearTimeout: (timer) => cancelled.push(timer),
     fetchStart: () => {}, fetchStop: () => {}, markUpdated: () => {},
     renderClaudeTokens: () => {}, renderTrendAnalytics: () => {},
     applyAccountLabel: (id, v) => applied.push([id, v]),
@@ -324,7 +330,7 @@ function loadCallers(api) {
     openPanels: new Set(),
     hasData: { codex: false, claude: false, claude2: false },
     cachedData: {},
-    retryTimers: {},
+    retryTimers: { ...pending },
     refreshClaudeCodeEmail: async () => {},
     document: { getElementById: () => null },
     showSection: () => {}, resizeToFit: () => {},
@@ -333,19 +339,28 @@ function loadCallers(api) {
   };
   vm.createContext(context);
   vm.runInContext(code, context);
-  return { ...context, calls, badges, toasts, retries, applied };
+  return { ...context, calls, badges, toasts, retries, applied, cancelled };
 }
+
+// One distinct pending timer per account, so a fetcher that clears or sets the
+// wrong key shows up as the wrong number in the wrong place.
+const PENDING = { codex: 101, claude: 102, claude2: 103 };
 
 const CODEX_WEEKLY_ONLY = {
   rate_limit: { primary_window: { used_percent: 14, limit_window_seconds: 604800, reset_at: 2_000_000_000 } },
 };
 
 test('an empty Codex poll reports no data and never reaches the render', async () => {
-  const c = loadCallers({ fetchCodexUsage: async () => ({ text: '', email: 'a@example.com' }) });
+  const c = loadCallers({ fetchCodexUsage: async () => ({ text: '', email: 'a@example.com' }) }, PENDING);
   await c.fetchCodexUsage();
   assert.deepStrictEqual(c.badges.at(-1), ['codex-badge', 'No data', 'warn']);
   assert.strictEqual(c.calls.length, 0, 'an empty reading would be logged as a null 5h and a null wk');
   assert.deepStrictEqual(c.retries, [45_000]);
+  // Which timer is cancelled on entry, and which key holds the new one.
+  assert.deepStrictEqual(c.cancelled, [PENDING.codex]);
+  assert.strictEqual(c.retryTimers.codex, 1);
+  assert.strictEqual(c.retryTimers.claude, PENDING.claude);
+  assert.strictEqual(c.retryTimers.claude2, PENDING.claude2);
 });
 
 test('a Codex poll with a weekly figure only renders it, under the codex descriptor', async () => {
@@ -381,10 +396,15 @@ test('the Codex label is the poll\'s email unless the data carries its own', asy
 });
 
 test('an empty Claude Desktop poll reports no data and never reaches the render', async () => {
-  const c = loadCallers({ fetchClaudeWebUsage: async () => ({ apiData: {}, text: '' }) });
+  const c = loadCallers({ fetchClaudeWebUsage: async () => ({ apiData: {}, text: '' }) }, PENDING);
   await c.fetchClaudeWebUsage();
   assert.deepStrictEqual(c.badges.at(-1), ['claude-badge', 'No data', 'warn']);
   assert.strictEqual(c.calls.length, 0);
+  assert.deepStrictEqual(c.retries, [45_000]);
+  assert.deepStrictEqual(c.cancelled, [PENDING.claude]);
+  assert.strictEqual(c.retryTimers.claude, 1);
+  assert.strictEqual(c.retryTimers.codex, PENDING.codex);
+  assert.strictEqual(c.retryTimers.claude2, PENDING.claude2);
 });
 
 test('a Claude Desktop poll renders under the claude descriptor, labelled with its email', async () => {
@@ -403,8 +423,12 @@ test('a Claude Desktop poll renders under the claude descriptor, labelled with i
 test('a Claude Code poll renders its own descriptor from the normalised reading', async () => {
   const acct = { id: 'claude2', logKey: 'claude-vscode', configDir: 'C:\\x' };
   const c = loadCallers({ fetchClaudeCodeApiUsage: async () => (
-    { pct5h: 55, pct7d: 86, reset5hMs: 123, reset7dMs: 456, account: 'max 20x' }) });
+    { pct5h: 55, pct7d: 86, reset5hMs: 123, reset7dMs: 456, account: 'max 20x' }) }, PENDING);
   await c.fetchClaudeCodeUsage(acct);
+  // Entry cancels this account's own timer, by descriptor id, and no other.
+  assert.deepStrictEqual(c.cancelled, [PENDING.claude2]);
+  assert.strictEqual(c.retryTimers.codex, PENDING.codex);
+  assert.strictEqual(c.retryTimers.claude, PENDING.claude);
   assert.strictEqual(c.calls.length, 1);
   assert.strictEqual(c.calls[0].acct, acct, 'the descriptor itself, so its flags travel with it');
   assert.strictEqual(c.calls[0].reading.pct5h, 55);
@@ -413,6 +437,37 @@ test('a Claude Code poll renders its own descriptor from the normalised reading'
   assert.strictEqual(c.calls[0].reading.label, 'max 20x');
   assert.strictEqual(c.hasData.claude2, true);
   assert.deepStrictEqual(c.badges.at(-1), ['claude2-badge', 'Live', 'ok']);
+});
+
+// The error paths no other test reaches. Each schedules its retry under its own
+// descriptor id: the map is one namespace, so a swapped key (codex for claude,
+// or a logKey where an id belongs) overwrites another card's pending retry.
+test('each fetch error path schedules its retry under its own account id', async () => {
+  const acct = { id: 'claude2', logKey: 'claude-vscode', configDir: 'C:\\x' };
+  const cases = [
+    { name: 'Codex error', key: 'codex', ms: 45_000,
+      api: { fetchCodexUsage: async () => ({ error: 'boom' }) },
+      run: (c) => c.fetchCodexUsage() },
+    { name: 'Claude Desktop error', key: 'claude', ms: 45_000,
+      api: { fetchClaudeWebUsage: async () => ({ error: 'boom' }) },
+      run: (c) => c.fetchClaudeWebUsage() },
+    { name: 'Claude Desktop window in use', key: 'claude', ms: 30_000,
+      api: { fetchClaudeWebUsage: async () => ({ error: 'window-in-use' }) },
+      run: (c) => c.fetchClaudeWebUsage() },
+    { name: 'Claude Code error', key: 'claude2', ms: 45_000,
+      api: { fetchClaudeCodeApiUsage: async () => ({ error: 'boom' }) },
+      run: (c) => c.fetchClaudeCodeUsage(acct) },
+  ];
+  for (const { name, key, ms, api, run } of cases) {
+    const c = loadCallers(api, PENDING);
+    await run(c);
+    assert.deepStrictEqual(c.retries, [ms], `${name}: one retry, at ${ms}ms`);
+    assert.deepStrictEqual(c.cancelled, [PENDING[key]], `${name}: entry cancels ${key}'s own timer`);
+    assert.strictEqual(c.retryTimers[key], 1, `${name}: the new timer is stored under ${key}`);
+    for (const other of Object.keys(PENDING).filter((k) => k !== key)) {
+      assert.strictEqual(c.retryTimers[other], PENDING[other], `${name}: ${other}'s pending retry is untouched`);
+    }
+  }
 });
 
 test('a cold start paints each fixed provider from its legacy slot, stale and badged', () => {

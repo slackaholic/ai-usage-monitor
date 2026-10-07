@@ -136,11 +136,16 @@ let claudeAccounts = [];
 // two module-level scalars and a map.
 const retryTimers = {};
 
-// Scoped deliberately: only the per-account Claude Code timers. The two fixed
-// cards never vanish, so cancelling their retries here would drop a pending
-// one and leave that card on "Error" until the next refresh tick.
-function clearRetryTimers(ids) {
-  for (const id of ids) {
+// Every per-account Claude Code timer, including one left behind by an account
+// that has already vanished: the old per-account map held only these, so
+// clearing all of it was the behaviour, and a retry firing into a card that no
+// longer exists is what this prevents. The two fixed cards never vanish, so
+// their pending retries must survive a rescan — cancelling one would leave
+// that card on "Error" until the next refresh tick.
+function clearClaudeCodeRetryTimers() {
+  const fixed = new Set(PROVIDERS.map(p => p.id));
+  for (const id of Object.keys(retryTimers)) {
+    if (fixed.has(id)) continue;
     clearTimeout(retryTimers[id]);
     delete retryTimers[id];
   }
@@ -1115,7 +1120,7 @@ function applyAccountHeadings(acct) {
 async function buildClaudeCodeCards() {
   // Before anything else: a retry pending for an account that is about to
   // vanish would fire into a card that no longer exists.
-  clearRetryTimers(claudeAccounts.map(a => a.id));
+  clearClaudeCodeRetryTimers();
   const found = await window.electronAPI.getClaudeAccounts();
   // A malformed reply must not leave claudeAccounts non-iterable: the catch in
   // init() would swallow the throw here and every later accountPrefixes() call
