@@ -1,7 +1,7 @@
 # Gemini as a monitored account — Design
 
 **Date:** 2026-10-07
-**Status:** Approved (design)
+**Status:** Parked (8 Oct 2026) — Google refuses sign-in inside the app's embedded browser window. See the status note at the top of the plan.
 **Component:** AI Usage Monitor — new provider.
 **Depends on:** [One normalised reading per account](2026-10-07-pluggable-account-providers-design.md)
 — this is that refactor's first consumer, and the test of its claim that a new

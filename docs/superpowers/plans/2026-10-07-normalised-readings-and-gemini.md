@@ -1,5 +1,12 @@
 # Normalised Account Readings + Gemini Provider — Implementation Plan
 
+> **Status (8 Oct 2026): Phase 1 shipped, Phase 2 parked.** Tasks 1–6 (normalised
+> readings) are merged into `main`. Phase 2 (Tasks 7–11, Gemini) is parked: Google
+> refuses sign-in inside the app's embedded browser window ("This browser or app may
+> not be secure"). The Phase 2 text in this file is superseded by the copy on the
+> `refactor/normalised-account-readings` branch, which has known defects. Do not run
+> Phase 2 from this file.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Collapse three near-duplicate render paths into one normalised reading, then add Gemini as the first provider built on it.
