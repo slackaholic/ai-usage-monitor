@@ -256,7 +256,9 @@ test('codex scraped text with no reset prose reports 0', () => {
   assert.strictEqual(r.resetWkMs, 0);
 });
 
-// metrics.js:44 clamps to [0,100] for DISPLAY; the reading itself stays raw.
+// The reading itself stays raw. metrics.js clamps the analytics statistics
+// (cycleStats) to [0,100]; the gauges (setPct, setBar) do not clamp, so an
+// over-quota reading on these paths currently displays as negative.
 // test/rate-limit-headers.test.js pins this for the Claude Code header path
 // ("over-quota stays negative — that is a real reading, not a sentinel").
 // These two cover the Claude Desktop paths, which had no such test and so did
