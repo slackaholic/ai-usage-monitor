@@ -913,9 +913,10 @@ function normaliseClaudeCodeReading(data) {
 function normaliseCachedReading(raw) {
   if (!raw || typeof raw !== 'object') return null;
 
-  // Unclamped, like the parse boundary: over-quota is a real reading,
-  // not a sentinel (test/rate-limit-headers.test.js:68). Display clamps
-  // downstream at metrics.js:44-46.
+  // Unclamped at parse, on purpose: over-quota is a real reading, not a
+  // sentinel (test/rate-limit-headers.test.js:68). metrics.js clamps the
+  // analytics statistics (cycleStats); the gauges (setPct, setBar) do not, so
+  // an over-quota reading on this path currently displays as negative.
   const fromUsed = (u) => (typeof u === 'number') ? 100 - u : null;
   const pct5h = raw.pct5h  ?? raw.shared5h   ?? fromUsed(raw.sessionUsed);
   const pctWk = raw.pctWk  ?? raw.sharedWeek ?? raw.pct7d ?? fromUsed(raw.weeklyUsed);
@@ -947,8 +948,10 @@ function parseClaudeOrgUsage(data) {
   const fh = data?.five_hour;
   const sd = data?.seven_day;
   const ms = (iso) => (iso && !isNaN(new Date(iso))) ? new Date(iso).getTime() : 0;
-  // Deliberately unclamped: over-quota (utilization > 100) is a real reading and
-  // stays negative in the data. metrics.js clamps to [0,100] for display.
+  // Unclamped at parse, on purpose: over-quota (utilization > 100) is a real
+  // reading and stays negative in the data. metrics.js clamps the analytics
+  // statistics (cycleStats) to [0,100]; the gauges (setPct, setBar) do not, so
+  // an over-quota reading currently displays as negative.
   const remain = (u) => (typeof u === 'number') ? 100 - u : null;
   return makeReading({
     pct5h:     remain(fh?.utilization),
@@ -986,8 +989,9 @@ function parseClaudeWebText(text) {
   const weeklyResetStr  = (text.match(/(?:All models|[Ww]eekly)[\s\S]{0,500}?[Rr]esets?\s+([^\n\r]+)/i) || [])[1]?.trim() ?? null;
 
   const used = (u, r) => (u != null ? u : (r != null ? 100 - r : null));
-  // Unclamped for the same reason as parseClaudeOrgUsage: raw over-quota stays
-  // negative; only display and metrics clamp.
+  // Unclamped at parse for the same reason as parseClaudeOrgUsage: raw
+  // over-quota stays negative. Only the analytics statistics clamp (cycleStats
+  // in metrics.js); the gauges (setPct, setBar) do not.
   const remain = (v) => (v != null ? 100 - v : null);
   return makeReading({
     pct5h:     remain(used(sessionUsed, sessionRemaining)),
@@ -1335,6 +1339,10 @@ function parseCodexApiUsage(data, now = Date.now()) {
     if (!slot[target]) slot[target] = w;
   }
 
+  // Clamped at 0 on purpose, unlike the other parsers. A negative remaining
+  // figure would reach the gauges, which do not clamp (setPct, setBar), and
+  // would miss the depletion flag and the blocked cycle, which both compare
+  // === 0 (buildUsageEntry, cycleStats). Pinned by test/codex-usage.test.js.
   const remain  = (w) => (w && typeof w.used_percent === 'number') ? Math.max(0, 100 - w.used_percent) : null;
   const resetMs = (w) => (w && w.reset_at) ? w.reset_at * 1000 : 0;
   return makeReading({

@@ -166,6 +166,35 @@ test('credits and email survive the remapping', () => {
   assert.strictEqual(parsed.label, 'digital.accounts@example.com');
 });
 
+// ── Over-quota: a deliberate exception ────────────────────────────────────
+
+// Every other parser keeps an over-quota reading negative ("raw in the data,
+// clamp at display"). Codex does not, yet, because three things downstream
+// still assume remaining is never below 0:
+//   1. The gauges do not clamp. setPct prints the figure and setBar writes it
+//      into style.width, so -20 would show as "-20%" with an invalid width.
+//   2. buildUsageEntry flags `depleted` only when a figure === 0, so an
+//      over-quota reading would be logged without the flag.
+//   3. metrics.cycleStats counts a cycle as blocked only when a snapshot
+//      === 0, so a cycle that jumps past 100% used would not be blocked.
+// Whoever removes the clamp in parseCodexApiUsage has to fix all three first.
+test('over-quota Codex stays clamped at 0 until the gauges clamp — a deliberate exception to raw-in-the-data', () => {
+  const { parseCodexApiUsage } = loadCodexParsers();
+
+  const parsed = parseCodexApiUsage({
+    rate_limit: {
+      primary_window: win(FIVE_HOURS, 120, NOW + 2 * 3_600_000),
+      secondary_window: win(ONE_WEEK, 120, NOW + 5 * 86_400_000),
+    },
+  }, NOW);
+
+  assert.strictEqual(parsed.pct5h, 0, '120% used in the 5h window reads exactly 0 remaining');
+  assert.strictEqual(parsed.pctWk, 0, '120% used in the weekly window reads exactly 0 remaining');
+  // Each figure came from the window meant for its slot, not from position.
+  assert.strictEqual(parsed.reset5hMs, NOW + 2 * 3_600_000);
+  assert.strictEqual(parsed.resetWkMs, NOW + 5 * 86_400_000);
+});
+
 // ── The scraped-page fallback agrees with the API about the 5h window ─────
 
 test('the scraped page reports no 5h window when the page has no 5h section', () => {
