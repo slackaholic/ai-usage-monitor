@@ -1,0 +1,170 @@
+# Gemini as a monitored account — Design
+
+**Date:** 2026-10-07
+**Status:** Parked (8 Oct 2026) — Google refuses sign-in inside the app's embedded browser window. See the status note at the top of the plan.
+**Component:** AI Usage Monitor — new provider.
+**Depends on:** [One normalised reading per account](2026-10-07-pluggable-account-providers-design.md)
+— this is that refactor's first consumer, and the test of its claim that a new
+provider costs three files instead of eight.
+
+## Why Gemini fits
+
+Since Google I/O 2026 the consumer Google AI plans use a **compute-based 5-hour
+window that feeds a weekly cap** — the same two-meter structure the app already
+renders for every other account. `gemini.google.com` → Settings → Usage limits
+shows the 5-hour consumption as a percentage bar and progress toward the weekly
+limit.
+
+That makes Gemini a **browser-session scrape**, structurally identical to Claude
+Desktop (`claude.ai/settings/usage`), not a new kind of integration.
+
+An earlier assessment in this repo called Gemini the weakest candidate. That was
+based only on the Gemini **Code Assist** path the `gemini` CLI uses, whose quota
+is reachable solely through the interactive `/stats model` command. The consumer
+web surface is a different and much better source. The CLI path is not used
+here.
+
+## The account, and the discovery step that confirms it
+
+A **paid Google AI plan (Pro / Ultra / Plus)** on a **personal Gmail account**.
+
+That personal-account detail retires the main design risk. Google **Workspace**
+Gemini Business licences are metered at 1,000 uses per month resetting on the
+1st — a monthly counter that would not fit the two-meter card at all. A consumer
+Google AI plan uses the 5-hour-into-weekly structure this design is built for.
+
+It raises a different hazard instead, and this one is sharp.
+
+### The Gemini account is a different identity from every other card
+
+Every other account in this app belongs to the user's Workspace domain. The
+Gemini plan sits on an unrelated personal Google account. Google's multi-login
+(`/u/0`, `/u/1`, …) means a browser session can be signed into several accounts
+at once and silently serve whichever is "first".
+
+**This repo has already been bitten by exactly this failure.** Claude Code's
+email was once scraped from any stray `claude.ai` browser session and reported
+the wrong account — a Gmail that was logged into a browser but not into Claude
+Code. The fix was to resolve identity from the authoritative source rather than
+from whatever session happened to be lying around.
+
+Two requirements follow, both non-negotiable:
+
+1. **The `persist:gemini` partition is signed in as the Gemini-plan account and
+   nothing else.** An isolated partition helps here rather than hindering: it
+   starts empty, so the user signs in once as the intended account and it stays
+   that way, independent of whatever the Workspace sessions are doing.
+2. **Every scrape returns the signed-in email, and a mismatch is an error, not a
+   reading.** If the page is serving a different Google account than the one
+   the card was set up for, the card must show an error state and refuse to log
+   a reading. Reporting another account's quota under this card is worse than
+   reporting nothing — it is wrong data written permanently into
+   `usage-log.jsonl`, and the user has no way to tell from the number alone.
+
+The expected account's email is stored in settings alongside the other
+per-account values rather than hardcoded, so switching plans later is a settings
+change rather than a code change.
+
+### Discovery comes before any parser
+
+**Implementation opens with a discovery task the user performs**, not with code.
+Only they can load that page authenticated. Nothing downstream is built until
+the discovery output confirms which meters exist and what the page text looks
+like. This is a hard gate: writing a parser against assumed page text is how the
+Codex integration spent six weeks silently mislabelling its own data.
+
+## Transport
+
+A hidden `BrowserWindow` on its own session partition (`persist:gemini`),
+following the existing Codex and Claude Desktop handlers:
+
+- Load the usage page; if the resulting URL matches a Google auth pattern, show
+  the window and wait for navigation back, with the same 5-minute login timeout
+  and `window-closed` handling the Codex path uses.
+- Once authenticated, run a scrape script that polls for the usage text to
+  appear, then returns `{ text, email }`.
+- **Prefer a backend endpoint if discovery finds one.** Both existing scrapers
+  learned the same lesson: Codex reads `/backend-api/codex/usage` and falls back
+  to text; Claude Desktop reads the org-usage endpoint and falls back to text. A
+  structured response is more stable than rendered text and carries exact reset
+  timestamps. Discovery should capture the network requests the usage page makes
+  and report any that return the numbers as JSON.
+
+## Parsing
+
+`parseGeminiUsage(data, now)` returns the **normalised reading** defined by the
+dependency spec — `pct5h`, `pctWk`, `reset5hMs`, `resetWkMs`, `has5h`, `hasWk`,
+`label`, `extra` — and nothing provider-shaped.
+
+Two rules carried over from hard-won experience in this repo:
+
+1. **Never identify a window by its position** in a response or on a page.
+   Match on its declared length or its own label. This is the defect that cost
+   six weeks on Codex (see the 2026-08-26 spec).
+2. **Convert to REMAINING at the parse boundary.** If the page reports consumed
+   percentage, `100 - x` happens here, so nothing downstream ever sees a "used"
+   figure.
+
+The page text is unknown until discovery, so the exact patterns are deliberately
+not specified here; discovery output supplies them, and the plan treats the
+parser as test-first against captured real text rather than invented fixtures.
+
+## Registration
+
+| | |
+| --- | --- |
+| descriptor `id` | `gemini` |
+| `logKey` | `gemini` |
+| card label | `Gemini` |
+| session partition | `persist:gemini` |
+| token/cost data | **none** — the web surface exposes no token counts, same as Claude Desktop |
+
+`gemini` is a new log key with no history behind it, so unlike the three
+existing keys it carries no migration risk.
+
+Settings gains a Gemini row through the existing `ACCOUNT_PAIRS` mechanism:
+plan price, tier-change date, plan multiplier and label override, exactly as the
+other accounts have. **The default plan price is 0** — the user sets their own
+rather than inheriting a guess at Google's pricing, which varies by tier and
+region. A price of 0 simply means no cost estimate, which is honest for an
+account whose price we do not know.
+
+## Analytics
+
+`VALID_ACCOUNTS`, `ACCOUNT_LABELS` and `PLAN_MULTIPLIERS` gain `gemini`
+entries. The weekly-budget ratio, runway and burn metrics work unmodified: they
+read `5h` and `wk` from the usage log and are already provider-agnostic.
+
+No cost-over-time or token-mix data will appear for Gemini, matching Claude
+Desktop's existing behaviour. This is correct, not a gap.
+
+## Out of scope
+
+- **Gemini CLI telemetry.** `.gemini/settings.json` can emit per-call token
+  usage to a local file, which would feed the cost/token side the way
+  `~/.codex/sessions/**/*.jsonl` does. It is a genuinely useful second source
+  and a separate feature; it is not a quota meter and does not belong in this
+  card.
+- Gemini Code Assist / Vertex / API-key metering — different products, different
+  meters.
+- Any change to the three existing providers beyond what the dependency spec
+  already covers.
+
+## Verification
+
+- `parseGeminiUsage` tested against **real captured page text** from the
+  discovery step, not invented fixtures — including the depleted case (0%
+  remaining) and the case where only one of the two meters is present.
+- The dependency spec's "all providers render identically from an identical
+  reading" test is extended to four providers.
+- A regression test that Gemini's usage-log entries carry `account: "gemini"`
+  and the standard `5h` / `wk` keys, so the existing metrics read them with no
+  special-casing.
+- **An identity-mismatch test: a scrape returning a different signed-in email
+  than the configured one produces an error state and writes nothing to the
+  usage log.** Mutation-check it — a build that logs the reading anyway must
+  fail this test, since that is the actual failure mode being guarded.
+- `npm test` green; `node --check` on changed files.
+- **GUI verification is the user's step.** Specifically: the login flow on first
+  run, the card appearing with both meters, and the numbers matching what
+  `gemini.google.com` itself shows at the same moment.

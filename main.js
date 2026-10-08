@@ -1418,38 +1418,6 @@ ipcMain.handle('show-claude-web-window-2', () => {
   win.loadURL(CLAUDE_URL);
 });
 
-// ── IPC: proxy HTTP fetch (for OpenAI API key users) ──────────────────────
-ipcMain.handle('fetch-url', async (_event, url, options) => {
-  const https = require('https');
-  const http = require('http');
-  const { URL } = require('url');
-
-  return new Promise((resolve) => {
-    try {
-      const parsed = new URL(url);
-      const lib = parsed.protocol === 'https:' ? https : http;
-      const req = lib.request(
-        {
-          hostname: parsed.hostname,
-          path: parsed.pathname + parsed.search,
-          method: options.method || 'GET',
-          headers: options.headers || {},
-        },
-        (res) => {
-          let data = '';
-          res.on('data', (c) => (data += c));
-          res.on('end', () => resolve({ status: res.statusCode, body: data }));
-        }
-      );
-      req.on('error', (e) => resolve({ error: e.message }));
-      if (options.body) req.write(options.body);
-      req.end();
-    } catch (e) {
-      resolve({ error: e.message });
-    }
-  });
-});
-
 // ── Window ─────────────────────────────────────────────────────────────────
 function createWindow() {
   const settings = loadSettings();

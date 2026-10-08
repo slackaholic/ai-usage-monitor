@@ -6,18 +6,32 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-// Loads the Codex parse block out of renderer.js and runs it in a bare context.
-// Nothing in the slice touches the DOM, so no stubs are needed beyond the
-// globals the parsers actually use.
+// The parse functions are not contiguous in renderer.js — Claude's and Codex's
+// sit in separate sections, with the Claude Desktop and Claude Code render
+// layers in between, and parseResetToMs lives with the shared utilities. Four
+// marked regions are concatenated rather than relocating working code to suit
+// a test harness. READING SHAPE comes first because the parsers call
+// makeReading; RESET PARSING precedes CLAUDE PARSERS, which calls it. Nothing
+// in any region touches the DOM, so no stubs are needed beyond the globals the
+// parsers actually use.
 function loadCodexParsers() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
-  const start = source.indexOf('const CODEX_WINDOW_SPLIT_SECONDS');
-  const end = source.indexOf('function renderCodexData');
-  assert.ok(start >= 0 && end > start, 'expected Codex parse source markers');
-
-  const context = { console, Math, Number, RegExp, Date, parseInt };
+  const REGIONS = [
+    ['// ── READING SHAPE ──',  '// ── READING SHAPE END ──'],
+    ['// ── RESET PARSING ──',  '// ── RESET PARSING END ──'],
+    ['// ── CLAUDE PARSERS ──', '// ── CLAUDE PARSERS END ──'],
+    ['// ── CODEX PARSERS ──',  '// ── CODEX PARSERS END ──'],
+  ];
+  let code = '';
+  for (const [open, close] of REGIONS) {
+    const a = source.indexOf(open);
+    const b = source.indexOf(close);
+    assert.ok(a >= 0 && b > a, `expected markers: ${open}`);
+    code += source.slice(a + open.length, b) + '\n';
+  }
+  const context = { console, Math, Number, RegExp, Date, parseInt, isNaN };
   vm.createContext(context);
-  vm.runInContext(source.slice(start, end), context);
+  vm.runInContext(code, context);
   return context;
 }
 
@@ -45,10 +59,10 @@ test('a two-window response still maps 5h and weekly to their own slots', () => 
     },
   }, NOW);
 
-  assert.strictEqual(parsed.shared5h, 60);
-  assert.strictEqual(parsed.sharedWeek, 75);
+  assert.strictEqual(parsed.pct5h, 60);
+  assert.strictEqual(parsed.pctWk, 75);
   assert.strictEqual(parsed.reset5hMs, NOW + 2 * 3_600_000);
-  assert.strictEqual(parsed.reset7dMs, NOW + 5 * 86_400_000);
+  assert.strictEqual(parsed.resetWkMs, NOW + 5 * 86_400_000);
   assert.strictEqual(parsed.has5h, true);
 });
 
@@ -62,9 +76,9 @@ test('a weekly-only response puts the weekly figure in the weekly slot', () => {
     rate_limit: { primary_window: win(ONE_WEEK, 0, NOW + 166 * 3_600_000) },
   }, NOW);
 
-  assert.strictEqual(parsed.sharedWeek, 100, 'weekly value belongs in sharedWeek');
-  assert.strictEqual(parsed.shared5h, null, 'there is no 5h reading to report');
-  assert.strictEqual(parsed.reset7dMs, NOW + 166 * 3_600_000);
+  assert.strictEqual(parsed.pctWk, 100, 'weekly value belongs in pctWk');
+  assert.strictEqual(parsed.pct5h, null, 'there is no 5h reading to report');
+  assert.strictEqual(parsed.resetWkMs, NOW + 166 * 3_600_000);
   assert.strictEqual(parsed.reset5hMs, 0);
   assert.strictEqual(parsed.has5h, false);
 });
@@ -80,8 +94,8 @@ test('windows are read by declared length, not by their position', () => {
     },
   }, NOW);
 
-  assert.strictEqual(parsed.shared5h, 60);
-  assert.strictEqual(parsed.sharedWeek, 75);
+  assert.strictEqual(parsed.pct5h, 60);
+  assert.strictEqual(parsed.pctWk, 75);
   assert.strictEqual(parsed.has5h, true);
 });
 
@@ -93,15 +107,15 @@ test('a window with no declared length is judged by how far its reset is', () =>
   const weekly = parseCodexApiUsage({
     rate_limit: { primary_window: { used_percent: 10, reset_at: Math.floor((NOW + 6 * 86_400_000) / 1000) } },
   }, NOW);
-  assert.strictEqual(weekly.sharedWeek, 90, 'a reset six days out cannot be a 5h window');
-  assert.strictEqual(weekly.shared5h, null);
+  assert.strictEqual(weekly.pctWk, 90, 'a reset six days out cannot be a 5h window');
+  assert.strictEqual(weekly.pct5h, null);
   assert.strictEqual(weekly.has5h, false);
 
   const session = parseCodexApiUsage({
     rate_limit: { primary_window: { used_percent: 10, reset_at: Math.floor((NOW + 3 * 3_600_000) / 1000) } },
   }, NOW);
-  assert.strictEqual(session.shared5h, 90, 'a reset three hours out is a session window');
-  assert.strictEqual(session.sharedWeek, null);
+  assert.strictEqual(session.pct5h, 90, 'a reset three hours out is a session window');
+  assert.strictEqual(session.pctWk, null);
   assert.strictEqual(session.has5h, true);
 });
 
@@ -115,8 +129,8 @@ test('a window declaring neither length nor reset keeps its historic position', 
     },
   }, NOW);
 
-  assert.strictEqual(parsed.shared5h, 60);
-  assert.strictEqual(parsed.sharedWeek, 75);
+  assert.strictEqual(parsed.pct5h, 60);
+  assert.strictEqual(parsed.pctWk, 75);
 });
 
 test('a missing rate_limit is still reported as no data at all', () => {
@@ -135,8 +149,8 @@ test('two windows of the same length do not overwrite each other', () => {
     },
   }, NOW);
 
-  assert.strictEqual(parsed.sharedWeek, 75, 'the first weekly window keeps the slot');
-  assert.strictEqual(parsed.shared5h, null);
+  assert.strictEqual(parsed.pctWk, 75, 'the first weekly window keeps the slot');
+  assert.strictEqual(parsed.pct5h, null);
 });
 
 test('credits and email survive the remapping', () => {
@@ -148,8 +162,37 @@ test('credits and email survive the remapping', () => {
     email: 'digital.accounts@example.com',
   }, NOW);
 
-  assert.strictEqual(parsed.credits, 0);
-  assert.strictEqual(parsed.email, 'digital.accounts@example.com');
+  assert.strictEqual(parsed.extra.credits, 0);
+  assert.strictEqual(parsed.label, 'digital.accounts@example.com');
+});
+
+// ── Over-quota: a deliberate exception ────────────────────────────────────
+
+// Every other parser keeps an over-quota reading negative ("raw in the data,
+// clamp at display"). Codex does not, yet, because three things downstream
+// still assume remaining is never below 0:
+//   1. The gauges do not clamp. setPct prints the figure and setBar writes it
+//      into style.width, so -20 would show as "-20%" with an invalid width.
+//   2. buildUsageEntry flags `depleted` only when a figure === 0, so an
+//      over-quota reading would be logged without the flag.
+//   3. metrics.cycleStats counts a cycle as blocked only when a snapshot
+//      === 0, so a cycle that jumps past 100% used would not be blocked.
+// Whoever removes the clamp in parseCodexApiUsage has to fix all three first.
+test('over-quota Codex stays clamped at 0 until the gauges clamp — a deliberate exception to raw-in-the-data', () => {
+  const { parseCodexApiUsage } = loadCodexParsers();
+
+  const parsed = parseCodexApiUsage({
+    rate_limit: {
+      primary_window: win(FIVE_HOURS, 120, NOW + 2 * 3_600_000),
+      secondary_window: win(ONE_WEEK, 120, NOW + 5 * 86_400_000),
+    },
+  }, NOW);
+
+  assert.strictEqual(parsed.pct5h, 0, '120% used in the 5h window reads exactly 0 remaining');
+  assert.strictEqual(parsed.pctWk, 0, '120% used in the weekly window reads exactly 0 remaining');
+  // Each figure came from the window meant for its slot, not from position.
+  assert.strictEqual(parsed.reset5hMs, NOW + 2 * 3_600_000);
+  assert.strictEqual(parsed.resetWkMs, NOW + 5 * 86_400_000);
 });
 
 // ── The scraped-page fallback agrees with the API about the 5h window ─────
@@ -165,10 +208,10 @@ test('the scraped page reports no 5h window when the page has no 5h section', ()
     '0',
   ].join('\n'));
 
-  assert.strictEqual(parsed.sharedWeek, 100);
-  assert.strictEqual(parsed.shared5h, null);
+  assert.strictEqual(parsed.pctWk, 100);
+  assert.strictEqual(parsed.pct5h, null);
   assert.strictEqual(parsed.has5h, false);
-  assert.strictEqual(parsed.credits, '0');
+  assert.strictEqual(parsed.extra.credits, '0');
 });
 
 test('the scraped page reports a 5h window when the page still has one', () => {
@@ -182,8 +225,8 @@ test('the scraped page reports a 5h window when the page still has one', () => {
     '55% remaining',
   ].join('\n'));
 
-  assert.strictEqual(parsed.shared5h, 80);
-  assert.strictEqual(parsed.sharedWeek, 55);
+  assert.strictEqual(parsed.pct5h, 80);
+  assert.strictEqual(parsed.pctWk, 55);
   assert.strictEqual(parsed.has5h, true);
 });
 
@@ -191,7 +234,7 @@ test('an empty page claims neither window', () => {
   const { parseCodexText } = loadCodexParsers();
 
   const parsed = parseCodexText('');
-  assert.strictEqual(parsed.shared5h, null);
-  assert.strictEqual(parsed.sharedWeek, null);
+  assert.strictEqual(parsed.pct5h, null);
+  assert.strictEqual(parsed.pctWk, null);
   assert.strictEqual(parsed.has5h, false);
 });

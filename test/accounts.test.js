@@ -265,6 +265,34 @@ test('two config dirs sharing a basename get distinct ids AND distinct log keys'
   assert.ok(accts[1].id.startsWith('cc-claude-work-'), accts[1].id);
 });
 
+// Claude Code's 5h reset header is the exact END of the window, so its session
+// start is five hours earlier; every other provider infers the start from a
+// quota jump. That is a fact about what a Claude Code account is, so the
+// descriptor declares it and the render path just reads it. It used to be
+// assigned inside the card-building loop in renderer.js, which no test runs:
+// deleting that one line left the suite green while every Claude Code
+// sessionStart in the usage log came out wrong.
+test('every discovered Claude Code account declares exact session timing', () => {
+  const dflt = path.join(HOME, '.claude');
+  const work = path.join(HOME, '.claude-work');
+  const email = 'me@example.com';
+  const scenarios = {
+    'one account per dir': groupIntoAccounts([dflt, work], { homeDir: HOME, knownEmails: {} }),
+    'dirs collapsed by email': groupIntoAccounts([dflt, work], {
+      homeDir: HOME, knownEmails: { [dflt]: email, [work]: email } }),
+    'colliding basenames': groupIntoAccounts([dflt, WORK_A, WORK_B], {
+      homeDir: HOME, knownEmails: {} }),
+    'the default dir alone, as the empty-scan fallback builds it': groupIntoAccounts([dflt], {
+      homeDir: HOME, knownEmails: {} }),
+  };
+  for (const [name, accts] of Object.entries(scenarios)) {
+    assert.ok(accts.length > 0, `${name}: expected at least one account`);
+    for (const acct of accts) {
+      assert.strictEqual(acct.exactSessionFromReset, true, `${name}: ${acct.id}`);
+    }
+  }
+});
+
 test('two config dirs sharing a basename also get distinct display names', () => {
   // The id and log key were already disambiguated, so no DATA was ever
   // misattributed — but both rows still READ the same, which is how a plan

@@ -1,7 +1,80 @@
+// ── REGISTRATION ───────────────────────────────────────────────────────────
+// Seven registries have to learn about every account. Codex and Claude
+// Desktop used to hardcode their slots in literals scattered through the top
+// of this file while Claude Code seeded its own in a loop, so adding a
+// provider meant remembering seven separate places, and forgetting one
+// produced a card that looked fine until something downstream read an
+// undefined slot. They are declared together here, beside the one function
+// that fills them.
+//
+// Two key namespaces, and they are not interchangeable. `sessionStore` is
+// keyed by logKey; every other registry is keyed by descriptor id. logKey
+// addresses 7,000+ usage-log entries and must never change; id addresses DOM
+// elements. LOG_ACCOUNT maps one to the other.
+
+// Account label overrides, keyed by render prefix (descriptor id).
+const accountOverrides = {};
+
+// Whether each account has ever returned real data.
+const hasData = {};
+
+// Last-known value per account, shown immediately on startup while the live
+// fetch runs.
+const cachedData = {};
+
+// Two series per account: '<id>-5h' and '<id>-wk'.
+const trendHistory = {};
+
+// Render prefix -> usage-log account key.
+const LOG_ACCOUNT = {};
+
+// Latest 5h remaining % per account, so renderBudget can repaint between
+// fetches.
+const lastPct5h = {};
+
+// Per-account session tracking, keyed by usage-log account key. sessionStart
+// persists in each log entry so analytics can group entries by session even
+// after an app restart.
+const sessionStore = {};
+
+// Idempotent: buildClaudeCodeCards calls this on every card rebuild, and a
+// rebuild must never blank state an account already has.
+function registerAccount(acct) {
+  if (!(acct.id in hasData))          hasData[acct.id] = false;
+  if (!(acct.id in cachedData))       cachedData[acct.id] = null;
+  if (!(acct.id in lastPct5h))        lastPct5h[acct.id] = null;
+  if (!(acct.id in accountOverrides)) accountOverrides[acct.id] = '';
+  LOG_ACCOUNT[acct.id] = acct.logKey;
+  trendHistory[acct.id + '-5h'] = trendHistory[acct.id + '-5h'] || [];
+  trendHistory[acct.id + '-wk'] = trendHistory[acct.id + '-wk'] || [];
+  sessionStore[acct.logKey] = sessionStore[acct.logKey] ||
+    { start: null, lastPct: null };
+}
+
+// The providers that are always present: { id, logKey, label, renderExtra? }.
+// renderExtra(acct, extra) paints a display only that provider has; the shared
+// render path calls it instead of branching on the id, on every render, with
+// `extra` null when the reading carries none — so the hook clears its display
+// rather than leaving the last value up as if it were current. Claude Code
+// accounts are discovered at runtime and registered by buildClaudeCodeCards;
+// their descriptors come from accounts.js already carrying
+// exactSessionFromReset, which the shared render path reads the same way.
+const PROVIDERS = [
+  { id: 'codex', logKey: 'codex', label: 'Codex',
+    renderExtra: (_acct, extra) => setText('codex-credits', extra?.credits) },
+  { id: 'claude', logKey: 'claude-desktop', label: 'Claude Desktop' },
+];
+
+// At module level, not in init(): init() consults these registries before any
+// of its own statements could have filled them (applyClaudeCardSettings reads
+// accountPrefixes, loadCachedStaticData reaches renderBudget), and
+// registration order is the order accountPrefixes() reports.
+PROVIDERS.forEach(registerAccount);
+// ── REGISTRATION END ──
+
 // ── Account label overrides ────────────────────────────────────────────────
-// Keyed by render prefix. Codex and Claude Desktop are fixed; one key per
-// Claude Code account is added by buildClaudeCodeCards.
-const accountOverrides = { codex: '', claude: '' };
+// The overrides live in `accountOverrides`, declared with the other
+// per-account registries in REGISTRATION at the top of this file.
 
 function applyAccountLabel(key, autoValue) {
   const override = accountOverrides[key];
@@ -43,16 +116,12 @@ const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 // ── State ──────────────────────────────────────────────────────────────────
 let claudeEntries = [];
 let isCompact = false;
-let claudeRetryTimer  = null;
-let codexRetryTimer   = null;
 let refreshIntervalIds = [];
 let refreshSeconds = 120;
 
-// Track whether each account has ever returned real data
-const hasData = { codex: false, claude: false };
-
-// Last-known cache (shown immediately on startup while live fetch runs)
-const cachedData = { codex: null, claude: null };
+// Persists one account's last-known value. `cachedData` (declared in
+// REGISTRATION) is what gets shown immediately on startup while the live fetch
+// runs.
 function saveCachedData(key, parsed) {
   cachedData[key] = parsed;
   window.electronAPI.saveSettings({ lastKnown: { ...cachedData } });
@@ -62,22 +131,38 @@ function saveCachedData(key, parsed) {
 // Descriptors from the main process: { id, kind, configDir, configDirs,
 // logKey, label }. Empty until buildClaudeCodeCards() has run.
 let claudeAccounts = [];
-const claudeRetryTimers = {};   // account id -> retry timer
 
-// Every render prefix currently on screen. Codex and Claude Desktop are always
-// present; the Claude Code half is however many accounts were discovered.
+// One timer per account id. Three patterns previously existed for one concept:
+// two module-level scalars and a map.
+const retryTimers = {};
+
+// Every per-account Claude Code timer, including one left behind by an account
+// that has already vanished: the old per-account map held only these, so
+// clearing all of it was the behaviour, and a retry firing into a card that no
+// longer exists is what this prevents. The two fixed cards never vanish, so
+// their pending retries must survive a rescan — cancelling one would leave
+// that card on "Error" until the next refresh tick.
+function clearClaudeCodeRetryTimers() {
+  const fixed = new Set(PROVIDERS.map(p => p.id));
+  for (const id of Object.keys(retryTimers)) {
+    if (fixed.has(id)) continue;
+    clearTimeout(retryTimers[id]);
+    delete retryTimers[id];
+  }
+}
+
+// Every render prefix registered so far, derived from what was actually
+// registered rather than from a literal. A literal is how the August rebuild
+// path came to be unreachable: a provider added in one place and forgotten in
+// another. A rescan that drops a Claude Code account does not unregister it,
+// so its prefix stays listed; every consumer reaches the DOM through a
+// null-checked lookup, so a prefix with no card is a no-op.
 function accountPrefixes() {
-  return ['codex', 'claude', ...claudeAccounts.map(a => a.id)];
+  return Object.keys(hasData);
 }
 
 // ── Trend history ──────────────────────────────────────────────────────────
-// Two series per prefix. Claude Code accounts add theirs in buildClaudeCodeCards.
-const trendHistory = {
-  'codex-5h':   [],
-  'codex-wk':   [],
-  'claude-5h':  [],
-  'claude-wk':  [],
-};
+// The series live in `trendHistory`, declared in REGISTRATION.
 
 function pushTrend(key, value) {
   if (value == null) return;
@@ -114,13 +199,8 @@ function applyTrendDisplay(key, delta) {
 }
 
 // ── Analytics / sparkline ──────────────────────────────────────────────────
-// Render prefix -> usage-log account key. Claude Code accounts are added from
-// their descriptors' logKey in buildClaudeCodeCards.
-const LOG_ACCOUNT = { codex: 'codex', claude: 'claude-desktop' };
-
 let budgetInfo = {};
 let budgetTargets = { window: 10, day: 20 };
-const lastPct5h = { codex: null, claude: null };
 
 // Accounts whose PLAN has no 5-hour window at all — as opposed to a meter that
 // failed to arrive this poll. OpenAI removed the Codex 5-hour window on
@@ -128,18 +208,11 @@ const lastPct5h = { codex: null, claude: null };
 // window that comes back clears the flag on its own.
 const noFiveHourWindow = new Set();
 
-// Per-account session tracking, keyed by usage-log account key. sessionStart
-// persists in each log entry so analytics can group entries by session even
-// after an app restart. Claude Code keys are added in buildClaudeCodeCards.
-const _ss = {
-  'claude-desktop': { start: null, lastPct: null },
-  'codex':          { start: null, lastPct: null },
-};
-
-// Update session state for scraped accounts (Codex, Claude Desktop).
+// Update session state for scraped accounts (Codex, Claude Desktop). `account`
+// is a usage-log key, the session store's own namespace (see REGISTRATION).
 // Returns the current sessionStart ISO string.
 function trackSession(account, pct5h) {
-  const s = _ss[account];
+  const s = sessionStore[account];
   if (s.lastPct !== null && pct5h != null && pct5h - s.lastPct > 15) {
     s.start = new Date().toISOString(); // quota jumped up → new 5H window
   }
@@ -148,6 +221,7 @@ function trackSession(account, pct5h) {
   return s.start;
 }
 
+// ── RESET PARSING ──
 // Parse reset strings from scrapers into epoch ms.
 // Handles: absolute dates ("Jun 25, 2026 8:14 AM"), day-time ("Sat 4:59 PM"),
 // relative ("in 5d", "5 days").
@@ -198,6 +272,7 @@ function parseResetToMs(str) {
   }
   return 0;
 }
+// ── RESET PARSING END ──
 
 function fmtDuration(ms) {
   if (ms < 0) return 'now';
@@ -789,30 +864,101 @@ function renderClaudeTokens() {
   document.getElementById('5h-msgs').textContent   = agg.count;
 }
 
+// ── READING SHAPE ──
+// One shape for every provider. Three providers previously invented their own
+// names for the same four numbers — shared5h / sessionUsed / pct5h, two of them
+// polarity-inverted — which is why three render functions existed to perform
+// the same ten steps. Every parse function converts to this shape; nothing
+// above the render layer ever sees a provider's own vocabulary again.
+//
+// pct* are REMAINING percentages, always. A source reporting "used" converts
+// here, at the parse boundary, and never downstream.
+//
+// has5h / hasWk default TRUE: a window exists unless a parser positively knows
+// it does not. That keeps "momentarily missing" (renders —) distinct from "the
+// plan has no such window" (renders n/a), a distinction a null percentage alone
+// cannot carry.
+function makeReading(p = {}) {
+  return {
+    pct5h:     p.pct5h     ?? null,
+    pctWk:     p.pctWk     ?? null,
+    reset5hMs: p.reset5hMs ?? 0,
+    resetWkMs: p.resetWkMs ?? 0,
+    has5h:     p.has5h     ?? true,
+    hasWk:     p.hasWk     ?? true,
+    label:     p.label     ?? null,
+    extra:     p.extra     ?? null,
+  };
+}
+
+// Claude Code arrives already shaped by main.js (pct5h / pct7d from the
+// anthropic-ratelimit-unified-* headers). Only the names differ.
+function normaliseClaudeCodeReading(data) {
+  return makeReading({
+    pct5h:     data.pct5h,
+    pctWk:     data.pct7d,
+    reset5hMs: data.reset5hMs,
+    resetWkMs: data.reset7dMs,
+    has5h:     data.has5h,
+    hasWk:     data.hasWk,
+    label:     data.account,
+  });
+}
+
+// settings.json holds whatever shape was current when it was written: Codex's
+// {shared5h, sharedWeek}, Claude's {sessionUsed, weeklyUsed} (percentage USED),
+// Claude Code's {pct5h, pct7d}, or the new shape. All four are read here. No
+// migration is needed: saveCachedData rewrites the file wholesale on the first
+// poll, so a legacy shape has to survive exactly one startup render.
+function normaliseCachedReading(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+
+  // Unclamped at parse, on purpose: over-quota is a real reading, not a
+  // sentinel (test/rate-limit-headers.test.js:68). metrics.js clamps the
+  // analytics statistics (cycleStats); the gauges (setPct, setBar) do not, so
+  // an over-quota reading on this path currently displays as negative.
+  const fromUsed = (u) => (typeof u === 'number') ? 100 - u : null;
+  const pct5h = raw.pct5h  ?? raw.shared5h   ?? fromUsed(raw.sessionUsed);
+  const pctWk = raw.pctWk  ?? raw.sharedWeek ?? raw.pct7d ?? fromUsed(raw.weeklyUsed);
+
+  if (pct5h == null && pctWk == null) return null;
+
+  return makeReading({
+    pct5h,
+    pctWk,
+    reset5hMs: raw.reset5hMs ?? raw.sessionResetMs ?? 0,
+    resetWkMs: raw.resetWkMs ?? raw.reset7dMs ?? raw.weeklyResetMs ?? 0,
+    // A cache cannot know that a plan HAS no window — only that it recorded no
+    // number. Absent means unknown, which renders an em-dash. Trust an explicit
+    // flag only when the new code wrote it.
+    has5h: raw.has5h ?? true,
+    hasWk: raw.hasWk ?? true,
+    label: raw.label ?? raw.email ?? raw.account ?? null,
+    extra: raw.extra ?? (raw.credits != null ? { credits: raw.credits } : null),
+  });
+}
+// ── READING SHAPE END ──
+
+// ── CLAUDE PARSERS ──
 // ── Claude org usage API parser ────────────────────────────────────────────
 // Parses the /api/organizations/{orgId}/usage JSON response.
-// five_hour.utilization and seven_day.utilization are % USED (not remaining).
+// five_hour.utilization and seven_day.utilization are % USED (not remaining);
+// they are converted to remaining here, at the parse boundary.
 function parseClaudeOrgUsage(data) {
-  const fh  = data?.five_hour;
-  const sd  = data?.seven_day;
-  const fmtReset = (iso) => {
-    if (!iso) return null;
-    const d = new Date(iso);
-    if (isNaN(d)) return null;
-    const diff = d - Date.now();
-    if (diff <= 0) return null;
-    const h = Math.floor(diff / 3_600_000);
-    const m = Math.floor((diff % 3_600_000) / 60_000);
-    return h > 0 ? `${h} hr ${m} min` : `${m} min`;
-  };
-  return {
-    sessionUsed:   fh?.utilization  ?? null,
-    sessionReset:  fmtReset(fh?.resets_at),
-    sessionResetMs: fh?.resets_at ? new Date(fh.resets_at).getTime() : null,
-    weeklyUsed:    sd?.utilization  ?? null,
-    weeklyReset:   sd?.resets_at ? new Date(sd.resets_at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : null,
-    weeklyResetMs:  sd?.resets_at ? new Date(sd.resets_at).getTime() : null,
-  };
+  const fh = data?.five_hour;
+  const sd = data?.seven_day;
+  const ms = (iso) => (iso && !isNaN(new Date(iso))) ? new Date(iso).getTime() : 0;
+  // Unclamped at parse, on purpose: over-quota (utilization > 100) is a real
+  // reading and stays negative in the data. metrics.js clamps the analytics
+  // statistics (cycleStats) to [0,100]; the gauges (setPct, setBar) do not, so
+  // an over-quota reading currently displays as negative.
+  const remain = (u) => (typeof u === 'number') ? 100 - u : null;
+  return makeReading({
+    pct5h:     remain(fh?.utilization),
+    pctWk:     remain(sd?.utilization),
+    reset5hMs: ms(fh?.resets_at),
+    resetWkMs: ms(sd?.resets_at),
+  });
 }
 
 // ── Claude web usage parser (shared) ──────────────────────────────────────
@@ -833,47 +979,32 @@ function parseClaudeWebText(text) {
   const weeklyUsed       = pctUsed(WEEKLY_RE);
   const weeklyRemaining  = pctRemaining(WEEKLY_RE);
 
-  return {
-    sessionUsed:  sessionUsed  != null ? sessionUsed  : (sessionRemaining != null ? 100 - sessionRemaining : null),
-    sessionReset: (text.match(/[Rr]esets in ([^\n\r]+)/i) || [])[1]?.trim() ?? null,
-    weeklyUsed:   weeklyUsed   != null ? weeklyUsed   : (weeklyRemaining  != null ? 100 - weeklyRemaining  : null),
-    weeklyReset:  (text.match(/(?:All models|[Ww]eekly)[\s\S]{0,500}?[Rr]esets?\s+([^\n\r]+)/i) || [])[1]?.trim() ?? null,
-  };
+  // The scrape path has no timestamps, only prose ("Resets in 3 hr 20 min").
+  // parseResetToMs turns that into epoch ms because renderAccountData reads
+  // only timestamps, never prose: dropping it would blank the "Resets ..."
+  // label and stop the reset timestamp reaching usage-log.jsonl. An earlier
+  // pass dropped these fields on the assumption that only Codex's text path
+  // needed them; the Claude scrape path needed them too.
+  const sessionResetStr = (text.match(/[Rr]esets in ([^\n\r]+)/i) || [])[1]?.trim() ?? null;
+  const weeklyResetStr  = (text.match(/(?:All models|[Ww]eekly)[\s\S]{0,500}?[Rr]esets?\s+([^\n\r]+)/i) || [])[1]?.trim() ?? null;
+
+  const used = (u, r) => (u != null ? u : (r != null ? 100 - r : null));
+  // Unclamped at parse for the same reason as parseClaudeOrgUsage: raw
+  // over-quota stays negative. Only the analytics statistics clamp (cycleStats
+  // in metrics.js); the gauges (setPct, setBar) do not.
+  const remain = (v) => (v != null ? 100 - v : null);
+  return makeReading({
+    pct5h:     remain(used(sessionUsed, sessionRemaining)),
+    pctWk:     remain(used(weeklyUsed, weeklyRemaining)),
+    reset5hMs: parseResetToMs(sessionResetStr),
+    resetWkMs: parseResetToMs(weeklyResetStr),
+  });
 }
+// ── CLAUDE PARSERS END ──
 
 // ── Claude Desktop ─────────────────────────────────────────────────────────
-function renderClaudeWebData(parsed, stale = false) {
-  const remaining5h = parsed.sessionUsed != null ? 100 - parsed.sessionUsed : null;
-  const remainingWk = parsed.weeklyUsed  != null ? 100 - parsed.weeklyUsed  : null;
-  if (!stale) applyAccountLabel('claude', parsed.email);
-
-  renderStat('claude', '5h', remaining5h);
-  renderStat('claude', 'wk', remainingWk);
-  renderBudget('claude', remaining5h);
-  setText('claude-5h-reset', parsed.sessionResetMs ? fmtResetIn(parsed.sessionResetMs) : (parsed.sessionReset ? 'Resets in ' + parsed.sessionReset : ''));
-  setText('claude-wk-reset', parsed.weeklyResetMs  ? fmtResetOn(parsed.weeklyResetMs)  : (parsed.weeklyReset  ? 'Resets ' + parsed.weeklyReset : ''));
-
-  if (!stale) {
-    pushTrend('claude-5h', remaining5h);
-    pushTrend('claude-wk', remainingWk);
-    saveCachedData('claude', parsed);
-    // Prefer exact timestamps from org API; fall back to parsed reset strings
-    const reset5h = parsed.sessionResetMs || 0;
-    const reset7d = parsed.weeklyResetMs  || parseResetToMs(parsed.weeklyReset);
-    const entry = buildUsageEntry('claude-desktop', remaining5h, remainingWk, reset5h, reset7d);
-    const cdSession = trackSession('claude-desktop', remaining5h);
-    if (cdSession) entry.sessionStart = cdSession;
-    window.electronAPI.appendUsageLog(entry);
-  }
-
-  document.getElementById('claude-login-prompt').style.display = 'none';
-  document.getElementById('claude-data').style.display = 'block';
-  showSection('claude-section', true);
-  resizeToFit();
-}
-
 async function fetchClaudeWebUsage() {
-  clearTimeout(claudeRetryTimer); claudeRetryTimer = null;
+  clearTimeout(retryTimers.claude); retryTimers.claude = null;
   fetchStart('claude');
 
   const result = await window.electronAPI.fetchClaudeWebUsage();
@@ -892,13 +1023,13 @@ async function fetchClaudeWebUsage() {
     return;
   }
   if (result.error === 'window-in-use') {
-    claudeRetryTimer = setTimeout(fetchClaudeWebUsage, 30_000);
+    retryTimers.claude = setTimeout(fetchClaudeWebUsage, 30_000);
     return;
   }
   if (result.error) {
     setBadge('claude-badge', 'Error', 'error');
     showToast('Claude fetch error — retrying in 45s: ' + result.error);
-    claudeRetryTimer = setTimeout(fetchClaudeWebUsage, 45_000);
+    retryTimers.claude = setTimeout(fetchClaudeWebUsage, 45_000);
     return;
   }
 
@@ -907,18 +1038,18 @@ async function fetchClaudeWebUsage() {
     ? parseClaudeOrgUsage(result.apiData)
     : parseClaudeWebText(result.text || '');
 
-  if (parsed.sessionUsed === null && parsed.weeklyUsed === null) {
+  if (parsed.pct5h === null && parsed.pctWk === null) {
     setBadge('claude-badge', 'No data', 'warn');
     const diagUrl  = result.url ? result.url.replace('https://', '') : '?';
     const diagText = (result.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     showToast(`[${diagUrl}] ${diagText || 'No usage data found'}`);
-    claudeRetryTimer = setTimeout(fetchClaudeWebUsage, 45_000);
+    retryTimers.claude = setTimeout(fetchClaudeWebUsage, 45_000);
     return;
   }
 
-  if (result.email) parsed.email = result.email;
+  if (result.email) parsed.label = result.email;
   hasData.claude = true;
-  renderClaudeWebData(parsed);
+  renderAccountData(PROVIDERS.find(p => p.id === 'claude'), parsed);
   renderClaudeTokens();
   setBadge('claude-badge', 'Live', 'ok');
   markUpdated();
@@ -993,10 +1124,7 @@ function applyAccountHeadings(acct) {
 async function buildClaudeCodeCards() {
   // Before anything else: a retry pending for an account that is about to
   // vanish would fire into a card that no longer exists.
-  for (const id of Object.keys(claudeRetryTimers)) {
-    clearTimeout(claudeRetryTimers[id]);
-    delete claudeRetryTimers[id];
-  }
+  clearClaudeCodeRetryTimers();
   const found = await window.electronAPI.getClaudeAccounts();
   // A malformed reply must not leave claudeAccounts non-iterable: the catch in
   // init() would swallow the throw here and every later accountPrefixes() call
@@ -1021,14 +1149,7 @@ async function buildClaudeCodeCards() {
     stampCompactIds(compact, acct.id);       // stat containers
     compactHost.appendChild(compact);
 
-    if (!(acct.id in hasData))         hasData[acct.id] = false;
-    if (!(acct.id in cachedData))      cachedData[acct.id] = null;
-    if (!(acct.id in lastPct5h))       lastPct5h[acct.id] = null;
-    if (!(acct.id in accountOverrides)) accountOverrides[acct.id] = '';
-    LOG_ACCOUNT[acct.id] = acct.logKey;
-    trendHistory[acct.id + '-5h'] = trendHistory[acct.id + '-5h'] || [];
-    trendHistory[acct.id + '-wk'] = trendHistory[acct.id + '-wk'] || [];
-    _ss[acct.logKey] = _ss[acct.logKey] || { start: null, lastPct: null };
+    registerAccount(acct);
 
     // Handlers the template cannot carry, because each needs its own account.
     const section = document.getElementById(acct.id + '-section');
@@ -1055,48 +1176,6 @@ async function buildClaudeCodeCards() {
     // headings either way.
     applyAccountLabel(acct.id, acct.label);
   }
-}
-
-function renderClaudeCodeApiData(acct, data, stale = false) {
-  const id = acct.id;
-  if (!stale) applyAccountLabel(id, data.account);
-
-  renderStat(id, '5h', data.pct5h);
-  renderStat(id, 'wk', data.pct7d);
-  renderBudget(id, data.pct5h);
-  setText(id + '-5h-reset', data.reset5hMs > 0 ? fmtResetIn(data.reset5hMs) : (data.reset5h ? 'Resets in ' + data.reset5h : ''));
-  setText(id + '-wk-reset', data.reset7dMs > 0 ? fmtResetOn(data.reset7dMs) : (data.reset7d ? 'Resets in ' + data.reset7d : ''));
-
-  if (!stale) {
-    pushTrend(id + '-5h', data.pct5h);
-    pushTrend(id + '-wk', data.pct7d);
-    // Cache in a format compatible with loadCachedClaudeCodeData (this account's slot)
-    const cacheObj = { sessionUsed: data.pct5h != null ? 100 - data.pct5h : null, weeklyUsed: data.pct7d != null ? 100 - data.pct7d : null, sessionReset: data.reset5h, weeklyReset: data.reset7d, account: data.account };
-    saveCachedData(id, cacheObj);
-    const entry = buildUsageEntry(acct.logKey, data.pct5h, data.pct7d, data.reset5hMs || 0, data.reset7dMs || 0);
-    // Claude Code: exact session start derived from API reset header (5h before next reset)
-    if (data.reset5hMs > 0) {
-      const vsSession = new Date(data.reset5hMs - 5 * 3_600_000).toISOString();
-      entry.sessionStart = vsSession;
-      _ss[acct.logKey].start   = vsSession;
-      _ss[acct.logKey].lastPct = data.pct5h;
-    } else {
-      const vsSession = trackSession(acct.logKey, data.pct5h);
-      if (vsSession) entry.sessionStart = vsSession;
-    }
-    window.electronAPI.appendUsageLog(entry);
-  }
-
-  // `?.` can't sit on an assignment's left-hand side (that's a SyntaxError),
-  // so the guard here is a plain null check — same intent as the `?.` used
-  // above for fetchStart/fetchStop/setBadge/setPct: a successful fetch that
-  // resolves after a rebuild dropped this account must not throw on `null`.
-  const loginPromptEl = document.getElementById(id + '-login-prompt');
-  if (loginPromptEl) loginPromptEl.style.display = 'none';
-  const dataEl = document.getElementById(id + '-data');
-  if (dataEl) dataEl.style.display = 'block';
-  showSection(id + '-section', true);
-  resizeToFit();
 }
 
 // ── Claude Code account email ──────────────────────────────────────────────
@@ -1136,7 +1215,7 @@ async function refreshClaudeCodeEmail(acct) {
 }
 
 async function fetchClaudeCodeUsage(acct) {
-  clearTimeout(claudeRetryTimers[acct.id]); claudeRetryTimers[acct.id] = null;
+  clearTimeout(retryTimers[acct.id]); retryTimers[acct.id] = null;
   fetchStart(acct.id);
 
   const result = await window.electronAPI.fetchClaudeCodeApiUsage(acct.configDir);
@@ -1164,12 +1243,12 @@ async function fetchClaudeCodeUsage(acct) {
   if (result.error) {
     setBadge(acct.id + '-badge', 'Error', 'error');
     showToast(`Claude Code API error (${who}) — retrying in 45s: ` + result.error);
-    claudeRetryTimers[acct.id] = setTimeout(() => fetchClaudeCodeUsage(acct), 45_000);
+    retryTimers[acct.id] = setTimeout(() => fetchClaudeCodeUsage(acct), 45_000);
     return;
   }
 
   hasData[acct.id] = true;
-  renderClaudeCodeApiData(acct, result);
+  renderAccountData(acct, normaliseClaudeCodeReading(result));
   setBadge(acct.id + '-badge', 'Live', 'ok');
   if (openPanels.has(acct.id)) { window.electronAPI.readUsageLog(acct.logKey, 200).then(e => renderTrendAnalytics(acct.id, e)); }
   markUpdated();
@@ -1178,6 +1257,7 @@ async function fetchClaudeCodeUsage(acct) {
 }
 
 // ── Codex ──────────────────────────────────────────────────────────────────
+// ── CODEX PARSERS ──
 // OpenAI reports each rate-limit window's own length in `limit_window_seconds`
 // (18000 = 5 hours, 604800 = weekly). Split at a day: shorter is a session
 // window, longer is a weekly one.
@@ -1221,17 +1301,23 @@ function parseCodexText(text) {
     return m ? m[1].trim() : null;
   }
   const creditsM = text.match(/credits remaining[\s\S]{0,100}?(\d[\d,]*)/i);
-  return {
-    shared5h:        pct(CODEX_5H_LABEL),
-    shared5hReset:   resetTime(CODEX_5H_LABEL),
-    sharedWeek:      pct('Weekly usage limit'),
-    sharedWeekReset: resetTime('Weekly usage limit'),
+  // Like the Claude scrape, the Codex page gives prose ("Resets in 2 hr 10 min"),
+  // not timestamps. parseResetToMs converts it to epoch ms because
+  // renderAccountData reads only timestamps, never prose: dropping it would
+  // blank the "Resets ..." label and stop the reset timestamps reaching
+  // usage-log.jsonl. A page with no such section yields null, which
+  // parseResetToMs maps to 0: the shape's "unknown".
+  return makeReading({
+    pct5h:     pct(CODEX_5H_LABEL),
+    pctWk:     pct('Weekly usage limit'),
+    reset5hMs: parseResetToMs(resetTime(CODEX_5H_LABEL)),
+    resetWkMs: parseResetToMs(resetTime('Weekly usage limit')),
     // Agrees with the API path so a fallback poll can't flip the 5h tile
     // between 'n/a' and '—'. An empty page claims nothing, and the both-null
     // guard in fetchCodexUsage stops it reaching the render.
-    has5h:           new RegExp(CODEX_5H_LABEL, 'i').test(text),
-    credits:         creditsM ? creditsM[1] : null,
-  };
+    has5h:     new RegExp(CODEX_5H_LABEL, 'i').test(text),
+    extra:     creditsM ? { credits: creditsM[1] } : null,
+  });
 }
 
 // Structured Codex usage from /backend-api/codex/usage. `used_percent` is
@@ -1253,62 +1339,96 @@ function parseCodexApiUsage(data, now = Date.now()) {
     if (!slot[target]) slot[target] = w;
   }
 
+  // Clamped at 0 on purpose, unlike the other parsers. A negative remaining
+  // figure would reach the gauges, which do not clamp (setPct, setBar), and
+  // would miss the depletion flag and the blocked cycle, which both compare
+  // === 0 (buildUsageEntry, cycleStats). Pinned by test/codex-usage.test.js.
   const remain  = (w) => (w && typeof w.used_percent === 'number') ? Math.max(0, 100 - w.used_percent) : null;
   const resetMs = (w) => (w && w.reset_at) ? w.reset_at * 1000 : 0;
-  return {
-    shared5h:   remain(slot['5h']),
-    sharedWeek: remain(slot.wk),
-    reset5hMs:  resetMs(slot['5h']),
-    reset7dMs:  resetMs(slot.wk),
-    // Whether the plan HAS a 5-hour window at all — something `shared5h ===
-    // null` cannot express. "No such window" and "momentarily missing" render
+  return makeReading({
+    pct5h:     remain(slot['5h']),
+    pctWk:     remain(slot.wk),
+    reset5hMs: resetMs(slot['5h']),
+    resetWkMs: resetMs(slot.wk),
+    // Whether the plan HAS a 5-hour window at all — something `pct5h === null`
+    // cannot express. "No such window" and "momentarily missing" render
     // differently ('n/a' vs '—').
-    has5h:      slot['5h'] !== null,
-    credits:    (data.credits && data.credits.balance != null) ? data.credits.balance : null,
-    email:      data.email || null,
-  };
+    has5h:     slot['5h'] !== null,
+    hasWk:     slot.wk !== null,
+    label:     data.email || null,
+    extra:     (data.credits && data.credits.balance != null)
+      ? { credits: data.credits.balance } : null,
+  });
 }
+// ── CODEX PARSERS END ──
 
-function renderCodexData(parsed, stale = false) {
-  if (!stale) applyAccountLabel('codex', parsed.email);
+// The single render path. Three functions previously performed these ten steps
+// in this order, differing only in field names and hardcoded ids — so every
+// render-layer fix had to be made three times, and when it wasn't, the cards
+// drifted apart.
+function renderAccountData(acct, reading, stale = false) {
+  const id = acct.id;
 
-  // A plan with no 5-hour window reads 'n/a', not —: the tile is not waiting
-  // for a number, there is no such number. A cache written before this flag
-  // existed has has5h undefined, so only an explicit false counts — the next
-  // live poll settles it either way.
-  const no5h = parsed.has5h === false;
-  if (no5h) noFiveHourWindow.add('codex'); else noFiveHourWindow.delete('codex');
+  if (!stale) applyAccountLabel(id, reading.label);
 
-  renderStat('codex', '5h', parsed.shared5h, no5h ? 'n/a' : undefined);
-  renderStat('codex', 'wk', parsed.sharedWeek);
-  renderBudget('codex', parsed.shared5h);
-  setText('codex-5h-reset', no5h ? '' : (parsed.reset5hMs > 0 ? fmtResetIn(parsed.reset5hMs) : (parsed.shared5hReset ? 'Resets ' + parsed.shared5hReset : '')));
-  setText('codex-wk-reset', parsed.reset7dMs > 0 ? fmtResetOn(parsed.reset7dMs) : (parsed.sharedWeekReset ? 'Resets ' + parsed.sharedWeekReset : ''));
-  setText('codex-credits', parsed.credits);
+  if (!reading.has5h) noFiveHourWindow.add(id); else noFiveHourWindow.delete(id);
+
+  renderStat(id, '5h', reading.pct5h, reading.has5h ? undefined : 'n/a');
+  renderStat(id, 'wk', reading.pctWk, reading.hasWk ? undefined : 'n/a');
+  renderBudget(id, reading.pct5h);
+
+  setText(id + '-5h-reset',
+    !reading.has5h ? '' : (reading.reset5hMs > 0 ? fmtResetIn(reading.reset5hMs) : ''));
+  setText(id + '-wk-reset',
+    !reading.hasWk ? '' : (reading.resetWkMs > 0 ? fmtResetOn(reading.resetWkMs) : ''));
 
   if (!stale) {
-    pushTrend('codex-5h', parsed.shared5h);
-    pushTrend('codex-wk', parsed.sharedWeek);
-    saveCachedData('codex', parsed);
-    const fhReset = parsed.reset5hMs > 0 ? parsed.reset5hMs : parseResetToMs(parsed.shared5hReset);
-    const wkReset = parsed.reset7dMs > 0 ? parsed.reset7dMs : parseResetToMs(parsed.sharedWeekReset);
-    const entry = buildUsageEntry('codex', parsed.shared5h, parsed.sharedWeek, fhReset, wkReset);
-    // A "session" IS a 5-hour window. With no such window there is nothing to
-    // track, and carrying the last one forward would freeze the session count
-    // at whatever it happened to be the day the window disappeared.
-    const cxSession = no5h ? null : trackSession('codex', parsed.shared5h);
-    if (cxSession) entry.sessionStart = cxSession;
+    pushTrend(id + '-5h', reading.pct5h);
+    pushTrend(id + '-wk', reading.pctWk);
+    saveCachedData(id, reading);
+
+    const entry = buildUsageEntry(
+      acct.logKey, reading.pct5h, reading.pctWk, reading.reset5hMs, reading.resetWkMs);
+
+    // Claude Code can place the session exactly: its 5h reset header is the
+    // end of the window, so the start is five hours earlier. Everyone else
+    // infers it from a quota jump. A provider with no 5h window has no session
+    // at all — carrying the last one forward would freeze the session count at
+    // whatever it was the day the window disappeared.
+    if (!reading.has5h) {
+      // no sessionStart
+    } else if (acct.exactSessionFromReset && reading.reset5hMs > 0) {
+      const start = new Date(reading.reset5hMs - 5 * 3_600_000).toISOString();
+      entry.sessionStart = start;
+      sessionStore[acct.logKey].start   = start;
+      sessionStore[acct.logKey].lastPct = reading.pct5h;
+    } else {
+      const start = trackSession(acct.logKey, reading.pct5h);
+      if (start) entry.sessionStart = start;
+    }
+
     window.electronAPI.appendUsageLog(entry);
   }
 
-  document.getElementById('codex-login-prompt').style.display = 'none';
-  document.getElementById('codex-data').style.display = 'block';
-  showSection('codex-section', true);
+  // Provider-specific display stays on the descriptor. Putting it here as
+  // `if (acct.id === 'codex')` is the branch this whole refactor removes. The
+  // hook runs even when there is no extra, so it can clear what an earlier
+  // reading put up: a stale figure looks exactly like a live one.
+  if (acct.renderExtra) acct.renderExtra(acct, reading.extra);
+
+  // Null-checked: a fetch that resolves after a card rebuild dropped this
+  // account must not throw on a card that no longer exists.
+  const prompt = document.getElementById(id + '-login-prompt');
+  if (prompt) prompt.style.display = 'none';
+  const data = document.getElementById(id + '-data');
+  if (data) data.style.display = 'block';
+  showSection(id + '-section', true);
   resizeToFit();
 }
+// ── RENDER END ──
 
 async function fetchCodexUsage() {
-  clearTimeout(codexRetryTimer); codexRetryTimer = null;
+  clearTimeout(retryTimers.codex); retryTimers.codex = null;
   fetchStart('codex');
 
   const result = await window.electronAPI.fetchCodexUsage();
@@ -1321,25 +1441,25 @@ async function fetchCodexUsage() {
     }
     setBadge('codex-badge', 'Error', 'error');
     showToast('Codex error — retrying in 45s: ' + result.error);
-    codexRetryTimer = setTimeout(fetchCodexUsage, 45_000);
+    retryTimers.codex = setTimeout(fetchCodexUsage, 45_000);
     return;
   }
 
   // Prefer structured API data (/backend-api/codex/usage) over text scraping
   const apiParsed = result.apiData ? parseCodexApiUsage(result.apiData) : null;
-  const parsed = (apiParsed && (apiParsed.shared5h !== null || apiParsed.sharedWeek !== null))
+  const parsed = (apiParsed && (apiParsed.pct5h !== null || apiParsed.pctWk !== null))
     ? apiParsed
     : parseCodexText(result.text || '');
-  if (parsed.shared5h === null && parsed.sharedWeek === null) {
+  if (parsed.pct5h === null && parsed.pctWk === null) {
     setBadge('codex-badge', 'No data', 'warn');
     showToast('Could not find usage data — try opening the login window.');
-    codexRetryTimer = setTimeout(fetchCodexUsage, 45_000);
+    retryTimers.codex = setTimeout(fetchCodexUsage, 45_000);
     return;
   }
 
-  if (!parsed.email && result.email) parsed.email = result.email;
+  if (!parsed.label && result.email) parsed.label = result.email;
   hasData.codex = true;
-  renderCodexData(parsed);
+  renderAccountData(PROVIDERS.find(p => p.id === 'codex'), parsed);
   setBadge('codex-badge', 'Live', 'ok');
   markUpdated();
   if (openPanels.has('codex')) { window.electronAPI.readUsageLog('codex', 200).then(e => renderTrendAnalytics('codex', e)); }
@@ -1352,8 +1472,12 @@ async function fetchCodexUsage() {
 function loadCachedStaticData(settings) {
   const kn = settings.lastKnown;
   if (!kn) return;
-  if (kn.codex)   { renderCodexData(kn.codex, true);       setBadge('codex-badge',  'Cached', 'stale'); }
-  if (kn.claude)  { renderClaudeWebData(kn.claude, true);  setBadge('claude-badge', 'Cached', 'stale'); }
+  for (const acct of PROVIDERS) {
+    const reading = normaliseCachedReading(kn[acct.id]);
+    if (!reading) continue;
+    renderAccountData(acct, reading, true);
+    setBadge(acct.id + '-badge', 'Cached', 'stale');
+  }
 }
 
 function loadCachedClaudeCodeData(settings) {
@@ -1366,14 +1490,12 @@ function loadCachedClaudeCodeData(settings) {
   // One slot per Claude Code account, keyed by descriptor id. A slot left over
   // from an account that is no longer discovered simply has no card to paint.
   for (const acct of claudeAccounts) {
-    const c = kn[acct.id];
-    if (!c) continue;
-    // Cache stored as {sessionUsed, weeklyUsed, ...} — convert to API format
-    const pct5h = c.sessionUsed != null ? 100 - c.sessionUsed : c.pct5h ?? null;
-    const pct7d = c.weeklyUsed  != null ? 100 - c.weeklyUsed  : c.pct7d  ?? null;
-    renderClaudeCodeApiData(acct, { pct5h, pct7d, reset5h: c.sessionReset ?? c.reset5h, reset7d: c.weeklyReset ?? c.reset7d, account: c.account }, true);
+    const reading = normaliseCachedReading(kn[acct.id]);
+    if (!reading) continue;
+    renderAccountData(acct, reading, true);
     setBadge(acct.id + '-badge', 'Cached', 'stale');
-    const e = readClaudeCodeEmailCache(acct); if (e) applyAccountLabel(acct.id, e);
+    const e = readClaudeCodeEmailCache(acct);
+    if (e) applyAccountLabel(acct.id, e);
   }
 }
 

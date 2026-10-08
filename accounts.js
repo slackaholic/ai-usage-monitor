@@ -210,6 +210,11 @@ function groupIntoAccounts(dirs, { homeDir, defaultDir, knownEmails = {} } = {})
     const descriptor = {
       id: accountIdFor(dir, def),
       kind: 'claude-code',
+      // Claude Code's 5h reset header is the exact END of the window, so a
+      // session started five hours before it; providers without one infer the
+      // start from a quota jump. A fact about what the account is, declared here
+      // with the rest of it because the render path reads it off the descriptor.
+      exactSessionFromReset: true,
       configDir: dir,
       configDirs: [dir],
       logKey: logKeyFor(dir, def),
@@ -232,7 +237,7 @@ function groupIntoAccounts(dirs, { homeDir, defaultDir, knownEmails = {} } = {})
 // by realpath, so both survive the scan as separate accounts. The duplicate id
 // collides in the DOM; the duplicate log key is far worse, interleaving two
 // accounts' entries under one key in usage-log.jsonl and silently corrupting the
-// budget ratio, session tracking (`_ss`) and every analytics figure for both.
+// budget ratio, session tracking (`sessionStore`) and every analytics figure for both.
 //
 // BOTH members of a colliding group get the suffix, not just the later one: the
 // resulting key is then a pure function of that directory's own full path, so it
