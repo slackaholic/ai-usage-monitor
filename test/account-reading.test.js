@@ -580,3 +580,54 @@ test('a rescan also cancels a retry left behind by an account that has vanished'
   assert.strictEqual(context.retryTimers.codex, 1);
   assert.strictEqual(context.retryTimers.claude, 2);
 });
+
+// ── Model-scoped weekly row (15 Oct 2026) ──────────────────────────────────
+// claude.ai renamed the weekly row to "This week" and added a SECOND, model-
+// scoped weekly limit beneath it. The old pattern matched neither "This week"
+// nor "All models" but DID match "Separate weekly limit for Fable", whose
+// percentage is a different quota that routinely reads 0% used -- so the
+// scrape reported a full weekly allowance on an account with 32% gone.
+// Verbatim copy from a live capture; the layout IS the regression.
+const CLAUDE_USAGE_PAGE = [
+  'Your usage',
+  'Max (20x)',
+  'Current session',
+  'Resets at 1:00 PM',
+  '23% used',
+  'This week',
+  'Resets Tuesday 2:00 PM',
+  '32% used',
+  'Fable this week',
+  'Separate weekly limit for Fable · Resets Tuesday 2:00 PM',
+  '0% used',
+  'Usage credits',
+].join('\n');
+
+test('claude scrape reads the account weekly row, not the model-scoped one', () => {
+  const { parseClaudeWebText } = loadParsers();
+  const r = parseClaudeWebText(CLAUDE_USAGE_PAGE);
+  assert.strictEqual(r.pct5h, 77);
+  assert.strictEqual(r.pctWk, 68, 'must be 100-32 from "This week", not 100-0 from the Fable row');
+});
+
+test('claude scrape ignores a model-scoped weekly row even when it comes first', () => {
+  // Document order must not decide which quota is reported: leftmost-match
+  // would be the whole fix if the page never reordered, and pages reorder.
+  const { parseClaudeWebText } = loadParsers();
+  const r = parseClaudeWebText(
+    'Current session\n23% used\n' +
+    'Fable this week\nSeparate weekly limit for Fable\n0% used\n' +
+    'This week\n32% used');
+  assert.strictEqual(r.pctWk, 68);
+});
+
+test('a page with ONLY a model-scoped weekly row reports null, never 100', () => {
+  // Same rule the absent-value test holds: a quota we cannot read is unknown,
+  // and 100 would claim a full week's allowance that nothing measured.
+  const { parseClaudeWebText } = loadParsers();
+  const r = parseClaudeWebText(
+    'Current session\n23% used\n' +
+    'Fable this week\nSeparate weekly limit for Fable\n0% used');
+  assert.strictEqual(r.pct5h, 77);
+  assert.strictEqual(r.pctWk, null);
+});

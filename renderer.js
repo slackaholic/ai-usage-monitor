@@ -962,7 +962,31 @@ function parseClaudeOrgUsage(data) {
 }
 
 // ── Claude web usage parser (shared) ──────────────────────────────────────
-function parseClaudeWebText(text) {
+// claude.ai renders a second, MODEL-SCOPED weekly limit beneath the account's
+// own ("Fable this week · Separate weekly limit for Fable"). It is a different
+// quota and routinely sits at 0% used, so reading it reports a full weekly
+// allowance on an account that has none left. Its block goes before any
+// pattern runs — label line, the sentinel that identifies it, and the
+// percentage that belongs to it — so document order cannot decide which quota
+// is reported. Leftmost-match alone would be a fix only until the page
+// reorders.
+function stripScopedWeekly(text) {
+  const lines = String(text).split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/Separate weekly limit/i.test(lines[i])) { out.push(lines[i]); continue; }
+    out.pop();                      // the scoped row's own label ("Fable this week")
+    while (i + 1 < lines.length && !/\d+%/.test(lines[i + 1])) i++;
+    i++;                            // and its percentage
+  }
+  return out.join('\n');
+}
+
+function parseClaudeWebText(rawText) {
+  // Every pattern below reads the cleaned copy, the reset prose included: the
+  // scoped row carries its own "Resets …" too, and matching that put the weekly
+  // reset timestamp five days early in usage-log.jsonl.
+  const text = stripScopedWeekly(rawText);
   function pctUsed(pattern) {
     const m = text.match(new RegExp(pattern + '[\\s\\S]{0,500}?(\\d+)%\\s*used', 'i'));
     return m ? parseInt(m[1], 10) : null;
@@ -972,7 +996,10 @@ function parseClaudeWebText(text) {
     return m ? parseInt(m[1], 10) : null;
   }
   const SESSION_RE = '(?:Current session|5[\\s-]hour)';
-  const WEEKLY_RE  = '(?:All models|[Ww]eekly|per week)';
+  // "This week" is the current label (Oct 2026); the older ones stay so a
+  // cached or rolled-back page still parses. None of them matches the scoped
+  // row's wording, but stripScopedWeekly is what guarantees that, not this list.
+  const WEEKLY_RE  = '(?:All models|This week|[Ww]eekly|per week)';
 
   const sessionUsed      = pctUsed(SESSION_RE);
   const sessionRemaining = pctRemaining(SESSION_RE);
@@ -986,7 +1013,7 @@ function parseClaudeWebText(text) {
   // pass dropped these fields on the assumption that only Codex's text path
   // needed them; the Claude scrape path needed them too.
   const sessionResetStr = (text.match(/[Rr]esets in ([^\n\r]+)/i) || [])[1]?.trim() ?? null;
-  const weeklyResetStr  = (text.match(/(?:All models|[Ww]eekly)[\s\S]{0,500}?[Rr]esets?\s+([^\n\r]+)/i) || [])[1]?.trim() ?? null;
+  const weeklyResetStr  = (text.match(/(?:All models|This week|[Ww]eekly)[\s\S]{0,500}?[Rr]esets?\s+([^\n\r]+)/i) || [])[1]?.trim() ?? null;
 
   const used = (u, r) => (u != null ? u : (r != null ? 100 - r : null));
   // Unclamped at parse for the same reason as parseClaudeOrgUsage: raw
