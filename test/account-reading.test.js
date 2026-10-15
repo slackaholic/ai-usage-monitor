@@ -631,3 +631,73 @@ test('a page with ONLY a model-scoped weekly row reports null, never 100', () =>
   assert.strictEqual(r.pct5h, 77);
   assert.strictEqual(r.pctWk, null);
 });
+
+// ── Full weekday names in reset prose (15 Oct 2026) ────────────────────────
+// The usage page says "Resets Tuesday 2:00 PM". The day-time branch accepted
+// only the ABBREVIATED form, so "Tuesday" fell through to the generic
+// clock-time branch and resolved to today-or-tomorrow at 14:00 — putting the
+// weekly reset timestamp up to five days early in usage-log.jsonl.
+//
+// `now` is injected (same convention as parseCodexApiUsage) so these assert
+// exact instants instead of a day-of-week and a "sometime in the future".
+const THU = Date.parse('2026-10-15T09:00:00Z');   // a Thursday
+
+test('reset prose: a full weekday name resolves to that weekday', () => {
+  const { parseResetToMs } = loadParsers();
+  const r = new Date(parseResetToMs('Tuesday 2:00 PM', THU));
+  assert.strictEqual(r.getDay(), 2, `expected Tuesday, got ${r}`);
+  assert.strictEqual(r.getHours(), 14);
+  assert.strictEqual(r.getMinutes(), 0);
+  // Five days on, not the next 2 PM to come round.
+  assert.ok(r.getTime() - THU > 4 * 86_400_000, `too soon: ${r}`);
+});
+
+test('reset prose: every full weekday name maps to the right day', () => {
+  const { parseResetToMs } = loadParsers();
+  const names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  names.forEach((name, day) => {
+    const r = new Date(parseResetToMs(name + ' 2:00 PM', THU));
+    assert.strictEqual(r.getDay(), day, `${name} resolved to ${r}`);
+  });
+});
+
+test('reset prose: the abbreviated form still works', () => {
+  const { parseResetToMs } = loadParsers();
+  const r = new Date(parseResetToMs('Sat 4:59 PM', THU));
+  assert.strictEqual(r.getDay(), 6);
+  assert.strictEqual(r.getHours(), 16);
+  assert.strictEqual(r.getMinutes(), 59);
+});
+
+test('reset prose: "Tuesday at 2:00 PM" reads the same as without "at"', () => {
+  const { parseResetToMs } = loadParsers();
+  const r = parseResetToMs('Tuesday at 2:00 PM', THU);
+  // Asserting only that the two agree would pass with both of them wrong.
+  assert.strictEqual(new Date(r).getDay(), 2, `expected Tuesday, got ${new Date(r)}`);
+  assert.strictEqual(r, parseResetToMs('Tuesday 2:00 PM', THU));
+});
+
+test('reset prose: the named day being TODAY means later today, not next week', () => {
+  const { parseResetToMs } = loadParsers();
+  // Thursday 09:00 local, reset named for Thursday 2 PM — five hours away.
+  const morning = new Date(2026, 9, 15, 9, 0, 0, 0).getTime();
+  const r = new Date(parseResetToMs('Thursday 2:00 PM', morning));
+  assert.strictEqual(r.getDate(), 15, `expected the 15th, got ${r}`);
+  assert.strictEqual(r.getHours(), 14);
+});
+
+test('reset prose: the named day being TODAY but already past means next week', () => {
+  const { parseResetToMs } = loadParsers();
+  const evening = new Date(2026, 9, 15, 18, 0, 0, 0).getTime();
+  const r = new Date(parseResetToMs('Thursday 2:00 PM', evening));
+  assert.strictEqual(r.getDate(), 22, `expected the 22nd, got ${r}`);
+  assert.strictEqual(r.getHours(), 14);
+});
+
+test('reset prose: "Monthly" is not read as Monday', () => {
+  // The completion after a three-letter prefix is a fixed list, not [a-z]*,
+  // precisely so a word that merely STARTS like a day cannot become one.
+  const { parseResetToMs } = loadParsers();
+  const r = parseResetToMs('Monthly 2:00 PM', THU);
+  assert.ok(r - THU < 86_400_000, `took the weekday branch: ${new Date(r)}`);
+});
