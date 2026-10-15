@@ -708,3 +708,47 @@ test('weeklyPerFiveHourRatio: cutoff leaving too little evidence returns null', 
   ];
   assert.equal(weeklyPerFiveHourRatio(snaps, since), null);
 });
+
+// ── Bad-reading spikes (15 Oct 2026) ───────────────────────────────────────
+// weeklyBurnSince counts falls and ignores rises, so a single bad reading is
+// not self-cancelling: the rise is discarded and the fall back to the true
+// value is counted as real burn. A 68 -> 100 -> 68 blip from the scrape
+// fallback added 32 points to a real 18, reporting 49% of the weekly quota
+// spent in a day on an account that had spent 43% all week.
+test('weeklyBurnSince: a bad reading that springs back does not inject burn', () => {
+  const since = Date.parse('2026-10-15T00:00:00Z');
+  const snaps = [
+    { ts: '2026-10-15T09:57:27Z', wk: 68 },
+    { ts: '2026-10-15T09:59:48Z', wk: 100 },  // bad reading
+    { ts: '2026-10-15T10:01:27Z', wk: 68 },   // true value again
+    { ts: '2026-10-15T10:11:27Z', wk: 67 },   // the only real burn: 1
+  ];
+  assert.equal(weeklyBurnSince(snaps, since), 1);
+});
+
+test('weeklyBurnSince: a real weekly reset is still not counted as burn', () => {
+  const since = Date.parse('2026-10-13T00:00:00Z');
+  const snaps = [
+    { ts: '2026-10-13T12:55:00Z', wk: 12 },
+    { ts: '2026-10-13T13:00:00Z', wk: 100 },  // window reset - stays high
+    { ts: '2026-10-13T13:05:00Z', wk: 99 },
+    { ts: '2026-10-13T13:10:00Z', wk: 97 },
+  ];
+  assert.equal(weeklyBurnSince(snaps, since), 3);
+});
+
+test('weeklyBurnSince: a reset is still a reset when the new week later burns below the old', () => {
+  // The distinguishing mark of a bad reading is that it springs back within
+  // ONE poll gap, not that the series later dips under the pre-rise level --
+  // which every reset eventually does, and which a naive rule would read as a
+  // spike, discarding a whole week of real burn.
+  const since = Date.parse('2026-10-13T00:00:00Z');
+  const snaps = [
+    { ts: '2026-10-13T12:55:00Z', wk: 12 },
+    { ts: '2026-10-13T13:00:00Z', wk: 100 },  // reset
+    { ts: '2026-10-13T13:05:00Z', wk: 98 },   // burn: 2
+    { ts: '2026-10-14T09:00:00Z', wk: 90 },   // idle gap - not counted
+    { ts: '2026-10-14T09:05:00Z', wk: 8 },    // burn: 82, still below the old 12
+  ];
+  assert.equal(weeklyBurnSince(snaps, since), 84);
+});

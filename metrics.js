@@ -219,9 +219,38 @@ function fiveHourAllowancePct(targetWeeklyPct, ratio) {
 
 // Weekly % burned since a timestamp (active drops only). sinceMs is a parameter
 // so this module never reads the clock.
+// A bad reading — a poll that parsed the wrong row, or a provider hiccup —
+// shows up as a point ABOVE its neighbours that springs straight back. Summing
+// only falls does not cancel it: the rise is ignored and the fall back to the
+// true value is counted as real burn, so a lone 68 -> 100 -> 68 blip added 32
+// points to a real 18 and reported half the week spent in a day.
+//
+// A weekly RESET rises too and is legitimate, so the two are told apart by how
+// long the raised run lasts — NOT by whether the series later dips below the
+// pre-rise level, which every reset eventually does and which would discard a
+// whole week of real burn. A reset holds its level until the next reset, days
+// away; a bad reading is gone by the following poll.
+function dropWeeklySpikes(points) {
+  const out = [];
+  for (let i = 0; i < points.length; i++) {
+    const prev = out.length ? out[out.length - 1] : null;
+    if (prev && points[i].wk > prev.wk) {
+      let j = i;
+      while (j < points.length && points[j].wk > prev.wk) j++;
+      const springsBack = j < points.length
+        && (new Date(points[j].ts) - new Date(points[i].ts)) < ACTIVE_GAP_MAX;
+      // Skip the raised run AND its fall: the loop's own i++ lands on points[j],
+      // the first point back at the true level.
+      if (springsBack) { i = j - 1; continue; }
+    }
+    out.push(points[i]);
+  }
+  return out;
+}
+
 function weeklyBurnSince(snapshots, sinceMs) {
   let sum = 0;
-  const pts = (snapshots || []).filter(s => s && s.wk != null);
+  const pts = dropWeeklySpikes((snapshots || []).filter(s => s && s.wk != null));
   for (let i = 1; i < pts.length; i++) {
     const t = new Date(pts[i].ts).getTime();
     // Known, accepted approximation: an active interval that STRADDLES sinceMs
