@@ -474,6 +474,14 @@ const CODEX_SIGNED_IN_JS = `
     .then(j => !!(j && j.accessToken))
     .catch(() => false)
 `;
+// Electron 28 can lose the answer to executeJavaScript for good when the page
+// moves to another site while the script runs: against the real sites, one
+// question in seven never came back once the page went to auth.openai.com,
+// which is what clicking through to sign in does. Unbounded, one lost answer
+// held the check "busy" for good: the sign-in landed and the window sat there.
+// Past this limit the answer counts as "not yet". It sits well above the
+// fetch's own 5 s limit, since answers cut short by a page move took up to 9 s.
+const CODEX_CHECK_LIMIT_MS = 10000;
 let codexSignInCheck = null;
 
 ipcMain.handle('show-codex-window', () => {
@@ -494,7 +502,14 @@ ipcMain.handle('show-codex-window', () => {
     if (asking || !CHATGPT_PAGE_RE.test(win.webContents.getURL())) return;
     asking = true;
     let signedIn = false;
-    try { signedIn = await win.webContents.executeJavaScript(CODEX_SIGNED_IN_JS); } catch {}
+    let limit;
+    const lost = new Promise((resolve) => { limit = setTimeout(() => resolve('lost'), CODEX_CHECK_LIMIT_MS); });
+    try { signedIn = await Promise.race([win.webContents.executeJavaScript(CODEX_SIGNED_IN_JS), lost]); } catch {}
+    clearTimeout(limit);
+    if (signedIn === 'lost') {
+      console.warn(`codex sign-in check: no answer in ${CODEX_CHECK_LIMIT_MS / 1000} s (page moved?), asking again`);
+      signedIn = false;
+    }
     asking = false;
     if (signedIn && !win.isDestroyed()) { stop(); win.hide(); }
   }, 2000);
