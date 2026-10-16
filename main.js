@@ -410,6 +410,14 @@ async function scrapeCodexPage(win) {
 
 ipcMain.handle('fetch-codex-usage', async () => {
   const win = getOrCreateCodexWindow();
+
+  // Don't interrupt a login the user opened this window for — the same guard
+  // fetchClaudeUsageForKey has. The poll and the login share one window, so
+  // hiding it and re-navigating to CODEX_URL throws away a half-filled form.
+  // The no-data branch re-arms a 45s retry, so without this the user gets 45
+  // seconds to complete a sign-in with 2FA, and the window vanishes mid-typing.
+  if (win.isVisible()) return { error: 'window-in-use' };
+
   win.hide();
 
   try {

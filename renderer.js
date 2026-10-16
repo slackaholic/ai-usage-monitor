@@ -1501,6 +1501,13 @@ async function fetchCodexUsage() {
       setBadge('codex-badge', 'Login needed', 'warn');
       return;
     }
+    // A sign-in is open in the window this poll would otherwise take over.
+    // Not an error, and not worth a toast — that would land on top of the
+    // login form. Back off and look again, as the Claude path does.
+    if (result.error === 'window-in-use') {
+      retryTimers.codex = setTimeout(fetchCodexUsage, 30_000);
+      return;
+    }
     setBadge('codex-badge', 'Error', 'error');
     showToast('Codex error — retrying in 45s: ' + result.error);
     retryTimers.codex = setTimeout(fetchCodexUsage, 45_000);
