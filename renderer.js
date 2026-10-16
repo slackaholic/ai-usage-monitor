@@ -680,12 +680,34 @@ function fmt(n) {
   return String(n);
 }
 
+// ── TOAST ──
+// The toast is a flow child of .content, not an overlay, so the window has to
+// make room for it before it fades in and give that room back when it goes —
+// otherwise the fitted height clips it. See the .toast rule in index.html for
+// why it cannot simply float: there is no spare space to float over.
+let toastTimer = null;
+let toastFadeTimer = null;
+const TOAST_MS = 5000;
+const TOAST_FADE_MS = 200;        // matches the opacity transition in the CSS
+
 function showToast(msg) {
   const t = document.getElementById('toast');
+  if (!t) return;
+  // A single poll can raise several messages at once (every account retrying).
+  // Without this, the FIRST one's timer would hide the message that replaced
+  // it, cutting the newest one short.
+  clearTimeout(toastTimer);
+  clearTimeout(toastFadeTimer);
   t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 5000);
+  t.style.display = 'block';
+  resizeToFit();
+  requestAnimationFrame(() => t.classList.add('show'));
+  toastTimer = setTimeout(() => {
+    t.classList.remove('show');
+    toastFadeTimer = setTimeout(() => { t.style.display = 'none'; resizeToFit(); }, TOAST_FADE_MS);
+  }, TOAST_MS);
 }
+// ── TOAST END ──
 
 function setBadge(id, text, cls) {
   const el = document.getElementById(id);

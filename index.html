@@ -317,11 +317,22 @@
 
     .last-updated { font-size: 10px; color: var(--text-faint); text-align: center; }
 
+    /* In the flow, NOT over it. The window is auto-sized to exactly fit its
+       content (resizeToFit), so there is never spare space for an overlay: a
+       fixed toast always lands on whatever happens to be at the bottom, and in
+       compact view that is a reading — the one thing the window exists to
+       show. As the last flow child of .content it reserves its own space, and
+       resizeToFit skips display:none children, so the window only grows while
+       a message is actually up. */
     .toast {
-      position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+      display: none;
       background: var(--toast-bg); border: 1px solid var(--toast-border); color: var(--toast-text);
-      padding: 8px 18px; border-radius: 20px; font-size: 12px;
-      opacity: 0; transition: opacity 0.2s; pointer-events: none; white-space: nowrap;
+      padding: 7px 12px; border-radius: 10px; font-size: 12px; text-align: center;
+      opacity: 0; transition: opacity 0.2s;
+      /* nowrap was safe while this floated; in the flow it would run past
+         .content's overflow-x:hidden and clip a long message instead of
+         wrapping it — and these messages carry diagnostic detail. */
+      white-space: normal; overflow-wrap: anywhere;
     }
     .toast.show { opacity: 1; }
   </style>
@@ -559,9 +570,11 @@
 
   </div><!-- #full-view -->
 
-</div>
+  <!-- Inside .content, and last, so a message reserves space below the cards
+       instead of covering one. See the .toast rule. -->
+  <div class="toast" id="toast"></div>
 
-<div class="toast" id="toast"></div>
+</div>
 
 <!-- ── Claude Code card template ─────────────────────────────────────────────
      One clone per account. Every id is written as data-id and stamped with the
