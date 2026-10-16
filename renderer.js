@@ -225,25 +225,38 @@ function trackSession(account, pct5h) {
 // Parse reset strings from scrapers into epoch ms.
 // Handles: absolute dates ("Jun 25, 2026 8:14 AM"), day-time ("Sat 4:59 PM"),
 // relative ("in 5d", "5 days").
-function parseResetToMs(str) {
+// `nowMs` is injected (as parseCodexApiUsage already does) so the weekday
+// arithmetic can be asserted as exact instants rather than "the right day,
+// sometime ahead" — which is all a test reading the wall clock can check.
+function parseResetToMs(str, nowMs = Date.now()) {
   if (!str) return 0;
   // Direct date parse (works for "Jun 25, 2026 8:14 AM")
   const d = new Date(str);
-  if (!isNaN(d.getTime()) && d.getTime() > Date.now() - 86_400_000) return d.getTime();
-  // "Sat 4:59 PM" / "Mon 10:30 AM"
-  const dayTime = str.match(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+(\d+):(\d+)\s*(AM|PM)$/i);
+  if (!isNaN(d.getTime()) && d.getTime() > nowMs - 86_400_000) return d.getTime();
+  // "Sat 4:59 PM" / "Mon 10:30 AM" / "Tuesday 2:00 PM" / "Tuesday at 2:00 PM".
+  // The completion after the three-letter prefix is a fixed list rather than
+  // [a-z]*, so a word that merely starts like a day ("Monthly") cannot become
+  // one. claude.ai writes the full name, which matched none of the old
+  // alternatives and fell through to the bare clock-time branch below — where
+  // "Tuesday 2:00 PM" resolved to today or tomorrow, up to five days early.
+  const dayTime = str.match(
+    /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)(?:day|sday|nesday|rsday|urday|s|rs)?\.?\s+(?:at\s+)?(\d+):(\d+)\s*(AM|PM)$/i);
   if (dayTime) {
     const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     const target = days.findIndex(x => x.toLowerCase() === dayTime[1].toLowerCase());
-    const now = new Date();
-    let diff = (target - now.getDay() + 7) % 7 || 7;
-    const r = new Date(now);
-    r.setDate(now.getDate() + diff);
-    let h = parseInt(dayTime[2]);
-    const m = parseInt(dayTime[3]);
+    const now = new Date(nowMs);
+    let h = parseInt(dayTime[2], 10);
+    const m = parseInt(dayTime[3], 10);
     if (dayTime[4].toLowerCase() === 'pm' && h !== 12) h += 12;
     if (dayTime[4].toLowerCase() === 'am' && h === 12) h = 0;
+    const r = new Date(now);
+    r.setDate(now.getDate() + ((target - now.getDay() + 7) % 7));
     r.setHours(h, m, 0, 0);
+    // A named day that IS today is either later today or a week out, and the
+    // day arithmetic cannot tell those apart — the clock time decides. The old
+    // `|| 7` always chose a week out, so on reset day itself the countdown read
+    // seven days when the reset was hours away.
+    if (r.getTime() <= nowMs) r.setDate(r.getDate() + 7);
     return r.getTime();
   }
   // Relative: "in 3 hours", "2h 30m", "in 45 minutes", "in 1 hour 15 min"
@@ -252,11 +265,11 @@ function parseResetToMs(str) {
   if (relH || relM) {
     const h = relH ? parseInt(relH[1], 10) : 0;
     const m = relM ? parseInt(relM[1], 10) : 0;
-    return Date.now() + h * 3_600_000 + m * 60_000;
+    return nowMs + h * 3_600_000 + m * 60_000;
   }
   // "in 5d" / "5 days"
   const days = str.match(/(\d+)\s*d/i);
-  if (days) return Date.now() + parseInt(days[1]) * 86_400_000;
+  if (days) return nowMs + parseInt(days[1]) * 86_400_000;
   // "at 8:14 PM" — next occurrence of that clock time
   const at = str.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
   if (at) {
@@ -265,9 +278,9 @@ function parseResetToMs(str) {
     const ap = at[3] ? at[3].toLowerCase() : null;
     if (ap === 'pm' && h !== 12) h += 12;
     if (ap === 'am' && h === 12) h = 0;
-    const r = new Date();
+    const r = new Date(nowMs);
     r.setHours(h, m, 0, 0);
-    if (r.getTime() <= Date.now()) r.setDate(r.getDate() + 1);
+    if (r.getTime() <= nowMs) r.setDate(r.getDate() + 1);
     return r.getTime();
   }
   return 0;
@@ -962,7 +975,31 @@ function parseClaudeOrgUsage(data) {
 }
 
 // ── Claude web usage parser (shared) ──────────────────────────────────────
-function parseClaudeWebText(text) {
+// claude.ai renders a second, MODEL-SCOPED weekly limit beneath the account's
+// own ("Fable this week · Separate weekly limit for Fable"). It is a different
+// quota and routinely sits at 0% used, so reading it reports a full weekly
+// allowance on an account that has none left. Its block goes before any
+// pattern runs — label line, the sentinel that identifies it, and the
+// percentage that belongs to it — so document order cannot decide which quota
+// is reported. Leftmost-match alone would be a fix only until the page
+// reorders.
+function stripScopedWeekly(text) {
+  const lines = String(text).split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/Separate weekly limit/i.test(lines[i])) { out.push(lines[i]); continue; }
+    out.pop();                      // the scoped row's own label ("Fable this week")
+    while (i + 1 < lines.length && !/\d+%/.test(lines[i + 1])) i++;
+    i++;                            // and its percentage
+  }
+  return out.join('\n');
+}
+
+function parseClaudeWebText(rawText) {
+  // Every pattern below reads the cleaned copy, the reset prose included: the
+  // scoped row carries its own "Resets …" too, and matching that put the weekly
+  // reset timestamp five days early in usage-log.jsonl.
+  const text = stripScopedWeekly(rawText);
   function pctUsed(pattern) {
     const m = text.match(new RegExp(pattern + '[\\s\\S]{0,500}?(\\d+)%\\s*used', 'i'));
     return m ? parseInt(m[1], 10) : null;
@@ -972,7 +1009,10 @@ function parseClaudeWebText(text) {
     return m ? parseInt(m[1], 10) : null;
   }
   const SESSION_RE = '(?:Current session|5[\\s-]hour)';
-  const WEEKLY_RE  = '(?:All models|[Ww]eekly|per week)';
+  // "This week" is the current label (Oct 2026); the older ones stay so a
+  // cached or rolled-back page still parses. None of them matches the scoped
+  // row's wording, but stripScopedWeekly is what guarantees that, not this list.
+  const WEEKLY_RE  = '(?:All models|This week|[Ww]eekly|per week)';
 
   const sessionUsed      = pctUsed(SESSION_RE);
   const sessionRemaining = pctRemaining(SESSION_RE);
@@ -986,7 +1026,7 @@ function parseClaudeWebText(text) {
   // pass dropped these fields on the assumption that only Codex's text path
   // needed them; the Claude scrape path needed them too.
   const sessionResetStr = (text.match(/[Rr]esets in ([^\n\r]+)/i) || [])[1]?.trim() ?? null;
-  const weeklyResetStr  = (text.match(/(?:All models|[Ww]eekly)[\s\S]{0,500}?[Rr]esets?\s+([^\n\r]+)/i) || [])[1]?.trim() ?? null;
+  const weeklyResetStr  = (text.match(/(?:All models|This week|[Ww]eekly)[\s\S]{0,500}?[Rr]esets?\s+([^\n\r]+)/i) || [])[1]?.trim() ?? null;
 
   const used = (u, r) => (u != null ? u : (r != null ? 100 - r : null));
   // Unclamped at parse for the same reason as parseClaudeOrgUsage: raw

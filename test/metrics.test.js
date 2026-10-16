@@ -708,3 +708,127 @@ test('weeklyPerFiveHourRatio: cutoff leaving too little evidence returns null', 
   ];
   assert.equal(weeklyPerFiveHourRatio(snaps, since), null);
 });
+
+// ── Bad-reading spikes (15 Oct 2026) ───────────────────────────────────────
+// weeklyBurnSince counts falls and ignores rises, so a single bad reading is
+// not self-cancelling: the rise is discarded and the fall back to the true
+// value is counted as real burn. A 68 -> 100 -> 68 blip from the scrape
+// fallback added 32 points to a real 18, reporting 49% of the weekly quota
+// spent in a day on an account that had spent 43% all week.
+test('weeklyBurnSince: a bad reading that springs back does not inject burn', () => {
+  const since = Date.parse('2026-10-15T00:00:00Z');
+  const snaps = [
+    { ts: '2026-10-15T09:57:27Z', wk: 68 },
+    { ts: '2026-10-15T09:59:48Z', wk: 100 },  // bad reading
+    { ts: '2026-10-15T10:01:27Z', wk: 68 },   // true value again
+    { ts: '2026-10-15T10:11:27Z', wk: 67 },   // the only real burn: 1
+  ];
+  assert.equal(weeklyBurnSince(snaps, since), 1);
+});
+
+test('weeklyBurnSince: a real weekly reset is still not counted as burn', () => {
+  const since = Date.parse('2026-10-13T00:00:00Z');
+  const snaps = [
+    { ts: '2026-10-13T12:55:00Z', wk: 12 },
+    { ts: '2026-10-13T13:00:00Z', wk: 100 },  // window reset - stays high
+    { ts: '2026-10-13T13:05:00Z', wk: 99 },
+    { ts: '2026-10-13T13:10:00Z', wk: 97 },
+  ];
+  assert.equal(weeklyBurnSince(snaps, since), 3);
+});
+
+test('weeklyBurnSince: a reset is still a reset when the new week later burns below the old', () => {
+  // The distinguishing mark of a bad reading is that it springs back within
+  // ONE poll gap, not that the series later dips under the pre-rise level --
+  // which every reset eventually does, and which a naive rule would read as a
+  // spike, discarding a whole week of real burn.
+  const since = Date.parse('2026-10-13T00:00:00Z');
+  const snaps = [
+    { ts: '2026-10-13T12:55:00Z', wk: 12 },
+    { ts: '2026-10-13T13:00:00Z', wk: 100 },  // reset
+    { ts: '2026-10-13T13:05:00Z', wk: 98 },   // burn: 2
+    { ts: '2026-10-14T09:00:00Z', wk: 90 },   // idle gap - not counted
+    { ts: '2026-10-14T09:05:00Z', wk: 8 },    // burn: 82, still below the old 12
+  ];
+  assert.equal(weeklyBurnSince(snaps, since), 84);
+});
+
+// ── The same one-sided exposure in the rest of the burn family ─────────────
+// hourlyBurn and monthBurnGrid count `drop > 0` and ignore rises, exactly as
+// weeklyBurnSince did. weeklyPerFiveHourRatio skips an interval when EITHER
+// meter rises -- which drops the rise but still banks the fall back to the true
+// value, where dw is large and d5 is ~0, inflating the numerator alone.
+const { weeklyPerFiveHourRatio: ratio } = require('../metrics.js');
+
+test('hourlyBurn: a bad reading that springs back does not inflate its hour', () => {
+  const snaps = [
+    { ts: '2026-10-15T09:00:00Z', wk: 68 },
+    { ts: '2026-10-15T09:02:00Z', wk: 100 },  // bad reading
+    { ts: '2026-10-15T09:04:00Z', wk: 68 },   // true value again
+    { ts: '2026-10-15T09:06:00Z', wk: 67 },   // the only real burn: 1
+  ];
+  assert.equal(hourlyBurn(snaps, 'wk').reduce((a, b) => a + b, 0), 1);
+});
+
+test('monthBurnGrid: a bad reading does not inflate its day', () => {
+  const snaps = [
+    { ts: '2026-10-15T09:00:00Z', wk: 68 },
+    { ts: '2026-10-15T09:02:00Z', wk: 100 },
+    { ts: '2026-10-15T09:04:00Z', wk: 68 },
+    { ts: '2026-10-15T09:06:00Z', wk: 67 },
+  ];
+  const grid = monthBurnGrid(snaps, 'wk', 2026, 9);   // October
+  const sum = g => g.reduce((a, r) => a + r.hours.reduce((x, y) => x + y, 0), 0);
+  assert.equal(sum(grid), 1);
+  // The day still HAS data: a bad value is not an absence of polling, and
+  // blanking the cell would hide a day that was in fact covered.
+  assert.ok(grid.some(r => r.date === '2026-10-15' && r.hasData));
+});
+
+test('weeklyPerFiveHourRatio: a bad weekly reading does not inflate the ratio', () => {
+  const clean = [
+    { ts: '2026-10-15T09:00:00Z', '5h': 100, wk: 50 },
+    { ts: '2026-10-15T09:05:00Z', '5h': 90,  wk: 48 },
+    { ts: '2026-10-15T09:10:00Z', '5h': 80,  wk: 46 },
+    { ts: '2026-10-15T09:15:00Z', '5h': 70,  wk: 44 },
+  ];
+  assert.equal(ratio(clean), 0.2);
+
+  const spiked = [
+    { ts: '2026-10-15T09:00:00Z', '5h': 100, wk: 50 },
+    { ts: '2026-10-15T09:05:00Z', '5h': 90,  wk: 48 },
+    { ts: '2026-10-15T09:10:00Z', '5h': 80,  wk: 46 },
+    { ts: '2026-10-15T09:12:00Z', '5h': 80,  wk: 100 },  // bad reading
+    { ts: '2026-10-15T09:14:00Z', '5h': 80,  wk: 46 },   // true value again
+    { ts: '2026-10-15T09:15:00Z', '5h': 70,  wk: 44 },
+  ];
+  // The fall back from 100 adds 54 to the numerator against 0 of denominator:
+  // a tenfold ratio off one bad poll, and the ratio sets the budget marker.
+  assert.equal(ratio(spiked), 0.2);
+});
+
+test('weeklyPerFiveHourRatio: a real 5h reset is still skipped, not mistaken for one', () => {
+  const snaps = [
+    { ts: '2026-10-15T09:00:00Z', '5h': 20,  wk: 50 },
+    { ts: '2026-10-15T09:05:00Z', '5h': 100, wk: 50 },  // window reset - holds
+    { ts: '2026-10-15T09:10:00Z', '5h': 90,  wk: 48 },
+    { ts: '2026-10-15T09:15:00Z', '5h': 80,  wk: 46 },
+    { ts: '2026-10-15T09:20:00Z', '5h': 70,  wk: 44 },
+  ];
+  assert.equal(ratio(snaps), 0.2);
+});
+
+test('weeklyPerFiveHourRatio: a bad 5h reading does not deflate the ratio either', () => {
+  // The mirror of the weekly case, and it moves the ratio the OTHER way: the
+  // fall back from a bad 5h value adds d5 against ~0 dw, inflating the
+  // denominator. Seen for real on 14 Aug (5h 95 -> 100 -> 95, six polls).
+  const spiked = [
+    { ts: '2026-10-15T09:00:00Z', '5h': 100, wk: 50 },
+    { ts: '2026-10-15T09:05:00Z', '5h': 90,  wk: 48 },
+    { ts: '2026-10-15T09:10:00Z', '5h': 80,  wk: 46 },
+    { ts: '2026-10-15T09:12:00Z', '5h': 100, wk: 46 },  // bad reading
+    { ts: '2026-10-15T09:14:00Z', '5h': 80,  wk: 46 },  // true value again
+    { ts: '2026-10-15T09:15:00Z', '5h': 70,  wk: 44 },
+  ];
+  assert.equal(ratio(spiked), 0.2);
+});

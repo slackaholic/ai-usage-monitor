@@ -187,7 +187,12 @@ const MIN_RATIO_EVIDENCE_PCT = 20;
 // Returns null when the evidence is too thin to trust.
 function weeklyPerFiveHourRatio(snapshots, sinceMs) {
   let sum5h = 0, sumWk = 0;
-  const pts = (snapshots || []).filter(s => s && s['5h'] != null && s.wk != null);
+  // Both meters are judged: a bad poll corrupts whichever one it misread, and
+  // skipping the rise while banking the fall adds a large dw against ~0 d5 —
+  // inflating the numerator alone. One such poll on the codex log doubled it.
+  const pts = dropSpikes(
+    dropSpikes((snapshots || []).filter(s => s && s['5h'] != null && s.wk != null), 'wk'),
+    '5h');
   for (let i = 1; i < pts.length; i++) {
     // Optional cutoff: ignore intervals recorded before a declared tier change.
     // Omitted / non-finite sinceMs means no filtering (full history).
@@ -219,9 +224,42 @@ function fiveHourAllowancePct(targetWeeklyPct, ratio) {
 
 // Weekly % burned since a timestamp (active drops only). sinceMs is a parameter
 // so this module never reads the clock.
+// A bad reading — a poll that parsed the wrong row, or a provider hiccup —
+// shows up as a point ABOVE its neighbours that springs straight back. Every
+// burn function here counts falls and ignores rises, so such a point is never
+// self-cancelling: the rise is discarded and the fall back to the TRUE value is
+// banked as real burn. The error can only accumulate.
+//
+// A RESET rises too and is legitimate, so the two are told apart by how long
+// the raised level HOLDS — not by whether the series later dips below the
+// pre-rise level, which every reset eventually does and which would discard
+// whole windows of real burn. A reset holds until the next reset; a bad reading
+// is gone within a poll or two. Observed: a lone wk 68 -> 100 -> 68 (99s) added
+// 32 points to a real 18, and a 5h 95 -> 100 -> 95 episode spanning six polls.
+//
+// `win` is the field to judge ('wk' or '5h'): a bad poll corrupts whichever
+// meter it misread, and the paired ratio needs both judged.
+function dropSpikes(points, win) {
+  const out = [];
+  for (let i = 0; i < points.length; i++) {
+    const prev = out.length ? out[out.length - 1] : null;
+    if (prev && points[i][win] > prev[win]) {
+      let j = i;
+      while (j < points.length && points[j][win] > prev[win]) j++;
+      const springsBack = j < points.length
+        && (new Date(points[j].ts) - new Date(points[i].ts)) < ACTIVE_GAP_MAX;
+      // Skip the raised run AND its fall: the loop's own i++ lands on points[j],
+      // the first point back at the true level.
+      if (springsBack) { i = j - 1; continue; }
+    }
+    out.push(points[i]);
+  }
+  return out;
+}
+
 function weeklyBurnSince(snapshots, sinceMs) {
   let sum = 0;
-  const pts = (snapshots || []).filter(s => s && s.wk != null);
+  const pts = dropSpikes((snapshots || []).filter(s => s && s.wk != null), 'wk');
   for (let i = 1; i < pts.length; i++) {
     const t = new Date(pts[i].ts).getTime();
     // Known, accepted approximation: an active interval that STRADDLES sinceMs
@@ -238,7 +276,7 @@ function weeklyBurnSince(snapshots, sinceMs) {
 
 function hourlyBurn(snapshots, win) {
   const hours = new Array(24).fill(0);
-  const pts = snapshots.filter(s => s && s[win] != null);
+  const pts = dropSpikes(snapshots.filter(s => s && s[win] != null), win);
   for (let i = 1; i < pts.length; i++) {
     const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
     const drop = pts[i - 1][win] - pts[i][win];
@@ -261,11 +299,14 @@ function daysInMonth(year, month) {
 }
 
 function monthBurnGrid(snapshots, win, year, month) {
-  const pts = snapshots.filter(s => s && s[win] != null);
+  const polled = snapshots.filter(s => s && s[win] != null);
+  const pts = dropSpikes(polled, win);
 
   const burnByDay = {};        // dayKey -> number[24]
   const hasDataKeys = new Set();
-  for (const p of pts) {
+  // Keyed off EVERY poll, not the filtered set: a bad value is not an absence
+  // of polling, and blanking the cell would hide a day that was in fact covered.
+  for (const p of polled) {
     hasDataKeys.add(localDayKey(new Date(p.ts)));
   }
   for (let i = 1; i < pts.length; i++) {
