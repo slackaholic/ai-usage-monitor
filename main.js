@@ -463,6 +463,20 @@ ipcMain.handle('fetch-codex-usage', async () => {
 
 ipcMain.handle('show-codex-window', () => {
   const win = getOrCreateCodexWindow();
+
+  // This is the same window fetch-codex-usage scrapes, and that now backs off
+  // while it is visible. So it has to stand down the moment the sign-in lands
+  // on the analytics page: left up, it would hold every poll at
+  // 'window-in-use' for as long as it sat there — ↻ Refresh included — and the
+  // card would never update. (Claude sidesteps this by opening a separate
+  // login window on the same partition; Codex shares one.)
+  const onSignedIn = (_, navUrl) => {
+    if (!ANALYTICS_RE.test(navUrl)) return;      // still on the login page
+    win.webContents.off('did-navigate', onSignedIn);
+    win.hide();
+  };
+  win.webContents.on('did-navigate', onSignedIn);
+
   win.show();
   win.focus();
   win.loadURL(CODEX_URL);
