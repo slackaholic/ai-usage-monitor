@@ -194,12 +194,16 @@ function loadShowCodexWindow() {
   };
 
   const timers = new Map();
+  const timeouts = new Map();
+  const warnings = [];
   let nextId = 1;
   const handlers = {};
   const context = {
-    console,
+    console: { ...console, warn: (...args) => { warnings.push(args.join(' ')); } },
     setInterval: (fn) => { const id = nextId++; timers.set(id, fn); return id; },
     clearInterval: (id) => { timers.delete(id); },
+    setTimeout: (fn, ms) => { const id = nextId++; timeouts.set(id, { fn, ms }); return id; },
+    clearTimeout: (id) => { timeouts.delete(id); },
     ipcMain: { handle: (name, fn) => { handlers[name] = fn; } },
     getOrCreateCodexWindow: () => win,
     CODEX_URL: USAGE_URL,
@@ -217,9 +221,17 @@ function loadShowCodexWindow() {
     },
     // One beat of whatever periodic check is running, awaited.
     tick: async () => { for (const fn of [...timers.values()]) await fn(); },
+    // Lets every pending time limit run out; returns how long each one was.
+    elapse: () => {
+      const due = [...timeouts.entries()];
+      timeouts.clear();
+      for (const [, t] of due) t.fn();
+      return due.map(([, t]) => t.ms);
+    },
     running: () => timers.size,
     win,
     state,
+    warnings,
   };
 }
 
@@ -298,4 +310,33 @@ test('a slow session answer does not stack a second check on top of it', async (
   assert.strictEqual(state.checks, 1, 'one question at a time');
   answer(false);
   await first;
+});
+
+test('a session question lost to a page move does not stop the check for good', async () => {
+  const { open, navigate, tick, elapse, win, state, warnings } = loadShowCodexWindow();
+  open();
+  navigate('https://chatgpt.com/auth/login');
+
+  // Electron 28 can lose the answer to a script whose page moved to another
+  // site while it ran (one in seven, against the real sites). Clicking through
+  // to auth.openai.com with a check out does exactly that, and was the reported
+  // jam: signed in at last, the window still sat there, because the check
+  // never asked again.
+  state.pending = new Promise(() => {});
+  tick();                                      // never settles on its own
+  navigate('https://auth.openai.com/log-in');
+  state.pending = null;
+  const limits = elapse();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(win.visible, true, 'a lost answer is not a sign-in; the user is still signing in');
+
+  navigate('https://chatgpt.com/');            // signed in, back on chatgpt.com
+  state.signedIn = true;
+  await tick();
+
+  assert.strictEqual(win.visible, false,
+    'left up, the window holds every poll at window-in-use and the card never updates');
+  assert.ok(limits.length === 1 && limits[0] > 5000,
+    'one time limit per question, longer than the fetch\'s own 5 s, so a slow answer is not thrown away');
+  assert.strictEqual(warnings.length, 1, 'a lost answer should say so in the log');
 });
