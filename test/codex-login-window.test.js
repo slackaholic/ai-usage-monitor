@@ -19,7 +19,7 @@ const vm = require('node:vm');
 function loadCodexFetchHandler() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const start = source.indexOf("ipcMain.handle('fetch-codex-usage'");
-  const end = source.indexOf("ipcMain.handle('show-codex-window'");
+  const end = source.indexOf('// ── Codex login window');
   assert.ok(start >= 0 && end > start, 'expected fetch-codex-usage source markers');
 
   const calls = { hide: 0, show: 0, loadURL: [], scraped: 0, listeners: 0 };
@@ -151,23 +151,40 @@ test('a real fetch error still reports as one', async () => {
 // sits there and the card never updates — ↻ Refresh included. Claude avoids
 // this by opening a separate login window; Codex shares one, so it has to
 // stand down once the sign-in lands.
+//
+// "Lands" is judged by asking chatgpt.com's session endpoint, not by the page
+// address. Signed out, chatgpt.com still serves the usage address (HTTP 200)
+// and only then moves itself to /auth/login, so an address check closed the
+// window about eight seconds in, before the login form had even appeared.
+
+const USAGE_URL = 'https://chatgpt.com/codex/cloud/settings/analytics#usage';
 
 function loadShowCodexWindow() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
-  const start = source.indexOf("ipcMain.handle('show-codex-window'");
+  const start = source.indexOf('// ── Codex login window');
   const end = source.indexOf('// ── Claude web scraper', start);
-  assert.ok(start >= 0 && end > start, 'expected show-codex-window source markers');
+  assert.ok(start >= 0 && end > start, 'expected Codex login window source markers');
 
+  // The window fires did-navigate as pages load, exactly as the real one does,
+  // so a handler that still keys off the address is exercised by these tests.
   const navListeners = [];
+  const state = { signedIn: false, checks: 0, pending: null };
   const win = {
     visible: false,
+    destroyed: false,
     isVisible: () => win.visible,
-    isDestroyed: () => false,
+    isDestroyed: () => win.destroyed,
     hide: () => { win.visible = false; },
     show: () => { win.visible = true; },
     focus: () => {},
     loadURL: () => {},
     webContents: {
+      url: 'about:blank',
+      getURL: () => win.webContents.url,
+      executeJavaScript: () => {
+        state.checks++;
+        return state.pending || Promise.resolve(state.signedIn);
+      },
       on: (ev, fn) => { if (ev === 'did-navigate') navListeners.push(fn); },
       off: (ev, fn) => {
         const i = navListeners.indexOf(fn);
@@ -176,12 +193,16 @@ function loadShowCodexWindow() {
     },
   };
 
+  const timers = new Map();
+  let nextId = 1;
   const handlers = {};
   const context = {
     console,
+    setInterval: (fn) => { const id = nextId++; timers.set(id, fn); return id; },
+    clearInterval: (id) => { timers.delete(id); },
     ipcMain: { handle: (name, fn) => { handlers[name] = fn; } },
     getOrCreateCodexWindow: () => win,
-    CODEX_URL: 'https://chatgpt.com/codex/cloud/settings/analytics#usage',
+    CODEX_URL: USAGE_URL,
     ANALYTICS_RE: /chatgpt\.com\/codex\/cloud\/settings\/analytics/,
   };
   vm.createContext(context);
@@ -190,31 +211,91 @@ function loadShowCodexWindow() {
   assert.ok(handlers['show-codex-window'], 'handler was not registered');
   return {
     open: () => handlers['show-codex-window'](),
-    navigate: (url) => { for (const fn of [...navListeners]) fn(null, url); },
+    navigate: (url) => {
+      win.webContents.url = url;
+      for (const fn of [...navListeners]) fn(null, url);
+    },
+    // One beat of whatever periodic check is running, awaited.
+    tick: async () => { for (const fn of [...timers.values()]) await fn(); },
+    running: () => timers.size,
     win,
-    listenerCount: () => navListeners.length,
+    state,
   };
 }
 
-test('the login window stays up while the user is still signing in', () => {
-  const { open, navigate, win } = loadShowCodexWindow();
+test('the login window stays up while the user is still signing in', async () => {
+  const { open, navigate, tick, win, state } = loadShowCodexWindow();
   open();
 
   navigate('https://auth.openai.com/log-in');
+  await tick();
 
   assert.strictEqual(win.visible, true,
     'hiding it here is the original bug — the user is mid-sign-in');
+  assert.strictEqual(state.checks, 0,
+    'off chatgpt.com there is no session to ask about');
 });
 
-test('the login window stands down once the sign-in lands, so polling resumes', () => {
-  const { open, navigate, win, listenerCount } = loadShowCodexWindow();
+test('the login window stays up when chatgpt.com serves the usage address to a signed-out user', async () => {
+  const { open, navigate, tick, win } = loadShowCodexWindow();
+  open();
+
+  // What chatgpt.com does for a signed-out visitor: the usage address loads
+  // with HTTP 200, then the page moves itself to /auth/login.
+  navigate(USAGE_URL);
+  await tick();
+
+  assert.strictEqual(win.visible, true,
+    'closing here is what made the login page vanish before it appeared');
+});
+
+test('the login window stands down once chatgpt.com reports a sign-in, so polling resumes', async () => {
+  const { open, navigate, tick, win, state, running } = loadShowCodexWindow();
   open();
   navigate('https://auth.openai.com/log-in');
+  await tick();
 
-  navigate('https://chatgpt.com/codex/cloud/settings/analytics#usage');
+  navigate('https://chatgpt.com/');   // back from the sign-in pages
+  state.signedIn = true;
+  await tick();
 
   assert.strictEqual(win.visible, false,
     'while it is visible every poll returns window-in-use, so the card never updates');
-  assert.strictEqual(listenerCount(), 0,
-    'the listener must be removed, or repeated logins stack them on one webContents');
+  assert.strictEqual(running(), 0,
+    'the check must stop once it has done its job');
+});
+
+test('closing the login window stops the sign-in check', async () => {
+  const { open, navigate, tick, win, state, running } = loadShowCodexWindow();
+  open();
+  navigate(USAGE_URL);
+
+  win.destroyed = true;
+  await tick();
+
+  assert.strictEqual(running(), 0, 'nothing should keep checking a window that is gone');
+  assert.strictEqual(state.checks, 0, 'and it must not touch the destroyed window');
+});
+
+test('clicking Login twice keeps a single sign-in check', () => {
+  const { open, running } = loadShowCodexWindow();
+  open();
+  open();
+
+  assert.strictEqual(running(), 1, 'repeated clicks must not stack checks on one window');
+});
+
+test('a slow session answer does not stack a second check on top of it', async () => {
+  const { open, navigate, tick, state } = loadShowCodexWindow();
+  open();
+  navigate(USAGE_URL);
+
+  let answer;
+  state.pending = new Promise((resolve) => { answer = resolve; });
+  const first = tick();        // a check is in flight, unanswered
+  await tick();                // the next beat arrives meanwhile
+
+  assert.strictEqual(state.checks, 1, 'one question at a time');
+  answer(false);
+  await first;
 });

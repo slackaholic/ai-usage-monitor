@@ -461,21 +461,48 @@ ipcMain.handle('fetch-codex-usage', async () => {
   });
 });
 
+// ── Codex login window ─────────────────────────────────────────────────────
+// Signed in means chatgpt.com's own session endpoint hands out an access
+// token, the same one the scrape uses. The page address cannot tell: signed
+// out, chatgpt.com still serves the usage address (HTTP 200) and only then
+// moves itself to /auth/login, so an address check closed the login window
+// about eight seconds in, before the form had even appeared.
+const CHATGPT_PAGE_RE = /^https:\/\/chatgpt\.com\//;
+const CODEX_SIGNED_IN_JS = `
+  fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(5000) })
+    .then(r => r.json())
+    .then(j => !!(j && j.accessToken))
+    .catch(() => false)
+`;
+let codexSignInCheck = null;
+
 ipcMain.handle('show-codex-window', () => {
   const win = getOrCreateCodexWindow();
 
-  // This is the same window fetch-codex-usage scrapes, and that now backs off
-  // while it is visible. So it has to stand down the moment the sign-in lands
-  // on the analytics page: left up, it would hold every poll at
-  // 'window-in-use' for as long as it sat there — ↻ Refresh included — and the
-  // card would never update. (Claude sidesteps this by opening a separate
-  // login window on the same partition; Codex shares one.)
-  const onSignedIn = (_, navUrl) => {
-    if (!ANALYTICS_RE.test(navUrl)) return;      // still on the login page
-    win.webContents.off('did-navigate', onSignedIn);
-    win.hide();
-  };
-  win.webContents.on('did-navigate', onSignedIn);
+  // This is the same window fetch-codex-usage scrapes, and that backs off
+  // while it is visible. So it has to stand down once the sign-in lands: left
+  // up, it would hold every poll at 'window-in-use' for as long as it sat
+  // there — ↻ Refresh included — and the card would never update. (Claude
+  // sidesteps this by opening a separate login window on the same partition;
+  // Codex shares one.) Ask the session every two seconds while the window is
+  // on chatgpt.com, one question at a time; on auth.openai.com the user is
+  // still signing in.
+  clearInterval(codexSignInCheck);
+  let asking = false;
+  const id = setInterval(async () => {
+    if (win.isDestroyed()) { stop(); return; }
+    if (asking || !CHATGPT_PAGE_RE.test(win.webContents.getURL())) return;
+    asking = true;
+    let signedIn = false;
+    try { signedIn = await win.webContents.executeJavaScript(CODEX_SIGNED_IN_JS); } catch {}
+    asking = false;
+    if (signedIn && !win.isDestroyed()) { stop(); win.hide(); }
+  }, 2000);
+  function stop() {
+    clearInterval(id);
+    if (codexSignInCheck === id) codexSignInCheck = null;
+  }
+  codexSignInCheck = id;
 
   win.show();
   win.focus();
