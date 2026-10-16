@@ -142,3 +142,79 @@ test('a real fetch error still reports as one', async () => {
   assert.strictEqual(calls.toasts.length, 1, 'a genuine failure is still worth saying');
   assert.deepStrictEqual(calls.retries, [45_000]);
 });
+
+// ── main: the login window must get out of the way once signed in ──────────
+
+// The guard above makes a VISIBLE window mean "back off". That cuts both
+// ways: show-codex-window opens the very window the poll scrapes, so if it
+// stays up after a successful sign-in, every poll backs off for as long as it
+// sits there and the card never updates — ↻ Refresh included. Claude avoids
+// this by opening a separate login window; Codex shares one, so it has to
+// stand down once the sign-in lands.
+
+function loadShowCodexWindow() {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = source.indexOf("ipcMain.handle('show-codex-window'");
+  const end = source.indexOf('// ── Claude web scraper', start);
+  assert.ok(start >= 0 && end > start, 'expected show-codex-window source markers');
+
+  const navListeners = [];
+  const win = {
+    visible: false,
+    isVisible: () => win.visible,
+    isDestroyed: () => false,
+    hide: () => { win.visible = false; },
+    show: () => { win.visible = true; },
+    focus: () => {},
+    loadURL: () => {},
+    webContents: {
+      on: (ev, fn) => { if (ev === 'did-navigate') navListeners.push(fn); },
+      off: (ev, fn) => {
+        const i = navListeners.indexOf(fn);
+        if (i >= 0) navListeners.splice(i, 1);
+      },
+    },
+  };
+
+  const handlers = {};
+  const context = {
+    console,
+    ipcMain: { handle: (name, fn) => { handlers[name] = fn; } },
+    getOrCreateCodexWindow: () => win,
+    CODEX_URL: 'https://chatgpt.com/codex/cloud/settings/analytics#usage',
+    ANALYTICS_RE: /chatgpt\.com\/codex\/cloud\/settings\/analytics/,
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+
+  assert.ok(handlers['show-codex-window'], 'handler was not registered');
+  return {
+    open: () => handlers['show-codex-window'](),
+    navigate: (url) => { for (const fn of [...navListeners]) fn(null, url); },
+    win,
+    listenerCount: () => navListeners.length,
+  };
+}
+
+test('the login window stays up while the user is still signing in', () => {
+  const { open, navigate, win } = loadShowCodexWindow();
+  open();
+
+  navigate('https://auth.openai.com/log-in');
+
+  assert.strictEqual(win.visible, true,
+    'hiding it here is the original bug — the user is mid-sign-in');
+});
+
+test('the login window stands down once the sign-in lands, so polling resumes', () => {
+  const { open, navigate, win, listenerCount } = loadShowCodexWindow();
+  open();
+  navigate('https://auth.openai.com/log-in');
+
+  navigate('https://chatgpt.com/codex/cloud/settings/analytics#usage');
+
+  assert.strictEqual(win.visible, false,
+    'while it is visible every poll returns window-in-use, so the card never updates');
+  assert.strictEqual(listenerCount(), 0,
+    'the listener must be removed, or repeated logins stack them on one webContents');
+});
