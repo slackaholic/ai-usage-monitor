@@ -44,6 +44,8 @@ function loadCodexFetchHandler() {
   // What chatgpt.com's session endpoint answers: 'signed-in', 'signed-out'
   // or 'unknown'.
   const session = { answer: 'signed-in' };
+  // Each round's record, as the handler kept it: its steps and how it ended.
+  const rounds = [];
   const handlers = {};
   const context = {
     console,
@@ -54,12 +56,20 @@ function loadCodexFetchHandler() {
     CODEX_URL: 'https://chatgpt.com/codex/cloud/settings/analytics#usage',
     askCodexSession: async () => session.answer,
     scrapeCodexPage: async () => { calls.scraped++; return { text: 'usage limit remaining' }; },
+    startCodexRound: () => {
+      const round = { notes: [], ended: undefined };
+      rounds.push(round);
+      return {
+        note: (step, extra) => { round.notes.push({ step, ...extra }); },
+        end: (result) => { round.ended = result; return result; },
+      };
+    },
   };
   vm.createContext(context);
   vm.runInContext(source.slice(start, end), context);
 
   assert.ok(handlers['fetch-codex-usage'], 'handler was not registered');
-  return { fetch: () => handlers['fetch-codex-usage'](), win, calls, session };
+  return { fetch: () => handlers['fetch-codex-usage'](), win, calls, session, rounds };
 }
 
 // The old poll, having put a window up, waited minutes for a sign-in that
@@ -138,6 +148,125 @@ test('a poll the session does not answer reports an error, not a sign-out', asyn
   assert.strictEqual(calls.scraped, 0, 'without the session the scrape has no token to read with');
   assert.ok(result.error && result.error !== 'login-needed',
     'a hiccup must not tell the user they are signed out; the error path retries');
+});
+
+// ── main: every round leaves a record of what it saw ───────────────────────
+// The card shows only "Error" or "No data", and the app runs with nowhere to
+// print to, so a card that stopped updating could only be guessed at.
+
+test('every poll that loads the page records the session answer and how the round ended', async () => {
+  for (const answer of ['signed-in', 'signed-out', 'unknown']) {
+    const { fetch, session, rounds } = loadCodexFetchHandler();
+    session.answer = answer;
+
+    const result = await settledOrPending(fetch());
+
+    assert.strictEqual(rounds.length, 1, `${answer}: one record per round`);
+    assert.deepStrictEqual(rounds[0].notes.map((n) => n.step), ['loaded', 'session'],
+      `${answer}: the record shows the page loaded, then what the session said`);
+    assert.strictEqual(rounds[0].notes[1].session, answer);
+    assert.strictEqual(rounds[0].ended, result,
+      `${answer}: the record ends with exactly what the card was told`);
+  }
+});
+
+test('a page that fails to load is recorded too', async () => {
+  const { fetch, win, rounds } = loadCodexFetchHandler();
+  win.webContents.loadURL = async () => { throw new Error('ERR_ABORTED (-3)'); };
+
+  const result = await fetch();
+
+  assert.match(result.error, /ERR_ABORTED/);
+  assert.strictEqual(rounds.length, 1);
+  assert.strictEqual(rounds[0].ended, result);
+});
+
+function loadCodexRound() {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = source.indexOf('// ── Codex round record');
+  const end = source.indexOf('// ── Codex sign-in check');
+  assert.ok(start >= 0 && end > start, 'expected Codex round record source markers');
+
+  const written = [];
+  const disk = { fails: false };
+  const context = {
+    fs: { writeFileSync: (file, data) => { if (disk.fails) throw new Error('EBUSY'); written.push({ file, data }); } },
+    path: { join: (...parts) => parts.join('/') },
+    __dirname: 'app',
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+
+  const win = {
+    destroyed: false,
+    isDestroyed: () => win.destroyed,
+    webContents: {
+      url: 'https://chatgpt.com/settings/usage',
+      title: 'Settings',
+      getURL: () => { if (win.destroyed) throw new Error('Object has been destroyed'); return win.webContents.url; },
+      getTitle: () => { if (win.destroyed) throw new Error('Object has been destroyed'); return win.webContents.title; },
+    },
+  };
+  return { startCodexRound: context.startCodexRound, win, written, disk };
+}
+
+test('the round record shows where the page was at each step and how the round ended', () => {
+  const { startCodexRound, win, written } = loadCodexRound();
+  const round = startCodexRound(win);
+  round.note('loaded');
+  win.webContents.url = 'https://chatgpt.com/auth/login';
+  win.webContents.title = 'Log in';
+  round.note('session', { session: 'signed-out' });
+  const result = { error: 'login-needed' };
+
+  assert.strictEqual(round.end(result), result, 'end hands the result straight back');
+
+  assert.strictEqual(written.length, 1, 'one write per round, at its end');
+  assert.match(written[0].file, /codex-api-debug\.json$/, 'the gitignored debug file');
+  const record = JSON.parse(written[0].data);
+  assert.deepStrictEqual(record.steps.map((s) => [s.step, s.url, s.title]), [
+    ['loaded', 'https://chatgpt.com/settings/usage', 'Settings'],
+    ['session', 'https://chatgpt.com/auth/login', 'Log in'],
+    ['done', 'https://chatgpt.com/auth/login', 'Log in'],
+  ]);
+  assert.strictEqual(record.steps[1].session, 'signed-out');
+  assert.strictEqual(record.result.error, 'login-needed');
+});
+
+test('the round record keeps a long page text short but keeps the usage whole', () => {
+  const { startCodexRound, win, written } = loadCodexRound();
+  const usage = { rate_limit: { primary_window: { used_percent: 12 } } };
+
+  startCodexRound(win).end({ text: 'x'.repeat(5000), apiData: usage });
+
+  const record = JSON.parse(written[0].data);
+  assert.strictEqual(record.result.text.length, 2000);
+  assert.strictEqual(record.result.textLength, 5000);
+  assert.deepStrictEqual(record.result.apiData, usage);
+});
+
+test('a window closed mid-round does not break the round or its record', () => {
+  const { startCodexRound, win, written } = loadCodexRound();
+  const round = startCodexRound(win);
+  win.destroyed = true;                 // the user closed the login window
+
+  round.note('session', { session: 'unknown' });
+  const result = { error: 'chatgpt.com did not say whether you are signed in' };
+
+  assert.strictEqual(round.end(result), result,
+    'a throw here would leave the card waiting on a poll that never answers');
+  const record = JSON.parse(written[0].data);
+  assert.strictEqual(record.steps[0].session, 'unknown');
+  assert.strictEqual(record.steps[0].url, null);
+});
+
+test('a record that cannot be written does not break the round', () => {
+  const { startCodexRound, win, disk } = loadCodexRound();
+  disk.fails = true;                    // say, an editor has the file open
+  const result = { text: 'usage limit remaining' };
+
+  assert.strictEqual(startCodexRound(win).end(result), result,
+    'the reading must still reach the card');
 });
 
 // ── renderer: backing off must be quiet, not an error ──────────────────────
