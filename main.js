@@ -334,27 +334,32 @@ const FIND_EMAIL_JS = `
 `;
 
 // ── Codex page scraper ─────────────────────────────────────────────────────
+// The login window's page: signing in needs the real chatgpt.com app.
 const CODEX_URL = 'https://chatgpt.com/codex/cloud/settings/analytics#usage';
+
+// The poll's page: a plain file on chatgpt.com, not the app. Signed in,
+// chatgpt.com moves the usage page on to its own Settings page, and in this
+// window that page never answers: it draws blank, and from 14:34 BST on 20 Oct
+// every read run in it went unanswered, even asked again on the settled page.
+// Any chatgpt.com page carries the sign-in cookies; this one runs no app. In a
+// throwaway window it loaded in a fifth of a second, stayed put, and answered
+// the session question in a tenth.
+const CODEX_POLL_URL = 'https://chatgpt.com/robots.txt';
 
 const AUTH_RE = /auth|login|signin|sso/i;
 
+// Structured usage from /backend-api/codex/usage. It needs an
+// Authorization: Bearer <accessToken> header (cookies alone return 401); the
+// token comes from the session endpoint and never leaves this script. The
+// session also names the account, for the card's label.
 const SCRAPE_SCRIPT = `
   (async function() {
-    for (let i = 0; i < 24; i++) {
-      const t = document.body ? document.body.innerText : '';
-      if (t.includes('usage limit') && t.includes('remaining')) break;
-      await new Promise(r => setTimeout(r, 500));
-    }
-    const text = document.body ? document.body.innerText : '';
-    const email = ${FIND_EMAIL_JS};
-
-    // Structured usage from /backend-api/codex/usage. It needs an
-    // Authorization: Bearer <accessToken> header (cookies alone return 401);
-    // the token comes from the session endpoint.
     let apiData = null;
+    let email = null;
     try {
       const sr = await fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(5000) });
       const sj = await sr.json().catch(() => null);
+      email = (sj && sj.user && sj.user.email) || null;
       const token = sj && sj.accessToken;
       if (token) {
         const ur = await fetch('/backend-api/codex/usage', {
@@ -366,7 +371,7 @@ const SCRAPE_SCRIPT = `
       }
     } catch {}
 
-    return JSON.stringify({ text, email, apiData });
+    return JSON.stringify({ email, apiData });
   })()
 `;
 
@@ -390,46 +395,26 @@ function getOrCreateCodexWindow() {
   return codexWindow;
 }
 
-// Signed in, chatgpt.com swaps the usage page for its own settings page
-// (/settings/usage?tab=analytics) while the round runs, and a scrape still
-// running on the old page never answers: from 14:34 BST on 20 Oct every round
-// ended "Script timeout (30s)" and the card logged nothing. So a scrape the
-// move cuts off is asked again on the page chatgpt.com moved to: at once when
-// the window reports the new page, or else when the limit passes. Two asks at
-// most, so a round still fits inside the shortest (1 min) poll.
-const CODEX_SCRAPE_LIMIT_MS = 30000;
-const CODEX_SCRAPE_TRIES = 2;
-
-function askCodexScrape(win) {
-  return new Promise((resolve) => {
-    let limit;
-    const onMoved = () => done({ lost: 'page moved' });
-    function done(outcome) {
-      clearTimeout(limit);
-      try { win.webContents.off('did-navigate', onMoved); } catch {}   // window gone
-      resolve(outcome);
-    }
-    limit = setTimeout(() => done({ lost: 'no answer' }), CODEX_SCRAPE_LIMIT_MS);
-    win.webContents.on('did-navigate', onMoved);
-    try {
-      win.webContents.executeJavaScript(SCRAPE_SCRIPT).then((raw) => done({ raw }), (e) => done({ error: e.message }));
-    } catch (e) { done({ error: e.message }); }
-  });
-}
+// The read is two quick requests, each with its own 5 s limit, so 15 s is
+// ample. Past it the round reports the read, rather than leave the card
+// waiting on an answer Electron 28 can lose for good.
+const CODEX_READ_LIMIT_MS = 15000;
 
 async function scrapeCodexPage(win, round) {
+  let limit;
+  const lost = new Promise((resolve) => { limit = setTimeout(() => resolve({ lost: true }), CODEX_READ_LIMIT_MS); });
   let outcome;
-  for (let attempt = 1; attempt <= CODEX_SCRAPE_TRIES; attempt++) {
-    outcome = await askCodexScrape(win);
-    round.note('scrape', { attempt, outcome: outcome.lost || (outcome.error ? 'failed' : 'answered') });
-    if (!outcome.lost) break;
-  }
+  try {
+    outcome = await Promise.race([win.webContents.executeJavaScript(SCRAPE_SCRIPT).then((raw) => ({ raw })), lost]);
+  } catch (e) { outcome = { error: e.message }; }
+  clearTimeout(limit);
+  round.note('read', { outcome: outcome.lost ? 'no answer' : outcome.error ? 'failed' : 'answered' });
   if (!win.isDestroyed()) win.hide();
-  if (outcome.lost) return { error: `usage not read after ${CODEX_SCRAPE_TRIES} tries (last: ${outcome.lost})` };
+  if (outcome.lost) return { error: `chatgpt.com did not answer in ${CODEX_READ_LIMIT_MS / 1000} s` };
   if (outcome.error) return { error: outcome.error };
   try {
     const p = JSON.parse(outcome.raw);
-    return { text: p.text, email: p.email, apiData: p.apiData };
+    return { email: p.email, apiData: p.apiData };
   } catch { return { text: outcome.raw }; }
 }
 
@@ -439,7 +424,7 @@ async function scrapeCodexPage(win, round) {
 // only "Error" or "No data", and the app runs with nowhere to print to, so
 // without this a card that stops updating can only be guessed at. Local and
 // gitignored, like claude-api-debug.json. The token never reaches it: the
-// scrape hands back only the page text, the email and the usage.
+// read hands back only the email and the usage.
 const CODEX_DEBUG_PATH = path.join(__dirname, 'codex-api-debug.json');
 
 function startCodexRound(win) {
@@ -502,7 +487,7 @@ ipcMain.handle('fetch-codex-usage', async () => {
 
   // Don't interrupt a login the user opened this window for — the same guard
   // fetchClaudeUsageForKey has. The poll and the login share one window, so
-  // hiding it and re-navigating to CODEX_URL throws away a half-filled form.
+  // hiding it and re-navigating it throws away a half-filled form.
   // The no-data branch re-arms a 45s retry, so without this the user gets 45
   // seconds to complete a sign-in with 2FA, and the window vanishes mid-typing.
   if (win.isVisible()) return { error: 'window-in-use' };
@@ -512,7 +497,7 @@ ipcMain.handle('fetch-codex-usage', async () => {
 
   try {
     await Promise.race([
-      win.webContents.loadURL(CODEX_URL),
+      win.webContents.loadURL(CODEX_POLL_URL),
       new Promise((_, reject) => setTimeout(() => reject(new Error('Load timeout')), 25000)),
     ]);
   } catch (e) {
@@ -520,12 +505,9 @@ ipcMain.handle('fetch-codex-usage', async () => {
   }
   round.note('loaded');
 
-  // Signed in or not is the session's answer, never the page address's.
-  // Signed in, chatgpt.com moves the usage address on to its own settings page
-  // as it loads; read a moment late, the address looked signed out, and the
-  // poll put the login window up over a working sign-in, poll after poll. The
-  // scrape reads the usage with the session's token, so it does not need the
-  // usage address anyway.
+  // Signed in or not is the session's answer, never the page address's: the
+  // app page moves its own address as it loads, and an address check once put
+  // the login window up over a working sign-in, poll after poll.
   const session = await askCodexSession(win);
   round.note('session', { session });
   if (session === 'signed-in') return round.end(await scrapeCodexPage(win, round));
