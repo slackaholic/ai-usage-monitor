@@ -336,7 +336,6 @@ const FIND_EMAIL_JS = `
 // ── Codex page scraper ─────────────────────────────────────────────────────
 const CODEX_URL = 'https://chatgpt.com/codex/cloud/settings/analytics#usage';
 
-const ANALYTICS_RE = /chatgpt\.com\/codex\/cloud\/settings\/analytics/;
 const AUTH_RE = /auth|login|signin|sso/i;
 
 const SCRAPE_SCRIPT = `
@@ -408,6 +407,39 @@ async function scrapeCodexPage(win) {
   }
 }
 
+// ── Codex sign-in check ────────────────────────────────────────────────────
+// Signed in means chatgpt.com's own session endpoint hands out an access
+// token, the same one the scrape reads the usage with. 'signed-out' is the
+// endpoint answering with no token; anything else is 'unknown'.
+const CODEX_SESSION_JS = `
+  fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(5000) })
+    .then(r => r.ok ? r.json() : null)
+    .then(j => !j ? 'unknown' : j.accessToken ? 'signed-in' : 'signed-out')
+    .catch(() => 'unknown')
+`;
+// Electron 28 can lose the answer to executeJavaScript for good when the page
+// moves to another site while the script runs: against the real sites, one
+// question in seven never came back once the page went to auth.openai.com,
+// which is what clicking through to sign in does. Unbounded, one lost answer
+// held the login window's check "busy" for good: the sign-in landed and the
+// window sat there. Past this limit the answer is 'unknown'. It sits well above
+// the fetch's own 5 s limit, since answers cut short by a page move took up to
+// 9 s.
+const CODEX_CHECK_LIMIT_MS = 10000;
+
+async function askCodexSession(win) {
+  let limit;
+  const lost = new Promise((resolve) => { limit = setTimeout(() => resolve('lost'), CODEX_CHECK_LIMIT_MS); });
+  let answer = 'unknown';
+  try { answer = await Promise.race([win.webContents.executeJavaScript(CODEX_SESSION_JS), lost]); } catch {}
+  clearTimeout(limit);
+  if (answer === 'lost') {
+    console.warn(`codex sign-in check: no answer in ${CODEX_CHECK_LIMIT_MS / 1000} s (page moved?)`);
+    return 'unknown';
+  }
+  return answer;
+}
+
 ipcMain.handle('fetch-codex-usage', async () => {
   const win = getOrCreateCodexWindow();
 
@@ -429,59 +461,28 @@ ipcMain.handle('fetch-codex-usage', async () => {
     return { error: 'Failed to load chatgpt.com: ' + e.message };
   }
 
-  const url = win.webContents.getURL();
-  if (ANALYTICS_RE.test(url)) {
-    return await scrapeCodexPage(win);
-  }
+  // Signed in or not is the session's answer, never the page address's.
+  // Signed in, chatgpt.com moves the usage address on to its own settings page
+  // as it loads; read a moment late, the address looked signed out, and the
+  // poll put the login window up over a working sign-in, poll after poll. The
+  // scrape reads the usage with the session's token, so it does not need the
+  // usage address anyway.
+  const session = await askCodexSession(win);
+  if (session === 'signed-in') return await scrapeCodexPage(win);
 
-  // Need login — show window and wait
-  win.show(); win.focus();
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      if (!win.isDestroyed()) {
-        win.webContents.off('did-navigate', onNavigated);
-        win.hide();
-      }
-      resolve({ error: 'Login timeout — please log in and try again' });
-    }, 300000);
-
-    function onNavigated(_, navUrl) {
-      if (win.isDestroyed()) { clearTimeout(timer); resolve({ error: 'window-closed' }); return; }
-      if (ANALYTICS_RE.test(navUrl)) {
-        win.webContents.off('did-navigate', onNavigated);
-        clearTimeout(timer);
-        win.hide();
-        win.webContents.once('did-finish-load', async () => {
-          resolve(await scrapeCodexPage(win));
-        });
-      }
-    }
-    win.on('closed', () => { clearTimeout(timer); resolve({ error: 'window-closed' }); });
-    win.webContents.on('did-navigate', onNavigated);
-  });
+  // Signed out: say so on the card and leave the window hidden, as the Claude
+  // poll does. Login opens the window, and that stands down by itself once the
+  // sign-in lands.
+  if (session === 'signed-out') return { error: 'login-needed' };
+  return { error: 'chatgpt.com did not say whether you are signed in' };
 });
 
 // ── Codex login window ─────────────────────────────────────────────────────
-// Signed in means chatgpt.com's own session endpoint hands out an access
-// token, the same one the scrape uses. The page address cannot tell: signed
-// out, chatgpt.com still serves the usage address (HTTP 200) and only then
-// moves itself to /auth/login, so an address check closed the login window
-// about eight seconds in, before the form had even appeared.
+// The address cannot tell whether the sign-in has landed either: signed out,
+// chatgpt.com still serves the usage address (HTTP 200) and only then moves
+// itself to /auth/login, so an address check closed the login window about
+// eight seconds in, before the form had even appeared.
 const CHATGPT_PAGE_RE = /^https:\/\/chatgpt\.com\//;
-const CODEX_SIGNED_IN_JS = `
-  fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(5000) })
-    .then(r => r.json())
-    .then(j => !!(j && j.accessToken))
-    .catch(() => false)
-`;
-// Electron 28 can lose the answer to executeJavaScript for good when the page
-// moves to another site while the script runs: against the real sites, one
-// question in seven never came back once the page went to auth.openai.com,
-// which is what clicking through to sign in does. Unbounded, one lost answer
-// held the check "busy" for good: the sign-in landed and the window sat there.
-// Past this limit the answer counts as "not yet". It sits well above the
-// fetch's own 5 s limit, since answers cut short by a page move took up to 9 s.
-const CODEX_CHECK_LIMIT_MS = 10000;
 let codexSignInCheck = null;
 
 ipcMain.handle('show-codex-window', () => {
@@ -501,15 +502,7 @@ ipcMain.handle('show-codex-window', () => {
     if (win.isDestroyed()) { stop(); return; }
     if (asking || !CHATGPT_PAGE_RE.test(win.webContents.getURL())) return;
     asking = true;
-    let signedIn = false;
-    let limit;
-    const lost = new Promise((resolve) => { limit = setTimeout(() => resolve('lost'), CODEX_CHECK_LIMIT_MS); });
-    try { signedIn = await Promise.race([win.webContents.executeJavaScript(CODEX_SIGNED_IN_JS), lost]); } catch {}
-    clearTimeout(limit);
-    if (signedIn === 'lost') {
-      console.warn(`codex sign-in check: no answer in ${CODEX_CHECK_LIMIT_MS / 1000} s (page moved?), asking again`);
-      signedIn = false;
-    }
+    const signedIn = (await askCodexSession(win)) === 'signed-in';
     asking = false;
     if (signedIn && !win.isDestroyed()) { stop(); win.hide(); }
   }, 2000);

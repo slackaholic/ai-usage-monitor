@@ -41,6 +41,9 @@ function loadCodexFetchHandler() {
     },
   };
 
+  // What chatgpt.com's session endpoint answers: 'signed-in', 'signed-out'
+  // or 'unknown'.
+  const session = { answer: 'signed-in' };
   const handlers = {};
   const context = {
     console,
@@ -49,14 +52,20 @@ function loadCodexFetchHandler() {
     ipcMain: { handle: (name, fn) => { handlers[name] = fn; } },
     getOrCreateCodexWindow: () => win,
     CODEX_URL: 'https://chatgpt.com/codex/cloud/settings/analytics#usage',
-    ANALYTICS_RE: /chatgpt\.com\/codex\/cloud\/settings\/analytics/,
+    askCodexSession: async () => session.answer,
     scrapeCodexPage: async () => { calls.scraped++; return { text: 'usage limit remaining' }; },
   };
   vm.createContext(context);
   vm.runInContext(source.slice(start, end), context);
 
   assert.ok(handlers['fetch-codex-usage'], 'handler was not registered');
-  return { fetch: () => handlers['fetch-codex-usage'](), win, calls };
+  return { fetch: () => handlers['fetch-codex-usage'](), win, calls, session };
+}
+
+// The old poll, having put a window up, waited minutes for a sign-in that
+// these fakes never deliver; report that as pending rather than hang.
+function settledOrPending(promise) {
+  return Promise.race([promise, new Promise((resolve) => setImmediate(() => resolve({ pending: true })))]);
 }
 
 test('a poll does not disturb the window the user is logging in to', async () => {
@@ -87,6 +96,48 @@ test('a poll still scrapes normally when no one is logging in', async () => {
   assert.strictEqual(calls.scraped, 1, 'the ordinary path must be untouched');
   assert.strictEqual(result.text, 'usage limit remaining');
   assert.strictEqual(calls.loadURL.length, 1, 'it still loads the analytics page');
+});
+
+// ── main: the poll judges the sign-in by the session, never the address ───
+
+test('a signed-in poll scrapes wherever chatgpt.com has moved the page to', async () => {
+  const { fetch, win, calls, session } = loadCodexFetchHandler();
+  // Signed in, chatgpt.com moves the usage address on to its own settings
+  // page as it loads. Read a moment late, that address put the login window
+  // up over a working sign-in, poll after poll: the reported pop-up.
+  win.webContents.url = 'https://chatgpt.com/settings/usage';
+  session.answer = 'signed-in';
+
+  const result = await settledOrPending(fetch());
+
+  assert.strictEqual(calls.show, 0, 'a signed-in poll has no reason to put a window on screen');
+  assert.strictEqual(calls.scraped, 1, 'it should read the usage instead');
+  assert.strictEqual(result.text, 'usage limit remaining');
+});
+
+test('a signed-out poll says so on the card and opens nothing', async () => {
+  const { fetch, win, calls, session } = loadCodexFetchHandler();
+  win.webContents.url = 'https://chatgpt.com/auth/login';
+  session.answer = 'signed-out';
+
+  const result = await settledOrPending(fetch());
+
+  assert.strictEqual(calls.show, 0,
+    'a window that opens by itself every poll is the complaint; Login is how to sign in');
+  assert.strictEqual(calls.scraped, 0, 'there is nothing to read while signed out');
+  assert.strictEqual(result.error, 'login-needed');
+});
+
+test('a poll the session does not answer reports an error, not a sign-out', async () => {
+  const { fetch, calls, session } = loadCodexFetchHandler();
+  session.answer = 'unknown';
+
+  const result = await settledOrPending(fetch());
+
+  assert.strictEqual(calls.show, 0, 'no answer is no reason to open a window either');
+  assert.strictEqual(calls.scraped, 0, 'without the session the scrape has no token to read with');
+  assert.ok(result.error && result.error !== 'login-needed',
+    'a hiccup must not tell the user they are signed out; the error path retries');
 });
 
 // ── renderer: backing off must be quiet, not an error ──────────────────────
@@ -133,6 +184,17 @@ test('while the user logs in, the card goes quiet rather than claiming an error'
     'back off and look again, matching the Claude path');
 });
 
+test('a signed-out poll marks the card Login needed, quietly', async () => {
+  const { run, calls } = loadFetchCodexUsage({ error: 'login-needed' });
+
+  await run();
+
+  assert.ok(calls.badges.some(([, label, kind]) => label === 'Login needed' && kind === 'warn'),
+    'the card is where the user learns to click Login');
+  assert.ok(!calls.badges.some(([, label]) => label === 'Error'), 'signed out is not an error');
+  assert.deepStrictEqual(calls.toasts, [], 'the poll runs every round; a toast each time would nag');
+});
+
 test('a real fetch error still reports as one', async () => {
   const { run, calls } = loadFetchCodexUsage({ error: 'Failed to load chatgpt.com: timeout' });
 
@@ -161,8 +223,13 @@ const USAGE_URL = 'https://chatgpt.com/codex/cloud/settings/analytics#usage';
 
 function loadShowCodexWindow() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  // The session question the login window asks lives in its own section, shared
+  // with the poll; load it alongside.
+  const checkStart = source.indexOf('// ── Codex sign-in check');
+  const checkEnd = source.indexOf("ipcMain.handle('fetch-codex-usage'", checkStart);
   const start = source.indexOf('// ── Codex login window');
   const end = source.indexOf('// ── Claude web scraper', start);
+  assert.ok(checkStart >= 0 && checkEnd > checkStart, 'expected Codex sign-in check source markers');
   assert.ok(start >= 0 && end > start, 'expected Codex login window source markers');
 
   // The window fires did-navigate as pages load, exactly as the real one does,
@@ -183,7 +250,7 @@ function loadShowCodexWindow() {
       getURL: () => win.webContents.url,
       executeJavaScript: () => {
         state.checks++;
-        return state.pending || Promise.resolve(state.signedIn);
+        return state.pending || Promise.resolve(state.signedIn ? 'signed-in' : 'signed-out');
       },
       on: (ev, fn) => { if (ev === 'did-navigate') navListeners.push(fn); },
       off: (ev, fn) => {
@@ -207,10 +274,9 @@ function loadShowCodexWindow() {
     ipcMain: { handle: (name, fn) => { handlers[name] = fn; } },
     getOrCreateCodexWindow: () => win,
     CODEX_URL: USAGE_URL,
-    ANALYTICS_RE: /chatgpt\.com\/codex\/cloud\/settings\/analytics/,
   };
   vm.createContext(context);
-  vm.runInContext(source.slice(start, end), context);
+  vm.runInContext(source.slice(checkStart, checkEnd) + source.slice(start, end), context);
 
   assert.ok(handlers['show-codex-window'], 'handler was not registered');
   return {
@@ -308,7 +374,7 @@ test('a slow session answer does not stack a second check on top of it', async (
   await tick();                // the next beat arrives meanwhile
 
   assert.strictEqual(state.checks, 1, 'one question at a time');
-  answer(false);
+  answer('signed-out');
   await first;
 });
 

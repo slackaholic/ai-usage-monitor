@@ -1497,7 +1497,9 @@ async function fetchCodexUsage() {
   fetchStop('codex');
 
   if (result.error) {
-    if (result.error === 'window-closed' || result.error === 'Login timeout — please log in and try again') {
+    // Signed out. The poll opens nothing; the badge sends the user to Login.
+    // No toast: this comes back every round until they sign in.
+    if (result.error === 'login-needed') {
       setBadge('codex-badge', 'Login needed', 'warn');
       return;
     }
