@@ -390,21 +390,47 @@ function getOrCreateCodexWindow() {
   return codexWindow;
 }
 
-async function scrapeCodexPage(win) {
-  try {
-    const raw = await Promise.race([
-      win.webContents.executeJavaScript(SCRAPE_SCRIPT),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('Script timeout (30s)')), 30000)),
-    ]);
-    win.hide();
+// Signed in, chatgpt.com swaps the usage page for its own settings page
+// (/settings/usage?tab=analytics) while the round runs, and a scrape still
+// running on the old page never answers: from 14:34 BST on 20 Oct every round
+// ended "Script timeout (30s)" and the card logged nothing. So a scrape the
+// move cuts off is asked again on the page chatgpt.com moved to: at once when
+// the window reports the new page, or else when the limit passes. Two asks at
+// most, so a round still fits inside the shortest (1 min) poll.
+const CODEX_SCRAPE_LIMIT_MS = 30000;
+const CODEX_SCRAPE_TRIES = 2;
+
+function askCodexScrape(win) {
+  return new Promise((resolve) => {
+    let limit;
+    const onMoved = () => done({ lost: 'page moved' });
+    function done(outcome) {
+      clearTimeout(limit);
+      try { win.webContents.off('did-navigate', onMoved); } catch {}   // window gone
+      resolve(outcome);
+    }
+    limit = setTimeout(() => done({ lost: 'no answer' }), CODEX_SCRAPE_LIMIT_MS);
+    win.webContents.on('did-navigate', onMoved);
     try {
-      const p = JSON.parse(raw);
-      return { text: p.text, email: p.email, apiData: p.apiData };
-    } catch { return { text: raw }; }
-  } catch (e) {
-    win.hide();
-    return { error: e.message };
+      win.webContents.executeJavaScript(SCRAPE_SCRIPT).then((raw) => done({ raw }), (e) => done({ error: e.message }));
+    } catch (e) { done({ error: e.message }); }
+  });
+}
+
+async function scrapeCodexPage(win, round) {
+  let outcome;
+  for (let attempt = 1; attempt <= CODEX_SCRAPE_TRIES; attempt++) {
+    outcome = await askCodexScrape(win);
+    round.note('scrape', { attempt, outcome: outcome.lost || (outcome.error ? 'failed' : 'answered') });
+    if (!outcome.lost) break;
   }
+  if (!win.isDestroyed()) win.hide();
+  if (outcome.lost) return { error: `usage not read after ${CODEX_SCRAPE_TRIES} tries (last: ${outcome.lost})` };
+  if (outcome.error) return { error: outcome.error };
+  try {
+    const p = JSON.parse(outcome.raw);
+    return { text: p.text, email: p.email, apiData: p.apiData };
+  } catch { return { text: outcome.raw }; }
 }
 
 // ── Codex round record ─────────────────────────────────────────────────────
@@ -502,7 +528,7 @@ ipcMain.handle('fetch-codex-usage', async () => {
   // usage address anyway.
   const session = await askCodexSession(win);
   round.note('session', { session });
-  if (session === 'signed-in') return round.end(await scrapeCodexPage(win));
+  if (session === 'signed-in') return round.end(await scrapeCodexPage(win, round));
 
   // Signed out: say so on the card and leave the window hidden, as the Claude
   // poll does. Login opens the window, and that stands down by itself once the
