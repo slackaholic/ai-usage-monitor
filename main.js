@@ -407,6 +407,37 @@ async function scrapeCodexPage(win) {
   }
 }
 
+// ── Codex round record ─────────────────────────────────────────────────────
+// What the last Codex round saw, written over every round: where the page was
+// at each step, the session's answer, and how the round ended. The card shows
+// only "Error" or "No data", and the app runs with nowhere to print to, so
+// without this a card that stops updating can only be guessed at. Local and
+// gitignored, like claude-api-debug.json. The token never reaches it: the
+// scrape hands back only the page text, the email and the usage.
+const CODEX_DEBUG_PATH = path.join(__dirname, 'codex-api-debug.json');
+
+function startCodexRound(win) {
+  const t0 = Date.now();
+  const record = { started: new Date(t0).toISOString(), steps: [] };
+  // A window the user closes mid-round throws on every read; the record says
+  // so rather than taking the round down with it.
+  const page = () => {
+    try { return { url: win.webContents.getURL(), title: win.webContents.getTitle() }; }
+    catch { return { url: null, title: null }; }
+  };
+  const note = (step, extra) => { record.steps.push({ step, ms: Date.now() - t0, ...page(), ...extra }); };
+  return {
+    note,
+    end(result) {
+      note('done');
+      const text = result && typeof result.text === 'string' ? result.text : null;
+      record.result = text === null ? result : { ...result, text: text.slice(0, 2000), textLength: text.length };
+      try { fs.writeFileSync(CODEX_DEBUG_PATH, JSON.stringify(record, null, 2)); } catch {}
+      return result;
+    },
+  };
+}
+
 // ── Codex sign-in check ────────────────────────────────────────────────────
 // Signed in means chatgpt.com's own session endpoint hands out an access
 // token, the same one the scrape reads the usage with. 'signed-out' is the
@@ -451,6 +482,7 @@ ipcMain.handle('fetch-codex-usage', async () => {
   if (win.isVisible()) return { error: 'window-in-use' };
 
   win.hide();
+  const round = startCodexRound(win);
 
   try {
     await Promise.race([
@@ -458,8 +490,9 @@ ipcMain.handle('fetch-codex-usage', async () => {
       new Promise((_, reject) => setTimeout(() => reject(new Error('Load timeout')), 25000)),
     ]);
   } catch (e) {
-    return { error: 'Failed to load chatgpt.com: ' + e.message };
+    return round.end({ error: 'Failed to load chatgpt.com: ' + e.message });
   }
+  round.note('loaded');
 
   // Signed in or not is the session's answer, never the page address's.
   // Signed in, chatgpt.com moves the usage address on to its own settings page
@@ -468,13 +501,14 @@ ipcMain.handle('fetch-codex-usage', async () => {
   // scrape reads the usage with the session's token, so it does not need the
   // usage address anyway.
   const session = await askCodexSession(win);
-  if (session === 'signed-in') return await scrapeCodexPage(win);
+  round.note('session', { session });
+  if (session === 'signed-in') return round.end(await scrapeCodexPage(win));
 
   // Signed out: say so on the card and leave the window hidden, as the Claude
   // poll does. Login opens the window, and that stands down by itself once the
   // sign-in lands.
-  if (session === 'signed-out') return { error: 'login-needed' };
-  return { error: 'chatgpt.com did not say whether you are signed in' };
+  if (session === 'signed-out') return round.end({ error: 'login-needed' });
+  return round.end({ error: 'chatgpt.com did not say whether you are signed in' });
 });
 
 // ── Codex login window ─────────────────────────────────────────────────────
