@@ -55,14 +55,15 @@ function loadCodexFetchHandler() {
     getOrCreateCodexWindow: () => win,
     CODEX_URL: 'https://chatgpt.com/codex/cloud/settings/analytics#usage',
     askCodexSession: async () => session.answer,
-    scrapeCodexPage: async () => { calls.scraped++; return { text: 'usage limit remaining' }; },
+    scrapeCodexPage: async (w, round) => { calls.scraped++; calls.scrapeRound = round; return { text: 'usage limit remaining' }; },
     startCodexRound: () => {
       const round = { notes: [], ended: undefined };
       rounds.push(round);
-      return {
+      round.handle = {
         note: (step, extra) => { round.notes.push({ step, ...extra }); },
         end: (result) => { round.ended = result; return result; },
       };
+      return round.handle;
     },
   };
   vm.createContext(context);
@@ -156,12 +157,16 @@ test('a poll the session does not answer reports an error, not a sign-out', asyn
 
 test('every poll that loads the page records the session answer and how the round ended', async () => {
   for (const answer of ['signed-in', 'signed-out', 'unknown']) {
-    const { fetch, session, rounds } = loadCodexFetchHandler();
+    const { fetch, session, rounds, calls } = loadCodexFetchHandler();
     session.answer = answer;
 
     const result = await settledOrPending(fetch());
 
     assert.strictEqual(rounds.length, 1, `${answer}: one record per round`);
+    if (answer === 'signed-in') {
+      assert.strictEqual(calls.scrapeRound, rounds[0].handle,
+        'the scrape notes each ask in this round\'s record');
+    }
     assert.deepStrictEqual(rounds[0].notes.map((n) => n.step), ['loaded', 'session'],
       `${answer}: the record shows the page loaded, then what the session said`);
     assert.strictEqual(rounds[0].notes[1].session, answer);
@@ -258,6 +263,123 @@ test('a window closed mid-round does not break the round or its record', () => {
   const record = JSON.parse(written[0].data);
   assert.strictEqual(record.steps[0].session, 'unknown');
   assert.strictEqual(record.steps[0].url, null);
+});
+
+// ── main: the scrape survives chatgpt.com moving the page ──────────────────
+// Signed in, chatgpt.com swaps the usage page for its own settings page
+// (/settings/usage?tab=analytics) as the round runs. A scrape running on the
+// old page then never answers: the record showed "Script timeout (30s)", and
+// the card logged nothing from 14:34 BST on 20 Oct.
+
+function loadCodexScrape() {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = source.indexOf('function getOrCreateCodexWindow');
+  const end = source.indexOf('// ── Codex round record');
+  assert.ok(start >= 0 && end > start, 'expected Codex scraper source markers');
+
+  const ANSWER = JSON.stringify({ text: '', email: null, apiData: { rate_limit: {} } });
+  // What each scrape the page is asked does: 'answer', or 'lost' (never answers).
+  const plan = [];
+  const asked = [];
+  const moveListeners = [];
+  const win = {
+    hidden: 0,
+    isDestroyed: () => false,
+    hide: () => { win.hidden++; },
+    webContents: {
+      url: 'https://chatgpt.com/codex/cloud/settings/analytics#usage',
+      getURL: () => win.webContents.url,
+      executeJavaScript: (code) => {
+        asked.push(code);
+        return plan.shift() === 'answer' ? Promise.resolve(ANSWER) : new Promise(() => {});
+      },
+      on: (ev, fn) => { if (ev === 'did-navigate') moveListeners.push(fn); },
+      off: (ev, fn) => {
+        const i = moveListeners.indexOf(fn);
+        if (i >= 0) moveListeners.splice(i, 1);
+      },
+    },
+  };
+  const timeouts = new Map();
+  let nextId = 1;
+  const context = {
+    SCRAPE_SCRIPT: 'scrape',
+    setTimeout: (fn, ms) => { const id = nextId++; timeouts.set(id, { fn, ms }); return id; },
+    clearTimeout: (id) => { timeouts.delete(id); },
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+
+  const notes = [];
+  const round = { note: (step, extra) => { notes.push({ step, ...extra }); } };
+  return {
+    scrape: () => context.scrapeCodexPage(win, round),
+    plan, asked, notes, win, moveListeners,
+    // chatgpt.com puts a new page in the window.
+    move: (url) => { win.webContents.url = url; for (const fn of [...moveListeners]) fn(null, url); },
+    // Lets every pending time limit run out; returns how long each one was.
+    elapse: () => {
+      const due = [...timeouts.values()];
+      timeouts.clear();
+      for (const t of due) t.fn();
+      return due.map((t) => t.ms);
+    },
+    pendingLimits: () => timeouts.size,
+  };
+}
+
+const beat = () => new Promise((resolve) => setImmediate(resolve));
+
+test('a scrape cut off by chatgpt.com moving the page is asked again on the page it moved to', async () => {
+  const s = loadCodexScrape();
+  s.plan.push('lost', 'answer');
+
+  const result = s.scrape();
+  await beat();
+  s.move('https://chatgpt.com/settings/usage?tab=analytics#usage');
+  const out = await settledOrPending(result);
+
+  assert.ok(!out.pending, 'it must not wait out the time limit on a page that has gone');
+  assert.strictEqual(s.asked.length, 2, 'asked once on each page');
+  assert.ok(out.apiData, 'the second page reads the usage');
+  assert.deepStrictEqual(s.notes.map((n) => [n.step, n.attempt, n.outcome]), [
+    ['scrape', 1, 'page moved'],
+    ['scrape', 2, 'answered'],
+  ]);
+  assert.strictEqual(s.moveListeners.length, 0, 'no listener left on the window');
+  assert.strictEqual(s.pendingLimits(), 0, 'no time limit left running');
+  assert.ok(s.win.hidden > 0, 'the window stays hidden');
+});
+
+test('a scrape that never answers is asked once more, then reported, not left hanging', async () => {
+  const s = loadCodexScrape();
+  s.plan.push('lost', 'lost');
+
+  const result = s.scrape();
+  await beat();
+  assert.deepStrictEqual(s.elapse(), [30000], 'the first ask has a 30 s limit');
+  await beat();
+  assert.deepStrictEqual(s.elapse(), [30000], 'so does the second');
+  const out = await settledOrPending(result);
+
+  assert.ok(!out.pending, 'two lost answers must end the round');
+  assert.strictEqual(s.asked.length, 2, 'two asks at most: the round has to fit inside a 1 min poll');
+  assert.ok(out.error, 'the card is told it went wrong, so it retries');
+  assert.deepStrictEqual(s.notes.map((n) => n.outcome), ['no answer', 'no answer']);
+  assert.strictEqual(s.moveListeners.length, 0, 'no listener left on the window');
+});
+
+test('a scrape that answers first time is asked only once', async () => {
+  const s = loadCodexScrape();
+  s.plan.push('answer');
+
+  const out = await settledOrPending(s.scrape());
+
+  assert.ok(out.apiData);
+  assert.strictEqual(s.asked.length, 1);
+  assert.deepStrictEqual(s.notes.map((n) => n.outcome), ['answered']);
+  assert.strictEqual(s.moveListeners.length, 0, 'no listener left on the window');
+  assert.strictEqual(s.pendingLimits(), 0, 'no time limit left running');
 });
 
 test('a record that cannot be written does not break the round', () => {
