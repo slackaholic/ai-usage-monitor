@@ -194,6 +194,33 @@ test('claude org usage reports an absent window as unmeasured, not as zero', () 
   const r = parseClaudeOrgUsage({ five_hour: { utilization: 46 } });
   assert.strictEqual(r.pct5h, 54);
   assert.strictEqual(r.pctWk, null, 'absent is null, never 100');
+  assert.strictEqual(r.hasWk, true, 'an absent key says nothing, so the window is assumed');
+  assert.strictEqual(parseClaudeOrgUsage({ seven_day: { utilization: 15 } }).has5h, true);
+});
+
+// The shape claude.ai has returned since 2026-10-31, when Anthropic removed the
+// 5-hour limit from Ultra (formerly Max 20x): every limit is listed, and the
+// ones that do not apply are null.
+test('claude org usage reads an explicit null five_hour as a plan with no 5h window', () => {
+  const { parseClaudeOrgUsage } = loadParsers();
+  const r = parseClaudeOrgUsage({
+    five_hour: null,
+    seven_day: { utilization: 24, resets_at: new Date(NOW + 2 * 24 * HOUR).toISOString() },
+  });
+  assert.strictEqual(r.has5h, false);
+  assert.strictEqual(r.pct5h, null);
+  assert.strictEqual(r.reset5hMs, 0);
+  assert.strictEqual(r.hasWk, true);
+  assert.strictEqual(r.pctWk, 76);
+  assert.strictEqual(r.resetWkMs, NOW + 2 * 24 * HOUR);
+});
+
+test('claude org usage reads an explicit null seven_day as no weekly window', () => {
+  const { parseClaudeOrgUsage } = loadParsers();
+  const r = parseClaudeOrgUsage({ five_hour: { utilization: 46 }, seven_day: null });
+  assert.strictEqual(r.hasWk, false);
+  assert.strictEqual(r.pctWk, null);
+  assert.strictEqual(r.has5h, true);
 });
 
 test('claude scraped text also emits remaining', () => {

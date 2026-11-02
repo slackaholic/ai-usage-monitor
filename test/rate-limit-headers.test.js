@@ -32,6 +32,38 @@ const HEADERS_WITHOUT_7D = {
   'anthropic-ratelimit-unified-reset': '1786367400',
 };
 
+// Exactly what api.anthropic.com returned for the same account on 2026-11-02,
+// after Anthropic removed the 5-hour limit from Ultra (formerly Max 20x): the
+// 7d trio, a representative claim of seven_day, and no 5h header at all.
+const HEADERS_WITHOUT_5H = {
+  'anthropic-ratelimit-unified-overage-status': 'rejected',
+  'anthropic-ratelimit-unified-representative-claim': 'seven_day',
+  'anthropic-ratelimit-unified-reset': '1793710800',
+  'anthropic-ratelimit-unified-7d-reset': '1793710800',
+  'anthropic-ratelimit-unified-7d-status': 'allowed',
+  'anthropic-ratelimit-unified-fallback-percentage': '0.5',
+  'anthropic-ratelimit-unified-overage-disabled-reason': 'org_level_disabled',
+  'anthropic-ratelimit-unified-7d-utilization': '0.24',
+  'anthropic-ratelimit-unified-status': 'allowed',
+};
+
+test('a weekly-only reply is a reading with no 5h window, not an error', () => {
+  const parse = loadParser();
+
+  const r = parse(HEADERS_WITHOUT_5H, Date.parse('2026-11-02T08:40:00Z'));
+
+  assert.ok(r, 'the weekly figure is a usable reading on its own');
+  assert.strictEqual(r.has5h, false, 'the plan has no 5h window');
+  assert.strictEqual(r.pct5h, null);
+  assert.strictEqual(r.reset5h, null);
+  assert.strictEqual(r.reset5hMs, 0);
+  assert.strictEqual(r.status5h, 'unknown');
+  assert.strictEqual(r.pct7d, 76);
+  assert.strictEqual(r.reset7dMs, 1793710800000);
+  assert.match(r.reset7d, /hr/);
+  assert.strictEqual(r.status7d, 'allowed');
+});
+
 test('absent 7d headers read as unknown, not as 200% remaining', () => {
   const parse = loadParser();
 
@@ -59,6 +91,7 @@ test('both windows present report both percentages and resets', () => {
   }, NOW);
 
   assert.strictEqual(r.pct5h, 60);
+  assert.strictEqual(r.has5h, true);
   assert.strictEqual(r.pct7d, 75);
   assert.strictEqual(r.reset5h, '2 hr 0 min');
   assert.strictEqual(r.reset7d, '48 hr 0 min');
@@ -89,11 +122,26 @@ test('an unparseable utilization reads as unknown rather than NaN', () => {
   assert.strictEqual(r.pct7d, null);
 });
 
-test('no 5h window at all means no usable headers', () => {
+// A 5h header that is THERE but unreadable says the window exists and its
+// number is momentarily missing ("—"), not that the plan lacks it ("n/a").
+test('an unparseable 5h utilization is a gap, not a missing window', () => {
+  const parse = loadParser();
+
+  const r = parse({
+    'anthropic-ratelimit-unified-5h-utilization': '',
+    'anthropic-ratelimit-unified-7d-utilization': '0.5',
+  }, NOW);
+
+  assert.strictEqual(r.pct5h, null);
+  assert.strictEqual(r.has5h, true);
+  assert.strictEqual(r.pct7d, 50);
+});
+
+test('a reply with no window at all carries no usable headers', () => {
   const parse = loadParser();
 
   assert.strictEqual(parse({}, NOW), null);
-  assert.strictEqual(parse({ 'anthropic-ratelimit-unified-7d-utilization': '0.5' }, NOW), null);
+  assert.strictEqual(parse({ 'anthropic-ratelimit-unified-status': 'allowed' }, NOW), null);
 });
 
 test('a reset already in the past reads as soon', () => {

@@ -420,6 +420,33 @@ test('a Claude Desktop poll renders under the claude descriptor, labelled with i
   assert.strictEqual(c.calls[0].reading.label, 'me@example.com');
 });
 
+// What claude.ai has sent since the 5-hour limit was removed from Ultra on
+// 2026-10-31. The card must render the weekly figure and read 5H as n/a.
+test('a Claude Desktop poll with a null five_hour renders weekly only', async () => {
+  const c = loadCallers({ fetchClaudeWebUsage: async () => ({
+    apiData: { five_hour: null, seven_day: { utilization: 24 } },
+    email: 'me@example.com',
+  }) });
+  await c.fetchClaudeWebUsage();
+  assert.strictEqual(c.calls.length, 1);
+  assert.strictEqual(c.calls[0].reading.has5h, false);
+  assert.strictEqual(c.calls[0].reading.pctWk, 76);
+  assert.deepStrictEqual(c.badges.at(-1), ['claude-badge', 'Live', 'ok']);
+});
+
+// main.js answers a weekly-only reply with has5h: false and no 5h numbers.
+test('a weekly-only Claude Code poll renders, with no 5h window', async () => {
+  const acct = { id: 'claude2', logKey: 'claude-vscode', configDir: 'C:\\x' };
+  const c = loadCallers({ fetchClaudeCodeApiUsage: async () => (
+    { pct5h: null, pct7d: 76, has5h: false, reset5hMs: 0, reset7dMs: 456, account: 'max 20x' }) });
+  await c.fetchClaudeCodeUsage(acct);
+  assert.strictEqual(c.calls.length, 1);
+  assert.strictEqual(c.calls[0].reading.has5h, false);
+  assert.strictEqual(c.calls[0].reading.pctWk, 76);
+  assert.strictEqual(c.toasts.length, 0);
+  assert.deepStrictEqual(c.badges.at(-1), ['claude2-badge', 'Live', 'ok']);
+});
+
 test('a Claude Code poll renders its own descriptor from the normalised reading', async () => {
   const acct = { id: 'claude2', logKey: 'claude-vscode', configDir: 'C:\\x' };
   const c = loadCallers({ fetchClaudeCodeApiUsage: async () => (
