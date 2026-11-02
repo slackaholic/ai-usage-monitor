@@ -381,6 +381,79 @@ function dayBudgetInfo(snapshots, midnightMs) {
   };
 }
 
+// ── Daily budget: the verdict and the week line ──
+// Shared by the main window and the analytics page, so the two cannot
+// disagree. The plan rule: the cycle is on plan while the weekly points used
+// are at most target x calendar days so far (capped at the whole week). Any
+// five days at the target are on plan, with two days off anywhere and no
+// weekday logic.
+
+const DEFAULT_DAY_TARGET = 20;
+const DAY_MS = 86_400_000;
+
+function localMidnightOf(ms) {
+  const d = new Date(ms);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function dayBudgetVerdict(info, dayTarget, nowMs) {
+  const target = dayTarget > 0 ? dayTarget : DEFAULT_DAY_TARGET;
+  const i = info || {};
+  const burn = Number.isFinite(i.dayBurnPct) ? i.dayBurnPct : null;
+  const hasReset = Number.isFinite(i.weeklyResetTs);
+  const hasStart = Number.isFinite(i.cycleStartTs);
+  // A reading from before a reset that has since passed says nothing about
+  // the new week.
+  const stale = hasReset && i.weeklyResetTs <= nowMs;
+  const rem = Number.isFinite(i.weeklyRemainingPct) && !stale ? i.weeklyRemainingPct : null;
+
+  let todayRemainingPct = null;
+  let todayLevel = null;
+  if (burn != null) {
+    todayRemainingPct = rem != null ? Math.min(target - burn, rem) : target - burn;
+    if ((rem != null && rem <= 0) || burn >= 1.5 * target) todayLevel = 2;
+    else if (burn > target) todayLevel = 1;
+    else todayLevel = 0;
+  }
+  const weekDays = rem != null ? Math.max(0, rem / target) : null;
+  // Rounded, not floored: a clocks-change day is 23 or 25 hours long.
+  const daysSoFar = hasStart
+    ? Math.max(1, Math.round((localMidnightOf(nowMs) - localMidnightOf(i.cycleStartTs)) / DAY_MS) + 1)
+    : null;
+
+  let state = 'unknown';
+  let behindDays = 0;
+  if (rem != null && rem <= 0) {
+    state = 'usedUp';
+  } else if (rem != null && hasReset && hasStart) {
+    const used = 100 - rem;
+    const allowance = Math.min(100, target * daysSoFar);
+    if (used <= allowance) {
+      state = 'onPlan';
+    } else {
+      state = 'behind';
+      behindDays = (used - allowance) / target;
+    }
+  }
+  return { todayRemainingPct, todayLevel, weekDays, state, behindDays, daysSoFar };
+}
+
+function weekLine(verdict, dayTarget, resetLabel) {
+  const v = verdict || {};
+  const target = dayTarget > 0 ? dayTarget : DEFAULT_DAY_TARGET;
+  if (v.state === 'usedUp') {
+    return { head: 'used up', tail: resetLabel ? 'resets ' + resetLabel : '', tone: 'red' };
+  }
+  if (v.weekDays == null) return null;
+  const head = '≈ ' + v.weekDays.toFixed(1) + ' days at ' + target + '%';
+  if (v.state === 'onPlan') return { head, tail: 'on plan · resets ' + resetLabel, tone: 'muted' };
+  if (v.state === 'behind') {
+    const days = Math.max(0.1, v.behindDays).toFixed(1);
+    return { head, tail: 'behind plan by ' + days + ' days · resets ' + resetLabel, tone: 'red' };
+  }
+  return { head, tail: '', tone: 'muted' };
+}
+
 function weeklyBurnSince(snapshots, sinceMs) {
   let sum = 0;
   const pts = dropSpikes((snapshots || []).filter(s => s && s.wk != null), 'wk');
@@ -620,5 +693,5 @@ function normalizeCodexTokenUsage(u, model, timestamp) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_FRAC, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, MIN_RATIO_EVIDENCE_PCT, weeklyPerFiveHourRatio, fiveHourAllowancePct, weeklyBurnSince, dayBurnSince, weeklyCycleStart, dayBudgetInfo, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_FRAC, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, MIN_RATIO_EVIDENCE_PCT, weeklyPerFiveHourRatio, fiveHourAllowancePct, weeklyBurnSince, dayBurnSince, weeklyCycleStart, dayBudgetInfo, DEFAULT_DAY_TARGET, dayBudgetVerdict, weekLine, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
 }

@@ -950,3 +950,149 @@ test('dayBudgetInfo: no weekly rows gives nothing to show', () => {
   assert.deepStrictEqual(dayBudgetInfo([{ ts: at(4, 9), '5h': 50, wk: null }], ms(4, 0)),
     { dayBurnPct: null, weeklyRemainingPct: null, weeklyResetTs: null, cycleStartTs: null });
 });
+
+// ── Daily budget: the verdict and the week line ──
+const { dayBudgetVerdict, weekLine, DEFAULT_DAY_TARGET } = require('../metrics.js');
+const CYCLE = { weeklyResetTs: R, cycleStartTs: ms(3, 13) };
+const verdictAt = (d, h, rem, burn = 0, target = 20) =>
+  dayBudgetVerdict({ ...CYCLE, weeklyRemainingPct: rem, dayBurnPct: burn }, target, ms(d, h));
+
+test('plan rule: five working days at 20, weekend off', () => {
+  for (const [d, rem] of [[3, 80], [4, 60], [5, 40], [6, 20], [7, 20], [8, 20]]) {
+    assert.equal(verdictAt(d, 23, rem).state, 'onPlan', `${d} Nov`);
+  }
+  assert.equal(verdictAt(9, 23, 0).state, 'usedUp');
+  assert.equal(verdictAt(10, 10, 0).state, 'usedUp');
+});
+
+test('plan rule: 20 every day uses the week up after the fifth day', () => {
+  for (const [d, rem] of [[3, 80], [4, 60], [5, 40], [6, 20]]) {
+    assert.equal(verdictAt(d, 23, rem).state, 'onPlan', `${d} Nov`);
+  }
+  assert.equal(verdictAt(7, 23, 0).state, 'usedUp');
+});
+
+test('plan rule: 30 on Wednesday after 20 on Tuesday is half a day behind', () => {
+  const wed = verdictAt(4, 23, 50);
+  assert.equal(wed.state, 'behind');
+  near(wed.behindDays, 0.5);
+  assert.equal(verdictAt(5, 23, 40).state, 'onPlan');
+  const thu = verdictAt(5, 23, 38);
+  assert.equal(thu.state, 'behind');
+  near(thu.behindDays, 0.1);
+});
+
+test('plan rule: 15 by the first afternoon is on plan', () => {
+  assert.equal(verdictAt(3, 17, 85).state, 'onPlan');
+});
+
+test('plan rule: an early refill restarts the days so far', () => {
+  const v = dayBudgetVerdict(
+    { weeklyRemainingPct: 70, dayBurnPct: 30, weeklyResetTs: R, cycleStartTs: ms(5, 10, 2) }, 20, ms(5, 23));
+  assert.equal(v.daysSoFar, 1);
+  assert.equal(v.state, 'behind');
+  near(v.behindDays, 0.5);
+});
+
+test('today: remaining in weekly points, coloured by use against the target', () => {
+  const v = verdictAt(4, 10, 74, 1);
+  assert.equal(v.todayRemainingPct, 19);
+  assert.equal(v.todayLevel, 0);
+  near(v.weekDays, 3.7);
+  assert.equal(verdictAt(4, 10, 74, 20).todayLevel, 0);
+  assert.equal(verdictAt(4, 10, 74, 20.1).todayLevel, 1);
+  const over = verdictAt(4, 10, 74, 24.5);
+  assert.equal(over.todayRemainingPct, -4.5);
+  assert.equal(over.todayLevel, 1);
+  assert.equal(verdictAt(4, 10, 74, 29.9).todayLevel, 1);
+  assert.equal(verdictAt(4, 10, 74, 30).todayLevel, 2);
+});
+
+test('today: capped at what the week has left', () => {
+  const v = verdictAt(4, 10, 5, 0);
+  assert.equal(v.todayRemainingPct, 5);
+  assert.equal(v.weekDays, 0.25);
+});
+
+test('today: an over-quota week reads negative and red', () => {
+  const v = verdictAt(4, 10, -3, 2);
+  assert.equal(v.todayRemainingPct, -3);
+  assert.equal(v.todayLevel, 2);
+  assert.equal(v.state, 'usedUp');
+  assert.equal(v.weekDays, 0);
+});
+
+test('no figures yet', () => {
+  const v = dayBudgetVerdict(undefined, 20, ms(4, 10));
+  assert.deepStrictEqual(
+    { todayRemainingPct: v.todayRemainingPct, todayLevel: v.todayLevel, weekDays: v.weekDays, state: v.state },
+    { todayRemainingPct: null, todayLevel: null, weekDays: null, state: 'unknown' });
+});
+
+const NO_RESET = { dayBurnPct: 1, weeklyRemainingPct: 74, weeklyResetTs: null, cycleStartTs: null };
+
+test('no reset time: days but no verdict', () => {
+  const v = dayBudgetVerdict(NO_RESET, 20, ms(4, 10));
+  assert.equal(v.state, 'unknown');
+  near(v.weekDays, 3.7);
+  assert.equal(v.todayRemainingPct, 19);
+});
+
+test('stale reset: a reading from before a reset that has passed gives no verdict', () => {
+  const v = dayBudgetVerdict({ dayBurnPct: 3, weeklyRemainingPct: 0, ...CYCLE }, 20, ms(10, 14));
+  assert.equal(v.state, 'unknown');
+  assert.equal(v.weekDays, null);
+  assert.equal(v.todayRemainingPct, 17);
+  assert.equal(v.todayLevel, 0);
+});
+
+test('clock changes: days so far counts calendar days', () => {
+  const daysAt = (start, reset, now) => dayBudgetVerdict(
+    { weeklyRemainingPct: 80, dayBurnPct: 0, weeklyResetTs: reset.getTime(), cycleStartTs: start.getTime() },
+    20, now.getTime()).daysSoFar;
+  // UK clocks go forward on 28 Mar 2027 and back on 25 Oct 2026.
+  assert.equal(daysAt(new Date(2027, 2, 23, 13), new Date(2027, 2, 30, 13), new Date(2027, 2, 29, 10)), 7);
+  assert.equal(daysAt(new Date(2026, 9, 20, 13), new Date(2026, 9, 27, 13), new Date(2026, 9, 26, 10)), 7);
+});
+
+test('target 25', () => {
+  const v = verdictAt(4, 23, 50, 0, 25);
+  assert.equal(v.state, 'onPlan');
+  assert.equal(v.weekDays, 2);
+  assert.equal(v.todayRemainingPct, 25);
+});
+
+test('a missing or zero target falls back to 20', () => {
+  assert.equal(verdictAt(4, 10, 74, 1, 0).todayRemainingPct, 19);
+  assert.equal(DEFAULT_DAY_TARGET, 20);
+});
+
+test('weekLine: on plan', () => {
+  assert.deepStrictEqual(weekLine(verdictAt(4, 10, 74, 1), 20, 'Tue 13:00'),
+    { head: '≈ 3.7 days at 20%', tail: 'on plan · resets Tue 13:00', tone: 'muted' });
+});
+
+test('weekLine: behind', () => {
+  assert.deepStrictEqual(weekLine(verdictAt(4, 22, 50), 20, 'Tue 13:00'),
+    { head: '≈ 2.5 days at 20%', tail: 'behind plan by 0.5 days · resets Tue 13:00', tone: 'red' });
+});
+
+test('weekLine: used up comes first', () => {
+  assert.deepStrictEqual(weekLine(verdictAt(9, 23, 0), 20, 'Tue 13:00'),
+    { head: 'used up', tail: 'resets Tue 13:00', tone: 'red' });
+  assert.equal(weekLine(verdictAt(9, 23, 0), 20, '').tail, '');
+});
+
+test('weekLine: no reset time leaves the days alone', () => {
+  assert.deepStrictEqual(weekLine(dayBudgetVerdict(NO_RESET, 20, ms(4, 10)), 20, ''),
+    { head: '≈ 3.7 days at 20%', tail: '', tone: 'muted' });
+});
+
+test('weekLine: nothing to say', () => {
+  assert.equal(weekLine(dayBudgetVerdict(undefined, 20, 0), 20, ''), null);
+});
+
+test('weekLine: behind never reads 0.0 days', () => {
+  const line = weekLine({ state: 'behind', weekDays: 2, behindDays: 0.04 }, 25, 'Tue 13:00');
+  assert.ok(line.tail.startsWith('behind plan by 0.1 days'), line.tail);
+});
