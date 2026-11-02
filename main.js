@@ -19,7 +19,7 @@ const claudeWebWindows = { desktop: null, vscode: null };
 const SETTINGS_PATH = path.join(__dirname, 'settings.json');
 const USAGE_LOG_PATH = path.join(__dirname, 'usage-log.jsonl');
 
-const { weeklyPerFiveHourRatio, weeklyBurnSince } = require('./metrics.js');
+const { dayBudgetInfo } = require('./metrics.js');
 
 function loadSettings() {
   try { return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')); } catch { return {}; }
@@ -65,8 +65,8 @@ function readUsageLogGrouped() {
       .filter(Boolean);
   } catch { return null; }
   // Bucket every account the log actually contains. A fixed list here would
-  // silently drop any account added later, leaving its card permanently on
-  // "budget: need more history".
+  // silently drop any account added later, leaving its card's budget
+  // permanently blank.
   const byAccount = {};
   for (const e of entries) {
     if (!e.account) continue;
@@ -76,35 +76,16 @@ function readUsageLogGrouped() {
   return byAccount;
 }
 
-// 'YYYY-MM-DD' (from an <input type="date">) -> local-midnight epoch ms, or null.
-// Parsed here rather than in metrics.js, which must stay clock- and locale-free.
-function tierChangeMs(dateStr) {
-  if (typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
-  const [y, m, d] = dateStr.split('-').map(Number);
-  const dt = new Date(y, m - 1, d);
-  // The Date constructor NORMALIZES out-of-range values rather than failing
-  // ('2026-02-30' becomes 2 Mar), so Number.isFinite can't reject them —
-  // round-trip the components to confirm the date is real.
-  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
-  const t = dt.getTime();
-  return Number.isFinite(t) ? t : null;
-}
-
+// The daily-budget figures per log account. Local midnight is worked out here
+// because metrics.js must stay clock- and locale-free.
 ipcMain.handle('get-budget-info', () => {
   const byAccount = readUsageLogGrouped();
-  const tierDates = loadSettings().tierChangedAt || {};
   const midnight = new Date();
   midnight.setHours(0, 0, 0, 0);
   const midnightMs = midnight.getTime();
   const out = {};
   for (const a of Object.keys(byAccount || {})) {
-    const snaps = byAccount[a];
-    const tierMs = tierChangeMs(tierDates[a]);
-    out[a] = {
-      ratio: weeklyPerFiveHourRatio(snaps, tierMs),
-      dayWeeklyBurnPct: weeklyBurnSince(snaps, midnightMs),
-      tierChangedAt: tierMs,
-    };
+    out[a] = dayBudgetInfo(byAccount[a], midnightMs);
   }
   return out;
 });
