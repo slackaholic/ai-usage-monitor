@@ -124,6 +124,10 @@
       border-radius: 6px; padding: 6px 8px;
     }
     .compact-label { font-size: 10px; color: var(--text-mid); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; }
+    /* The window word ("5H" or "Today") sits in its own span after the account
+       name, so the budget can swap it while setHeadingSuffix keeps writing the
+       account suffix into the text node before it. */
+    .win-label { margin-left: 0.3em; }
     .compact-value { font-size: 17px; font-weight: 700; color: var(--accent); display: flex; align-items: baseline; gap: 3px; }
 
     /* ── Section / cards ──────────────────────────────────────────────────── */
@@ -199,10 +203,6 @@
 
     /* ── Progress bars ────────────────────────────────────────────────────── */
     .progress-track { height: 3px; background: var(--border); border-radius: 2px; position: relative; }
-    .budget-marker {
-      position: absolute; top: -2px; bottom: -2px; width: 2px;
-      background: var(--text-mid); border-radius: 1px; pointer-events: none;
-    }
     .budget-note { font-size: 9px; color: var(--text-muted); margin-top: 3px; }
     .budget-note.over    { color: var(--badge-warn-text); }
     .budget-note.wayover { color: var(--badge-err-text); }
@@ -359,7 +359,7 @@
   <div id="compact-view">
     <div class="compact-grid">
       <div class="compact-stat" id="cs-codex-5h" style="display:none">
-        <div class="compact-label">Codex 5H</div>
+        <div class="compact-label">Codex<span class="win-label" id="c-codex-5h-label">5H</span></div>
         <div class="compact-value"><span id="c-codex-5h">—</span><span class="trend" id="c-codex-5h-trend"></span></div>
       </div>
       <div class="compact-stat" id="cs-codex-wk" style="display:none">
@@ -367,7 +367,7 @@
         <div class="compact-value"><span id="c-codex-wk">—</span><span class="trend" id="c-codex-wk-trend"></span></div>
       </div>
       <div class="compact-stat" id="cs-claude-5h" style="display:none">
-        <div class="compact-label">Claude Desktop 5H</div>
+        <div class="compact-label">Claude Desktop<span class="win-label" id="c-claude-5h-label">5H</span></div>
         <div class="compact-value"><span id="c-claude-5h">—</span><span class="trend" id="c-claude-5h-trend"></span></div>
       </div>
       <div class="compact-stat" id="cs-claude-wk" style="display:none">
@@ -415,7 +415,7 @@
         <div class="sublabel">Shared Agentic Limit</div>
         <div class="stats-grid" style="margin-bottom:6px">
           <div class="stat-box">
-            <div class="stat-label">5H Remaining</div>
+            <div class="stat-label" id="codex-5h-label">5H Remaining</div>
             <div class="stat-value accent"><span id="codex-5h-pct">—</span><span class="trend" id="codex-5h-trend"></span></div>
             <div id="codex-5h-reset"></div>
           </div>
@@ -427,7 +427,6 @@
         </div>
         <div class="progress-track" style="margin-bottom:3px">
           <div class="progress-fill" id="codex-5h-bar" style="width:0%;background:linear-gradient(90deg,#059669,#34d399)"></div>
-          <div class="budget-marker" id="codex-5h-budget" style="display:none"></div>
         </div>
         <div class="progress-track" style="margin-bottom:6px">
           <div class="progress-fill" id="codex-wk-bar" style="width:0%;background:linear-gradient(90deg,#dc2626,#f87171)"></div>
@@ -500,7 +499,7 @@
       <div id="claude-data" style="display:none">
         <div class="stats-grid" style="margin-bottom:6px">
           <div class="stat-box">
-            <div class="stat-label">5H Remaining</div>
+            <div class="stat-label" id="claude-5h-label">5H Remaining</div>
             <div class="stat-value accent"><span id="claude-5h-pct">—</span><span class="trend" id="claude-5h-trend"></span></div>
             <div id="claude-5h-reset"></div>
           </div>
@@ -512,7 +511,6 @@
         </div>
         <div class="progress-track" style="margin-bottom:3px">
           <div class="progress-fill" id="claude-5h-bar" style="width:0%;background:linear-gradient(90deg,#059669,#34d399)"></div>
-          <div class="budget-marker" id="claude-5h-budget" style="display:none"></div>
         </div>
         <div class="progress-track" style="margin-bottom:6px">
           <div class="progress-fill" id="claude-wk-bar" style="width:0%;background:linear-gradient(90deg,#dc2626,#f87171)"></div>
@@ -604,7 +602,7 @@
       <div data-id="data" style="display:none">
         <div class="stats-grid" style="margin-bottom:6px">
           <div class="stat-box">
-            <div class="stat-label">5H Remaining</div>
+            <div class="stat-label" data-id="5h-label">5H Remaining</div>
             <div class="stat-value accent"><span data-id="5h-pct">—</span><span class="trend" data-id="5h-trend"></span></div>
             <div data-id="5h-reset"></div>
           </div>
@@ -616,7 +614,6 @@
         </div>
         <div class="progress-track" style="margin-bottom:3px">
           <div class="progress-fill" data-id="5h-bar" style="width:0%;background:linear-gradient(90deg,#059669,#34d399)"></div>
-          <div class="budget-marker" data-id="5h-budget" style="display:none"></div>
         </div>
         <div class="progress-track">
           <div class="progress-fill" data-id="wk-bar" style="width:0%;background:linear-gradient(90deg,#dc2626,#f87171)"></div>
@@ -652,7 +649,7 @@
      from a grid shared with Codex and Claude Desktop. -->
 <template id="tpl-claude-code-compact">
   <div class="compact-stat" data-cs="5h" style="display:none">
-    <div class="compact-label">Claude VS Code 5H</div>
+    <div class="compact-label">Claude VS Code<span class="win-label" data-id="5h-label">5H</span></div>
     <div class="compact-value"><span data-id="5h">—</span><span class="trend" data-id="5h-trend"></span></div>
   </div>
   <div class="compact-stat" data-cs="wk" style="display:none">

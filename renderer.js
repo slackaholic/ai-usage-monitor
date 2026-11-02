@@ -28,10 +28,6 @@ const trendHistory = {};
 // Render prefix -> usage-log account key.
 const LOG_ACCOUNT = {};
 
-// Latest 5h remaining % per account, so renderBudget can repaint between
-// fetches.
-const lastPct5h = {};
-
 // Per-account session tracking, keyed by usage-log account key. sessionStart
 // persists in each log entry so analytics can group entries by session even
 // after an app restart.
@@ -42,7 +38,6 @@ const sessionStore = {};
 function registerAccount(acct) {
   if (!(acct.id in hasData))          hasData[acct.id] = false;
   if (!(acct.id in cachedData))       cachedData[acct.id] = null;
-  if (!(acct.id in lastPct5h))        lastPct5h[acct.id] = null;
   if (!(acct.id in accountOverrides)) accountOverrides[acct.id] = '';
   LOG_ACCOUNT[acct.id] = acct.logKey;
   trendHistory[acct.id + '-5h'] = trendHistory[acct.id + '-5h'] || [];
@@ -200,12 +195,13 @@ function applyTrendDisplay(key, delta) {
 
 // ── Analytics / sparkline ──────────────────────────────────────────────────
 let budgetInfo = {};
-let budgetTargets = { window: 10, day: 20 };
+let budgetTargets = { day: DEFAULT_DAY_TARGET };
 
 // Accounts whose PLAN has no 5-hour window at all — as opposed to a meter that
 // failed to arrive this poll. OpenAI removed the Codex 5-hour window on
-// 2026-07-11; Anthropic still reports both. Rewritten on every fetch, so a
-// window that comes back clears the flag on its own.
+// 2026-07-11 and Anthropic removed Claude's on 2026-10-31. On these cards the
+// left tile is the Today tile (renderBudget). Rewritten on every fetch, so a
+// window that comes back clears the flag and brings the 5H tile back.
 const noFiveHourWindow = new Set();
 
 // Update session state for scraped accounts (Codex, Claude Desktop). `account`
@@ -741,55 +737,72 @@ function renderStat(prefix, win, pct, placeholder) {
   showCompactStat(`${prefix}-${win}`, true);
 }
 
-// Budget marker + note for one account. `pct5h` is the current 5h REMAINING %.
-function renderBudget(prefix, pct5h) {
-  if (pct5h != null) lastPct5h[prefix] = pct5h;
-  const pct    = lastPct5h[prefix];
-  const marker = document.getElementById(prefix + '-5h-budget');
-  const note   = document.getElementById(prefix + '-budget-note');
-  const info   = budgetInfo[LOG_ACCOUNT[prefix]] || {};
-  const ratio  = info.ratio;
-  const allowance = fiveHourAllowancePct(budgetTargets.window, ratio);
+// ── BUDGET ──
+// The daily budget on each card: the Today tile, which takes the left tile on
+// a card whose plan has no 5-hour window, and the week line under the bars.
+// The figures and the verdict come from metrics.js (dayBudgetVerdict,
+// weekLine), which the analytics page shares, so the two cannot disagree.
 
-  // Nothing to mark on a bar that measures a window the plan does not have.
-  const no5h = noFiveHourWindow.has(prefix);
-
-  if (marker) {
-    if (allowance != null && !no5h) {
-      marker.style.left = (100 - allowance) + '%';
-      marker.style.display = '';
-    } else {
-      marker.style.display = 'none';
-    }
-  }
-  if (!note) return;
-  // "need more history" would be a lie here: the ratio is 5h-burn per
-  // weekly-burn, and with no 5h window no amount of waiting can measure it.
-  if (no5h) {
-    note.textContent = 'budget: plan has no 5h window — weekly only';
-    note.className = 'budget-note';
-    return;
-  }
-  if (!(ratio > 0) || pct == null) {
-    note.textContent = info.tierChangedAt
-      ? 'budget: need more history since tier change'
-      : 'budget: need more history';
-    note.className = 'budget-note';
-    return;
-  }
-  const wkEquiv = (100 - pct) * ratio;
-  const day     = info.dayWeeklyBurnPct || 0;
-  const level   = (v, t) => (v <= t ? 0 : v <= t * 1.5 ? 1 : 2);
-  const worst   = Math.max(level(wkEquiv, budgetTargets.window), level(day, budgetTargets.day));
-  // Positive confirmation that a declared tier change is in effect. Without it
-  // a valid date is invisible whenever there IS enough post-cutoff data, so
-  // there's no way to tell whether the cutoff applied.
-  const scope = info.tierChangedAt
-    ? ' · ratio since ' + new Date(info.tierChangedAt).toLocaleDateString([], { day: 'numeric', month: 'short' })
-    : '';
-  note.textContent = `${wkEquiv.toFixed(1)}% / ${budgetTargets.window}% wk this window · today ${day.toFixed(1)}% / ${budgetTargets.day}%${scope}`;
-  note.className = 'budget-note' + (worst === 1 ? ' over' : worst === 2 ? ' wayover' : '');
+// Today's colour level (0 within the target, 1 over, 2 well over) as a colour
+// and a bar gradient, matching pctColor and barGradient.
+function levelColor(level) {
+  return level == null ? '' : ['#34d399', '#f59e0b', '#f87171'][level];
 }
+
+function levelGradient(level) {
+  if (level == null) return 'var(--border)';
+  return [
+    'linear-gradient(90deg,#059669,#34d399)',
+    'linear-gradient(90deg,#92400e,#fbbf24)',
+    'linear-gradient(90deg,#7f1d1d,#f87171)',
+  ][level];
+}
+
+// The weekly reset as weekday and 24-hour time, UK style: 'Tue 13:00'.
+function fmtWeekReset(ms) {
+  if (!Number.isFinite(ms)) return '';
+  const d = new Date(ms);
+  return d.toLocaleDateString('en-GB', { weekday: 'short' }) + ' '
+    + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+}
+
+// Paints one account's Today tile (weekly-only cards) and week line. Runs after
+// renderAccountData's reset lines, so its own line under the tile wins.
+function renderBudget(prefix, nowMs = Date.now()) {
+  const info   = budgetInfo[LOG_ACCOUNT[prefix]];
+  const target = budgetTargets.day;
+  const v      = dayBudgetVerdict(info, target, nowMs);
+  const today  = noFiveHourWindow.has(prefix);
+
+  const label  = document.getElementById(prefix + '-5h-label');
+  const cLabel = document.getElementById('c-' + prefix + '-5h-label');
+  if (label)  label.textContent  = today ? 'Today Remaining' : '5H Remaining';
+  if (cLabel) cLabel.textContent = today ? 'Today' : '5H';
+
+  if (today) {
+    const rem   = v.todayRemainingPct;
+    const color = levelColor(v.todayLevel);
+    for (const id of [prefix + '-5h-pct', 'c-' + prefix + '-5h']) {
+      const el = document.getElementById(id);
+      if (el) { el.textContent = rem != null ? rem.toFixed(1) + '%' : '—'; el.style.color = color; }
+    }
+    const bar = document.getElementById(prefix + '-5h-bar');
+    if (bar) {
+      bar.style.width = (rem != null ? Math.max(0, Math.min(100, rem * 100 / target)) : 0) + '%';
+      bar.style.background = levelGradient(v.todayLevel);
+    }
+    const sub = document.getElementById(prefix + '-5h-reset');
+    if (sub) sub.textContent = `of ${target}% · resets at midnight`;
+    showCompactStat(prefix + '-5h', true);
+  }
+
+  const note = document.getElementById(prefix + '-budget-note');
+  if (!note) return;
+  const line = weekLine(v, target, fmtWeekReset(info && info.weeklyResetTs));
+  note.textContent = line ? 'week ' + line.head + (line.tail ? ' · ' + line.tail : '') : '';
+  note.className = 'budget-note' + (line && line.tone === 'red' ? ' wayover' : '');
+}
+// ── BUDGET END ──
 
 // Pull fresh budget info + targets, then repaint every account's budget UI.
 async function refreshBudget() {
@@ -799,12 +812,9 @@ async function refreshBudget() {
   try {
     const s = (await window.electronAPI.getSettings()) || {};
     const bt = s.budgetTargets || {};
-    budgetTargets = {
-      window: (bt.window > 0) ? bt.window : 10,
-      day:    (bt.day    > 0) ? bt.day    : 20,
-    };
+    budgetTargets = { day: (bt.day > 0) ? bt.day : DEFAULT_DAY_TARGET };
   } catch { /* leave previous value */ }
-  accountPrefixes().forEach(p => renderBudget(p, null));
+  accountPrefixes().forEach(p => renderBudget(p));
 }
 
 // Build a usage-log entry with depletion flags + reset timestamps.
@@ -1442,14 +1452,16 @@ function renderAccountData(acct, reading, stale = false) {
 
   if (!reading.has5h) noFiveHourWindow.add(id); else noFiveHourWindow.delete(id);
 
-  renderStat(id, '5h', reading.pct5h, reading.has5h ? undefined : 'n/a');
+  // Without a 5-hour window the left tile is the Today tile, which
+  // renderBudget paints below.
+  if (reading.has5h) renderStat(id, '5h', reading.pct5h);
   renderStat(id, 'wk', reading.pctWk, reading.hasWk ? undefined : 'n/a');
-  renderBudget(id, reading.pct5h);
 
   setText(id + '-5h-reset',
     !reading.has5h ? '' : (reading.reset5hMs > 0 ? fmtResetIn(reading.reset5hMs) : ''));
   setText(id + '-wk-reset',
     !reading.hasWk ? '' : (reading.resetWkMs > 0 ? fmtResetOn(reading.resetWkMs) : ''));
+  renderBudget(id);
 
   if (!stale) {
     pushTrend(id + '-5h', reading.pct5h);
