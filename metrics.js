@@ -257,6 +257,130 @@ function dropSpikes(points, win) {
   return out;
 }
 
+// ── Daily budget: today's weekly use and the cycle start ──
+// The daily budget counts falls across polling gaps too (work done while the
+// app was closed or asleep is still use), which makes a bad reading costlier
+// than it is for the burn functions above. So the weekly series is cleaned
+// three ways before anything is counted, and a reset is told apart from a
+// partial refill. Every rule here was checked against the real log.
+
+const tsMs = (p) => new Date(p.ts).getTime();
+
+// A bad LOW reading is the mirror of a bad high one: a run below its
+// predecessor that springs straight back. Across a gap its fall would be
+// banked as use, so it is dropped. The return must land between the
+// predecessor's level and RESET_JUMP_MIN above it; a run that comes back far
+// higher is a reset after real use, not a misread. Observed: Claude Desktop,
+// 27 Oct 2026, wk 92 -> 91 -> 92 with jumbled reset times.
+function dropDips(points, win) {
+  const out = [];
+  for (let i = 0; i < points.length; i++) {
+    const prev = out.length ? out[out.length - 1] : null;
+    if (prev && points[i][win] < prev[win]) {
+      let j = i;
+      while (j < points.length && points[j][win] < prev[win]) j++;
+      const springsBack = j < points.length
+        && (new Date(points[j].ts) - new Date(points[i].ts)) < ACTIVE_GAP_MAX
+        && points[j][win] <= prev[win] + RESET_JUMP_MIN;
+      if (springsBack) { i = j - 1; continue; }
+    }
+    out.push(points[i]);
+  }
+  return out;
+}
+
+// The scheduled weekly reset fell between two polls.
+function scheduledResetBetween(a, b) {
+  return a.reset7dTs > 0 && tsMs(a) < a.reset7dTs && a.reset7dTs <= tsMs(b);
+}
+
+// A rise that is a real reset: the scheduled one, or an early refill that
+// lands near full. Codex on 29 Oct 2026 rose 67 -> 83 with the reset time
+// unchanged, a partial refill; counting it as a reset would have added 17
+// points of use that never happened.
+function isWeeklyReset(a, b) {
+  return b.wk > a.wk && (scheduledResetBetween(a, b)
+    || (b.wk - a.wk > RESET_JUMP_MIN && b.wk >= 100 - RESET_JUMP_MIN));
+}
+
+// A bad high reading that was the last poll before a gap never springs back
+// within dropSpikes' window, so a rise must be confirmed by the next poll
+// within ACTIVE_GAP_MAX, unless the scheduled reset explains it.
+function dropUnconfirmedRises(points) {
+  const out = [];
+  for (let i = 0; i < points.length; i++) {
+    const prev = out.length ? out[out.length - 1] : null;
+    const p = points[i];
+    if (prev && p.wk > prev.wk && !scheduledResetBetween(prev, p)) {
+      const next = points[i + 1];
+      if (!(next && tsMs(next) - tsMs(p) < ACTIVE_GAP_MAX)) continue;
+    }
+    out.push(p);
+  }
+  return out;
+}
+
+function weeklyPoints(snapshots) {
+  const pts = (snapshots || []).filter(s => s && s.wk != null && Number.isFinite(tsMs(s)));
+  return dropUnconfirmedRises(dropDips(dropSpikes(pts, 'wk'), 'wk'));
+}
+
+// Weekly points used since sinceMs (local midnight, passed in). Every fall
+// counts, across polling gaps too. An interval that straddles sinceMs counts
+// only the share of it after sinceMs. Use after a reset seen across a gap is
+// measured from 100, from the scheduled reset when that fell in the gap.
+function dayBurnSince(snapshots, sinceMs) {
+  const pts = weeklyPoints(snapshots);
+  let sum = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const tb = tsMs(b);
+    if (!(tb > sinceMs)) continue;
+    let use = 0;
+    let start = tsMs(a);
+    if (b.wk < a.wk) {
+      use = a.wk - b.wk;
+    } else if (isWeeklyReset(a, b) && tb - start >= ACTIVE_GAP_MAX) {
+      use = Math.max(0, 100 - b.wk);
+      if (scheduledResetBetween(a, b)) start = a.reset7dTs;
+    }
+    if (!(use > 0)) continue;
+    sum += start >= sinceMs ? use : use * (tb - sinceMs) / (tb - start);
+  }
+  return sum;
+}
+
+// When the current weekly cycle began: the logged reset minus a week, or the
+// last reset seen in the log if later (an early refill that left the reset
+// time alone). null when there is neither.
+function weeklyCycleStart(snapshots) {
+  const reset = latestResetTs((snapshots || []).filter(Boolean), 'reset7dTs');
+  const pts = weeklyPoints(snapshots);
+  let detected = null;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    if (isWeeklyReset(a, b)) detected = scheduledResetBetween(a, b) ? a.reset7dTs : tsMs(b);
+  }
+  const fromReset = reset != null ? reset - WINDOW_MS.wk : null;
+  if (fromReset == null || detected == null) return fromReset != null ? fromReset : detected;
+  return Math.max(fromReset, detected);
+}
+
+// The four figures get-budget-info serves for one account. The weekly
+// remaining is the raw latest reading, as the weekly tile shows it.
+function dayBudgetInfo(snapshots, midnightMs) {
+  const rows = (snapshots || []).filter(s => s && s.wk != null);
+  if (!rows.length) {
+    return { dayBurnPct: null, weeklyRemainingPct: null, weeklyResetTs: null, cycleStartTs: null };
+  }
+  return {
+    dayBurnPct: dayBurnSince(rows, midnightMs),
+    weeklyRemainingPct: rows[rows.length - 1].wk,
+    weeklyResetTs: latestResetTs((snapshots || []).filter(Boolean), 'reset7dTs'),
+    cycleStartTs: weeklyCycleStart(snapshots),
+  };
+}
+
 function weeklyBurnSince(snapshots, sinceMs) {
   let sum = 0;
   const pts = dropSpikes((snapshots || []).filter(s => s && s.wk != null), 'wk');
@@ -496,5 +620,5 @@ function normalizeCodexTokenUsage(u, model, timestamp) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_FRAC, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, MIN_RATIO_EVIDENCE_PCT, weeklyPerFiveHourRatio, fiveHourAllowancePct, weeklyBurnSince, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_FRAC, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, MIN_RATIO_EVIDENCE_PCT, weeklyPerFiveHourRatio, fiveHourAllowancePct, weeklyBurnSince, dayBurnSince, weeklyCycleStart, dayBudgetInfo, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
 }

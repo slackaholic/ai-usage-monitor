@@ -832,3 +832,121 @@ test('weeklyPerFiveHourRatio: a bad 5h reading does not deflate the ratio either
   ];
   assert.equal(ratio(spiked), 0.2);
 });
+
+// ── Daily budget: today's use and the cycle (2 Nov 2026) ──
+// Fixtures use local wall time, so they hold in any time zone.
+const { dayBurnSince, weeklyCycleStart, dayBudgetInfo } = require('../metrics.js');
+const at = (d, h, m = 0) => new Date(2026, 10, d, h, m).toISOString(); // Nov 2026; 3 Nov is a Tuesday
+const ms = (d, h, m = 0) => new Date(2026, 10, d, h, m).getTime();
+const R = ms(10, 13);                                                    // reset Tue 10 Nov 13:00
+const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} ≈ ${b}`);
+const row = (d, h, m, wk, reset) =>
+  reset === undefined ? { ts: at(d, h, m), wk } : { ts: at(d, h, m), wk, reset7dTs: reset };
+
+test('dayBurnSince: falls across a polling gap still count', () => {
+  const rows = [row(4, 9, 0, 80), row(4, 9, 5, 78), row(4, 14, 0, 70), row(4, 14, 5, 69)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 11);
+});
+
+test('dayBurnSince: rises are not use', () => {
+  const rows = [row(4, 9, 0, 80), row(4, 9, 5, 82), row(4, 9, 10, 82), row(4, 9, 15, 81)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 1);
+});
+
+test('dayBurnSince: an interval across midnight is split by time', () => {
+  const rows = [row(3, 22, 0, 60), row(4, 8, 0, 50)];
+  near(dayBurnSince(rows, ms(4, 0)), 8);
+});
+
+test('dayBurnSince: the day keeps counting across a weekly reset', () => {
+  const rows = [
+    row(3, 10, 0, 40, ms(3, 13)), row(3, 10, 5, 35, ms(3, 13)), row(3, 12, 55, 30, ms(3, 13)),
+    row(3, 13, 1, 100, R), row(3, 13, 6, 97, R),
+  ];
+  assert.equal(dayBurnSince(rows, ms(3, 0)), 13);
+});
+
+test('dayBurnSince: use after a reset in a polling gap is measured from 100', () => {
+  const rows = [row(9, 17, 0, 10, R), row(10, 15, 0, 88, ms(17, 13)), row(10, 15, 2, 88, ms(17, 13))];
+  assert.equal(dayBurnSince(rows, ms(10, 0)), 12);
+});
+
+test('dayBurnSince: an early refill in a gap counts from 100, split by time', () => {
+  const rows = [row(6, 17, 0, 30, R), row(9, 9, 0, 90, R), row(9, 9, 2, 90, R)];
+  near(dayBurnSince(rows, ms(9, 0)), 10 * 9 / 64);
+});
+
+test('dayBurnSince: a bad high reading that springs back adds no use', () => {
+  const rows = [row(4, 9, 57, 68), row(4, 9, 59, 100), row(4, 10, 1, 68), row(4, 10, 11, 67)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 1);
+});
+
+test('dayBurnSince: a bad high reading just before a gap adds no use', () => {
+  const rows = [row(4, 9, 0, 68), row(4, 9, 1, 100), row(4, 15, 0, 60), row(4, 15, 2, 60)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 8);
+});
+
+test('dayBurnSince: a bad low reading that springs back adds no use', () => {
+  // Claude Desktop, 27 Oct 2026: 92 -> 91 -> 92 with jumbled reset times.
+  const rows = [row(4, 9, 0, 92), row(4, 9, 2, 91), row(4, 9, 4, 92), row(4, 9, 6, 92), row(4, 9, 30, 91)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 1);
+});
+
+test('dayBurnSince: a partial refill across a gap is not a reset', () => {
+  // Codex, 29 Oct 2026: 67 -> 83 with the reset time unchanged.
+  const rows = [row(4, 9, 0, 67), row(4, 13, 0, 83), row(4, 13, 2, 83)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 0);
+});
+
+test('dayBurnSince: a refill seen between close polls adds no use of its own', () => {
+  const rows = [row(4, 10, 0, 30), row(4, 10, 2, 92), row(4, 10, 4, 91)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 1);
+});
+
+test('dayBurnSince: no rows is no use', () => {
+  assert.equal(dayBurnSince([], ms(4, 0)), 0);
+});
+
+test('weeklyCycleStart: a week before the logged reset', () => {
+  assert.equal(weeklyCycleStart([row(4, 9, 0, 80, R), row(4, 9, 5, 79, R)]), ms(3, 13));
+});
+
+test('weeklyCycleStart: an early refill without a moved reset restarts it', () => {
+  const rows = [row(5, 10, 0, 40, R), row(5, 10, 2, 100, R), row(5, 10, 4, 99, R)];
+  assert.equal(weeklyCycleStart(rows), ms(5, 10, 2));
+});
+
+test('weeklyCycleStart: a refill across a gap restarts at the first poll after it', () => {
+  const rows = [row(6, 17, 0, 30, R), row(9, 9, 0, 90, R), row(9, 9, 2, 90, R)];
+  assert.equal(weeklyCycleStart(rows), ms(9, 9));
+});
+
+test('weeklyCycleStart: a bad reading does not restart it', () => {
+  const rows = [row(4, 9, 57, 68, R), row(4, 9, 59, 100, R), row(4, 10, 1, 68, R)];
+  assert.equal(weeklyCycleStart(rows), ms(3, 13));
+});
+
+test('weeklyCycleStart: a partial refill does not restart it', () => {
+  const rows = [row(4, 9, 0, 67, R), row(4, 13, 0, 83, R), row(4, 13, 2, 83, R)];
+  assert.equal(weeklyCycleStart(rows), ms(3, 13));
+});
+
+test('weeklyCycleStart: nothing to go on', () => {
+  assert.equal(weeklyCycleStart([row(4, 9, 0, 80), row(4, 9, 5, 79)]), null);
+});
+
+test('dayBudgetInfo: the four figures for one account', () => {
+  const rows = [row(4, 9, 0, 78, R), row(4, 9, 5, 76, R)];
+  assert.deepStrictEqual(dayBudgetInfo(rows, ms(4, 0)),
+    { dayBurnPct: 2, weeklyRemainingPct: 76, weeklyResetTs: R, cycleStartTs: ms(3, 13) });
+});
+
+test('dayBudgetInfo: the weekly remaining is the latest reading, as the weekly tile shows it', () => {
+  const rows = [row(4, 9, 0, 78, R), row(4, 9, 5, 100, R)];
+  assert.equal(dayBudgetInfo(rows, ms(4, 0)).weeklyRemainingPct, 100);
+});
+
+test('dayBudgetInfo: no weekly rows gives nothing to show', () => {
+  assert.deepStrictEqual(dayBudgetInfo([{ ts: at(4, 9), '5h': 50, wk: null }], ms(4, 0)),
+    { dayBurnPct: null, weeklyRemainingPct: null, weeklyResetTs: null, cycleStartTs: null });
+});
