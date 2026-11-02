@@ -993,6 +993,13 @@ function parseClaudeOrgUsage(data) {
     pctWk:     remain(sd?.utilization),
     reset5hMs: ms(fh?.resets_at),
     resetWkMs: ms(sd?.resets_at),
+    // The response lists every limit and sets the ones the plan does not have
+    // to null. Anthropic removed the 5-hour limit from Ultra (formerly Max 20x),
+    // and five_hour has been null since 31 Oct 2026. An absent key is
+    // different: it tells us nothing, so the window is assumed and its missing
+    // number shows as "—".
+    has5h:     fh !== null,
+    hasWk:     sd !== null,
   });
 }
 

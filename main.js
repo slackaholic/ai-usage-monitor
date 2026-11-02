@@ -754,8 +754,14 @@ function fetchClaudeCodeProfileEmail(token) {
 // accounts already render a missing weekly figure. Anthropic stopped sending
 // the 7d pair on this plan, and the old `?? '-1'` sentinel reached the UI as
 // "200% remaining, resets soon". A utilization above 1 is real over-quota and
-// stays a negative remaining %. Returns null when even the 5h window is
-// missing — that response carries no usable numbers at all.
+// stays a negative remaining %.
+//
+// No 5h header at all is different: the plan has no 5h window. Anthropic
+// removed the 5-hour limit from Ultra (formerly Max 20x) once an account is
+// verified, and from 31 Oct 2026 this account's reply carries the 7d trio
+// alone. Reading that as "no usable numbers" left the card on Error, with no
+// log rows, for days. has5h tells the renderer to show n/a, as it does for
+// Codex. Returns null only when neither window is present.
 // nowMs is passed in so the reset formatting is testable.
 function parseUnifiedRateLimitHeaders(h, nowMs) {
   const readUtil = (win) => {
@@ -777,15 +783,18 @@ function parseUnifiedRateLimitHeaders(h, nowMs) {
   };
 
   const util5h = readUtil('5h');
-  if (util5h == null) return null;
   const util7d = readUtil('7d');
+  if (util5h == null && util7d == null) return null;
 
-  const reset5hMs = readReset('5h');
+  const reset5hMs = util5h != null ? readReset('5h') : 0;
   const reset7dMs = util7d != null ? readReset('7d') : 0;
 
   return {
-    pct5h:     Math.round((1 - util5h) * 100),
+    pct5h:     util5h != null ? Math.round((1 - util5h) * 100) : null,
     pct7d:     util7d != null ? Math.round((1 - util7d) * 100) : null,
+    // A header that is present but unreadable is a gap ("—"), not a plan
+    // without the window ("n/a").
+    has5h:     h['anthropic-ratelimit-unified-5h-utilization'] != null,
     reset5h:   reset5hMs > 0 ? fmtReset(reset5hMs) : null,
     reset7d:   reset7dMs > 0 ? fmtReset(reset7dMs) : null,
     reset5hMs,  // epoch ms — exact reset timestamp from API header
