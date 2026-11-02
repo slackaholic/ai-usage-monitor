@@ -711,6 +711,54 @@ test('dayBurnSince: a refill seen between close polls adds no use of its own', (
   assert.equal(dayBurnSince(rows, ms(4, 0)), 1);
 });
 
+// ── Resets that show only in the reset time (final review, 2 Nov 2026) ──
+// A reset inside a polling gap can leave the reading LOWER than before it, so
+// the only sign is a reset time that moved: the week the later poll is in
+// began after the earlier poll was read.
+
+test('dayBurnSince: an early reset seen only as a moved reset time counts from 100', () => {
+  // Codex, 16 Oct 2026: 98 on 12 Oct (reset 19 Oct), then 89 on 16 Oct with
+  // the reset moved to 22 Oct. The new week began 15 Oct 08:16, so the use is
+  // 11 points from 100 spread from then, not the 9-point fall.
+  const rows = [row(2, 15, 7, 98, ms(9, 8, 9)), row(6, 12, 18, 89, ms(12, 8, 16))];
+  near(dayBurnSince(rows, ms(6, 0)), 11 * (ms(6, 12, 18) - ms(6, 0)) / (ms(6, 12, 18) - ms(5, 8, 16)));
+});
+
+test('dayBurnSince: readings of 100 after a moved reset are kept, though a gap follows each', () => {
+  // Codex, 19-20 Oct 2026: 86, then two readings of 100 four hours apart with
+  // the reset moved four days, then 97 the next day. Dropping the 100s as
+  // unconfirmed rises left 86 -> 97, which counted nothing.
+  const rows = [
+    row(2, 15, 53, 86, ms(8, 8, 16)), row(5, 11, 36, 100, ms(12, 7, 58)),
+    row(5, 15, 24, 100, ms(12, 7, 58)), row(6, 14, 13, 97, ms(12, 7, 58)),
+  ];
+  near(dayBurnSince(rows, ms(6, 0)), 3 * (ms(6, 14, 13) - ms(6, 0)) / (ms(6, 14, 13) - ms(5, 15, 24)));
+});
+
+test('dayBurnSince: use after a scheduled reset in a gap counts from 100 though the reading fell', () => {
+  // 40 before the Tue 13:00 reset and 35 the next morning: 65 points used
+  // since the reset, not the 5-point fall.
+  const rows = [row(2, 18, 0, 40, ms(3, 13)), row(4, 9, 0, 35, R)];
+  near(dayBurnSince(rows, ms(4, 0)), 65 * 9 / 20);
+});
+
+test('dayBurnSince: one garbled reset time before a gap is not a reset', () => {
+  // A poll that misreads the reset as 20:20 the same day, between polls that
+  // read the real one: the reset time moves six days, but no week began.
+  const rows = [row(4, 9, 0, 60, R), row(4, 9, 5, 59, ms(4, 20, 20)), row(4, 12, 0, 55, R)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 5);
+});
+
+test('dayBurnSince: the 27 Oct bad low reading with its garbled reset time adds no use', () => {
+  // Claude Desktop, 27 Oct 2026: 92 (reset 12:59:59) -> 91 (reset 20:20 that
+  // day) -> 92 (reset 13:00).
+  const rows = [
+    row(4, 17, 56, 92, R - 55), row(4, 17, 58, 92, R - 55), row(4, 18, 0, 91, ms(4, 20, 20)),
+    row(4, 18, 2, 92, R), row(4, 18, 4, 92, R), row(4, 18, 30, 91, R),
+  ];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 1);
+});
+
 test('dayBurnSince: no rows is no use', () => {
   assert.equal(dayBurnSince([], ms(4, 0)), 0);
 });
@@ -737,6 +785,11 @@ test('weeklyCycleStart: a bad reading does not restart it', () => {
 test('weeklyCycleStart: a partial refill does not restart it', () => {
   const rows = [row(4, 9, 0, 67, R), row(4, 13, 0, 83, R), row(4, 13, 2, 83, R)];
   assert.equal(weeklyCycleStart(rows), ms(3, 13));
+});
+
+test('weeklyCycleStart: an early reset seen as a moved reset time starts when the new week began', () => {
+  const rows = [row(2, 15, 7, 98, ms(9, 8, 9)), row(6, 12, 18, 89, ms(12, 8, 16))];
+  assert.equal(weeklyCycleStart(rows), ms(5, 8, 16));
 });
 
 test('weeklyCycleStart: nothing to go on', () => {

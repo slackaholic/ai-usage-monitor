@@ -249,24 +249,45 @@ function scheduledResetBetween(a, b) {
   return a.reset7dTs > 0 && tsMs(a) < a.reset7dTs && a.reset7dTs <= tsMs(b);
 }
 
-// A rise that is a real reset: the scheduled one, or an early refill that
-// lands near full. Codex on 29 Oct 2026 rose 67 -> 83 with the reset time
-// unchanged, a partial refill; counting it as a reset would have added 17
-// points of use that never happened.
+// A new week began between two polls: the week b is in started after a was
+// read. A reset inside a polling gap can leave the reading LOWER than before
+// it, so the moved reset time is the only sign: Codex on 16 Oct 2026 read 98
+// (reset 19 Oct) and then 89 (reset 22 Oct). The move must be real, not
+// sub-second jitter, and a garbled reset time on one poll (Claude Desktop,
+// 27 Oct 2026, 20:20 that day) never puts a week's start between the polls.
+function newWeekBetween(a, b) {
+  if (!(a.reset7dTs > 0 && b.reset7dTs > 0)) return false;
+  const start = b.reset7dTs - WINDOW_MS.wk;
+  return b.reset7dTs - a.reset7dTs >= ACTIVE_GAP_MAX && tsMs(a) < start && start <= tsMs(b);
+}
+
+// A real reset: a new week began, whichever way the reading moved, or a rise
+// at the scheduled reset, or an early refill that lands near full. Codex on
+// 29 Oct 2026 rose 67 -> 83 with the reset time unchanged, a partial refill;
+// counting it as a reset would have added 17 points of use that never
+// happened.
 function isWeeklyReset(a, b) {
-  return b.wk > a.wk && (scheduledResetBetween(a, b)
-    || (b.wk - a.wk > RESET_JUMP_MIN && b.wk >= 100 - RESET_JUMP_MIN));
+  return newWeekBetween(a, b) || (b.wk > a.wk && (scheduledResetBetween(a, b)
+    || (b.wk - a.wk > RESET_JUMP_MIN && b.wk >= 100 - RESET_JUMP_MIN)));
+}
+
+// When the new week began, for a reset isWeeklyReset accepts; null when only
+// the refill itself shows it.
+function resetStartBetween(a, b) {
+  if (scheduledResetBetween(a, b)) return a.reset7dTs;
+  if (newWeekBetween(a, b)) return b.reset7dTs - WINDOW_MS.wk;
+  return null;
 }
 
 // A bad high reading that was the last poll before a gap never springs back
 // within dropSpikes' window, so a rise must be confirmed by the next poll
-// within ACTIVE_GAP_MAX, unless the scheduled reset explains it.
+// within ACTIVE_GAP_MAX, unless the scheduled reset or a new week explains it.
 function dropUnconfirmedRises(points) {
   const out = [];
   for (let i = 0; i < points.length; i++) {
     const prev = out.length ? out[out.length - 1] : null;
     const p = points[i];
-    if (prev && p.wk > prev.wk && !scheduledResetBetween(prev, p)) {
+    if (prev && p.wk > prev.wk && !scheduledResetBetween(prev, p) && !newWeekBetween(prev, p)) {
       const next = points[i + 1];
       if (!(next && tsMs(next) - tsMs(p) < ACTIVE_GAP_MAX)) continue;
     }
@@ -283,7 +304,8 @@ function weeklyPoints(snapshots) {
 // Weekly points used since sinceMs (local midnight, passed in). Every fall
 // counts, across polling gaps too. An interval that straddles sinceMs counts
 // only the share of it after sinceMs. Use after a reset seen across a gap is
-// measured from 100, from the scheduled reset when that fell in the gap.
+// measured from 100 whichever way the reading moved, from when the new week
+// began when that is known.
 function dayBurnSince(snapshots, sinceMs) {
   const pts = weeklyPoints(snapshots);
   let sum = 0;
@@ -293,11 +315,12 @@ function dayBurnSince(snapshots, sinceMs) {
     if (!(tb > sinceMs)) continue;
     let use = 0;
     let start = tsMs(a);
-    if (b.wk < a.wk) {
-      use = a.wk - b.wk;
-    } else if (isWeeklyReset(a, b) && tb - start >= ACTIVE_GAP_MAX) {
+    if (isWeeklyReset(a, b) && tb - start >= ACTIVE_GAP_MAX) {
       use = Math.max(0, 100 - b.wk);
-      if (scheduledResetBetween(a, b)) start = a.reset7dTs;
+      const began = resetStartBetween(a, b);
+      if (began != null) start = began;
+    } else if (b.wk < a.wk) {
+      use = a.wk - b.wk;
     }
     if (!(use > 0)) continue;
     sum += start >= sinceMs ? use : use * (tb - sinceMs) / (tb - start);
@@ -314,7 +337,10 @@ function weeklyCycleStart(snapshots) {
   let detected = null;
   for (let i = 1; i < pts.length; i++) {
     const a = pts[i - 1], b = pts[i];
-    if (isWeeklyReset(a, b)) detected = scheduledResetBetween(a, b) ? a.reset7dTs : tsMs(b);
+    if (isWeeklyReset(a, b)) {
+      const began = resetStartBetween(a, b);
+      detected = began != null ? began : tsMs(b);
+    }
   }
   const fromReset = reset != null ? reset - WINDOW_MS.wk : null;
   if (fromReset == null || detected == null) return fromReset != null ? fromReset : detected;
