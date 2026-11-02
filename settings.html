@@ -22,17 +22,8 @@
   input[type="text"], input[type="number"], input[type="date"], select {
     flex: 1; min-width: 0; background: rgba(255,255,255,.06); border: 1px solid var(--border);
     color: var(--text); border-radius: 4px; padding: 3px 6px; font-size: 12px; }
-  /* NB: must out-specify the input[type="date"] rule above (0,1,1) — a bare
-     `.tier-date` (0,1,0) loses to it and the date field silently becomes flex:1. */
-  input[type="date"].tier-date { flex: 0 0 118px; }
   /* Keep the price field usable once min-width:0 lets flex items shrink. */
   .row input[type="number"] { min-width: 64px; }
-  .mini-btn {
-    flex: 0 0 auto; padding: 3px 7px; font-size: 10px; border-radius: 4px;
-    border: 1px solid var(--border); background: transparent;
-    color: var(--text-mid); cursor: pointer;
-  }
-  .mini-btn:hover { color: var(--accent); border-color: var(--accent); }
   input:focus, select:focus { outline: none; border-color: var(--accent); }
   input[type="range"] { flex: 1; accent-color: var(--accent); }
   .suffix { color: var(--text-mid); width: 38px; }
@@ -84,14 +75,13 @@
   <div class="section">
     <div class="section-title">Accounts</div>
     <div id="account-rows"></div>
-    <div class="note">Plan price (USD/mo) drives cost estimates; the date is when that plan/tier last changed — the weekly-budget ratio ignores usage logged before it, leave blank to use all history. Multiplier drives the Analytics <b>Plan Fit</b> card (your plan's capacity relative to base, 1×). Label override replaces the auto-detected account name everywhere in the app.</div>
+    <div class="note">Plan price (USD/mo) drives cost estimates. Multiplier drives the Analytics <b>Plan Fit</b> card (your plan's capacity relative to base, 1×). Label override replaces the auto-detected account name everywhere in the app.</div>
   </div>
 
   <div class="section">
     <div class="section-title">Weekly budget</div>
-    <div class="row"><label>Per 5h window</label><input type="number" id="budget-window" min="0.1" step="0.1" value="10"><span class="suffix">% wk</span></div>
     <div class="row"><label>Per day</label><input type="number" id="budget-day" min="0.1" step="0.1" value="20"><span class="suffix">% wk</span></div>
-    <div class="note">How much of the <b>weekly</b> quota you intend to spend per 5h window and per day. Drives the budget marker on the 5h bars and the Analytics budget cards. Defaults (10% / 20%) give a 5-day week of two windows per day.</div>
+    <div class="note">How much of the <b>weekly</b> quota you intend to spend per day. Drives the Today tile and week line on each card and the Analytics budget cards. The default of 20% gives a five-day week.</div>
   </div>
 
   <div class="section">
