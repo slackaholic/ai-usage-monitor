@@ -406,90 +406,90 @@ test('renderStats Plan Fit falls back to 1x for an unset Claude Code (not 20x)',
   assert.doesNotMatch(container.innerHTML, /20x -&gt;|20x ->/);
 });
 
-test('renderStats shows Window Budget and Today Budget cards from the budget ratio', () => {
-  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
-  const container = new FakeElement();
-  const entries = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1, reset7dTs: Date.parse('2026-07-21T08:00:00Z') },
-    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70,   reset7dTs: Date.parse('2026-07-21T08:00:00Z') },
-  ];
-  // 5h remaining 60 → 40% burned; ratio 0.2 → 8.0% weekly-equivalent this window.
-  renderStats(entries, container, { budgetTargets: { window: 10, day: 20 } },
-              { ratio: 0.2, dayWeeklyBurnPct: 12.5 });
+// ── Daily budget cards (2 Nov 2026) ──
+// The budget figures are get-budget-info's, so these cards agree with the
+// main window; the four runway cards take their colour from the same plan rule.
+const nov = (d, h, m = 0) => new Date(2026, 10, d, h, m).getTime();   // 3 Nov 2026 is a Tuesday
+const B = { dayBurnPct: 1, weeklyRemainingPct: 74, weeklyResetTs: nov(10, 13), cycleStartTs: nov(3, 13) };
+const NOW = nov(4, 10);
+const WEEKLY_ONLY = [
+  { ts: '2026-07-20T08:00:00Z', '5h': null, wk: 72.1, reset7dTs: Date.parse('2026-07-21T08:00:00Z') },
+  { ts: '2026-07-20T08:30:00Z', '5h': null, wk: 70,   reset7dTs: Date.parse('2026-07-21T08:00:00Z') },
+];
+const RUNWAY_CARDS = ['Weekly Runway', 'Reset Gap', 'Plan Fit', 'At Reset'];
 
-  assert.match(container.innerHTML, /Window Budget/);
-  assert.match(container.innerHTML, /8\.0% \/ 10%/);
-  assert.match(container.innerHTML, /Today.s Budget/);
-  assert.match(container.innerHTML, /12\.5% \/ 20%/);
+function renderBudgetStats(budget, { settings = {}, entries = WEEKLY_ONLY, now = NOW } = {}) {
+  const ctx = loadStatsRenderer({ querySelector: () => null });
+  const container = new FakeElement();
+  ctx.renderStats(entries, container, settings, budget, now);
+  return { html: container.innerHTML, fmtRunwayDate: ctx.fmtRunwayDate };
+}
+
+function card(html, label) {
+  const m = html.match(new RegExp(`stat-card ([a-z]*)">\\s*<div class="label">${label}</div>`
+    + `\\s*<div class="value">([^<]*)</div>\\s*<div class="sub">([^<]*)</div>`));
+  assert.ok(m, `expected a ${label} card`);
+  return { cls: m[1], value: m[2], sub: m[3] };
+}
+
+test("renderStats Today's Budget shows the tile's figure for a weekly-only account", () => {
+  const { html } = renderBudgetStats(B);
+  assert.deepStrictEqual(card(html, "Today's Budget"),
+    { cls: 'green', value: '19.0%', sub: 'of 20% · resets at midnight' });
+  assert.doesNotMatch(html, /need more history/);
 });
 
-test('renderStats budget cards show em-dash when the ratio is unknown', () => {
-  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
-  const container = new FakeElement();
-  const entries = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1 },
-    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70 },
-  ];
-  renderStats(entries, container, {}, { ratio: null, dayWeeklyBurnPct: 0 });
-
-  assert.match(container.innerHTML, /Window Budget/);
-  assert.match(container.innerHTML, /need more history/);
+test("renderStats Week Budget matches the card's week line", () => {
+  const { html, fmtRunwayDate } = renderBudgetStats(B);
+  assert.deepStrictEqual(card(html, 'Week Budget'),
+    { cls: '', value: '≈ 3.7 days at 20%', sub: 'on plan · resets ' + fmtRunwayDate(B.weeklyResetTs) });
+  assert.doesNotMatch(html, /Window Budget/);
 });
 
-test('renderStats budget cards explain a null ratio caused by a tier change', () => {
-  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
-  const container = new FakeElement();
-  const entries = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1 },
-    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70 },
-  ];
-  renderStats(entries, container, {},
-              { ratio: null, dayWeeklyBurnPct: 0, tierChangedAt: Date.parse('2026-07-19T00:00:00Z') });
-
-  assert.match(container.innerHTML, /need more history since tier change/);
+test('renderStats behind plan turns Week Budget and the four runway cards red', () => {
+  const { html } = renderBudgetStats({ ...B, weeklyRemainingPct: 50, dayBurnPct: 0 }, { now: nov(4, 22) });
+  const week = card(html, 'Week Budget');
+  assert.strictEqual(week.cls, 'red');
+  assert.ok(week.sub.startsWith('behind plan by 0.5 days'), week.sub);
+  for (const label of RUNWAY_CARDS) assert.strictEqual(card(html, label).cls, 'red', label);
 });
 
-test('renderStats budget cards use the generic message when no tier change is set', () => {
-  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
-  const container = new FakeElement();
+test('renderStats an on-plan week keeps the runway cards green even when the pace runs out early', () => {
+  // The runaway pace of the "won't fit" test above: the projection runs out
+  // long before the reset, yet the week is on plan, so nothing turns red.
+  const reset = Date.parse('2026-07-04T01:30:00Z');
   const entries = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1 },
-    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70 },
+    { ts: '2026-06-29T08:00:00Z', '5h': 30, wk: 21.1, reset7dTs: reset },
+    { ts: '2026-06-29T08:10:00Z', '5h': 25, wk: 20.4, reset7dTs: reset },
+    { ts: '2026-06-29T08:20:00Z', '5h': 20, wk: 19.7, reset7dTs: reset },
+    { ts: '2026-06-29T08:30:00Z', '5h': 15, wk: 19.0, reset7dTs: reset },
   ];
-  renderStats(entries, container, {}, { ratio: null, dayWeeklyBurnPct: 0, tierChangedAt: null });
-
-  assert.match(container.innerHTML, /need more history/);
-  assert.doesNotMatch(container.innerHTML, /since tier change/);
+  const { html } = renderBudgetStats(B, { entries, settings: { planMultipliers: { codex: 5 } } });
+  assert.match(html, /runs out before reset/);
+  for (const label of RUNWAY_CARDS) assert.strictEqual(card(html, label).cls, 'green', label);
 });
 
-test('renderStats Window Budget shows the ratio scope when a tier change is declared', () => {
-  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
-  const container = new FakeElement();
-  const entries = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1 },
-    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70 },
-  ];
-  renderStats(entries, container, { budgetTargets: { window: 10, day: 20 } },
-              { ratio: 0.2, dayWeeklyBurnPct: 12.5, tierChangedAt: Date.parse('2026-07-20T00:00:00Z') });
-
-  // The ratio-derived card is scoped...
-  assert.match(container.innerHTML, /weekly-equivalent burn this window · ratio since \d+ \w+/);
-  // ...but Today's Budget is raw weekly burn, so it must NOT claim a ratio scope.
-  assert.match(container.innerHTML, /weekly burn today<\/div>/);
+test('renderStats a used-up week reads used up and turns the runway cards red', () => {
+  const { html } = renderBudgetStats({ ...B, weeklyRemainingPct: 0 }, { now: nov(9, 23) });
+  assert.strictEqual(card(html, 'Week Budget').value, 'used up');
+  for (const label of RUNWAY_CARDS) assert.strictEqual(card(html, label).cls, 'red', label);
 });
 
-test('renderStats Window Budget omits the scope when no tier change is declared', () => {
-  const { renderStats } = loadStatsRenderer({ querySelector: () => null });
-  const container = new FakeElement();
-  const entries = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 90, wk: 72.1 },
-    { ts: '2026-07-20T08:30:00Z', '5h': 60, wk: 70 },
-  ];
-  renderStats(entries, container, { budgetTargets: { window: 10, day: 20 } },
-              { ratio: 0.2, dayWeeklyBurnPct: 12.5, tierChangedAt: null });
+test('renderStats with no budget figures leaves the budget and runway cards dim', () => {
+  const { html } = renderBudgetStats({});
+  assert.deepStrictEqual(card(html, "Today's Budget"),
+    { cls: 'dim', value: '—', sub: 'waiting for budget data' });
+  assert.deepStrictEqual(card(html, 'Week Budget'),
+    { cls: 'dim', value: '—', sub: 'waiting for a weekly reading' });
+  for (const label of RUNWAY_CARDS) assert.strictEqual(card(html, label).cls, 'dim', label);
+});
 
-  assert.match(container.innerHTML, /weekly-equivalent burn this window/);
-  assert.doesNotMatch(container.innerHTML, /ratio since/);
+test('renderStats target 25', () => {
+  const { html } = renderBudgetStats({ ...B, dayBurnPct: 5 }, { settings: { budgetTargets: { day: 25 } } });
+  const today = card(html, "Today's Budget");
+  assert.strictEqual(today.value, '20.0%');
+  assert.strictEqual(today.sub, 'of 25% · resets at midnight');
+  assert.strictEqual(card(html, 'Week Budget').value, '≈ 3.0 days at 25%');
 });
 
 // ── buildAccountTabs ─────────────────────────────────────────────────────

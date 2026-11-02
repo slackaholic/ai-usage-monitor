@@ -49,7 +49,7 @@ function loadRegistration() {
   vm.runInContext(source.slice(start, end), context);
   vm.runInContext(
     'Object.assign(globalThis, { accountOverrides, hasData, cachedData, ' +
-    'trendHistory, LOG_ACCOUNT, lastPct5h, sessionStore, PROVIDERS });',
+    'trendHistory, LOG_ACCOUNT, sessionStore, PROVIDERS });',
     context);
   return context;
 }
@@ -335,7 +335,6 @@ test('registering an account seeds every registry it needs', () => {
 
   assert.strictEqual(c.hasData.gemini, false);
   assert.strictEqual(c.cachedData.gemini, null);
-  assert.strictEqual(c.lastPct5h.gemini, null);
   assert.strictEqual(c.accountOverrides.gemini, '');
   assert.strictEqual(c.LOG_ACCOUNT.gemini, 'gemini');
   // The series were built inside the vm context, so their prototype is that
@@ -367,7 +366,6 @@ test('re-registering an account preserves the data it already has', () => {
   // The registries the brief's own two assertions leave unwatched. Each is
   // state a card rebuild would silently blank if registration reset it.
   c.cachedData.codex = { pctWk: 90 };
-  c.lastPct5h.codex = 42;
   c.accountOverrides.codex = 'Work';
   c.trendHistory['codex-5h'].push(55);
   c.sessionStore.codex.start = '2026-10-07T08:00:00.000Z';
@@ -379,7 +377,6 @@ test('re-registering an account preserves the data it already has', () => {
   assert.deepStrictEqual([...c.trendHistory['codex-wk']], [90]);
   assert.deepStrictEqual([...c.trendHistory['codex-5h']], [55]);
   assert.strictEqual(c.cachedData.codex.pctWk, 90);
-  assert.strictEqual(c.lastPct5h.codex, 42);
   assert.strictEqual(c.accountOverrides.codex, 'Work');
   assert.strictEqual(c.sessionStore.codex.start, '2026-10-07T08:00:00.000Z');
   assert.strictEqual(c.sessionStore.codex.lastPct, 42);

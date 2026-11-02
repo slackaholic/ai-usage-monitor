@@ -179,51 +179,6 @@ function weeklyRunway(snapshots, currentPlanMultiplier) {
   };
 }
 
-// Minimum total 5h burn (in percentage points) before a measured ratio is trusted.
-const MIN_RATIO_EVIDENCE_PCT = 20;
-
-// Aggregate weekly-% burned per 1% of 5h burned, from ACTIVE drops only
-// (positive drop, gap < ACTIVE_GAP_MAX) — excludes resets and idle gaps.
-// Returns null when the evidence is too thin to trust.
-function weeklyPerFiveHourRatio(snapshots, sinceMs) {
-  let sum5h = 0, sumWk = 0;
-  // Both meters are judged: a bad poll corrupts whichever one it misread, and
-  // skipping the rise while banking the fall adds a large dw against ~0 d5 —
-  // inflating the numerator alone. One such poll on the codex log doubled it.
-  const pts = dropSpikes(
-    dropSpikes((snapshots || []).filter(s => s && s['5h'] != null && s.wk != null), 'wk'),
-    '5h');
-  for (let i = 1; i < pts.length; i++) {
-    // Optional cutoff: ignore intervals recorded before a declared tier change.
-    // Omitted / non-finite sinceMs means no filtering (full history).
-    if (Number.isFinite(sinceMs)) {
-      const t = new Date(pts[i].ts).getTime();
-      if (!Number.isFinite(t) || t < sinceMs) continue;
-    }
-    const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
-    if (!(dt > 0) || dt >= ACTIVE_GAP_MAX) continue;
-    const d5 = pts[i - 1]['5h'] - pts[i]['5h'];
-    const dw = pts[i - 1].wk - pts[i].wk;
-    // Pair the meters: if EITHER reset (negative drop = quota refill), this
-    // interval's data isn't comparable — skip it rather than counting only the
-    // surviving signal, which would bias the ratio (5h resets ~4-5x/day).
-    if (d5 < 0 || dw < 0) continue;
-    sum5h += d5;
-    sumWk += dw;
-  }
-  if (sum5h < MIN_RATIO_EVIDENCE_PCT || sumWk <= 0) return null;
-  return sumWk / sum5h;
-}
-
-// How much of a 5h window a weekly-% target is worth. Clamped to [0,100]: a low
-// ratio can imply >100%, meaning a whole window fits inside the weekly budget.
-function fiveHourAllowancePct(targetWeeklyPct, ratio) {
-  if (!(ratio > 0) || !(targetWeeklyPct > 0)) return null;
-  return Math.max(0, Math.min(100, targetWeeklyPct / ratio));
-}
-
-// Weekly % burned since a timestamp (active drops only). sinceMs is a parameter
-// so this module never reads the clock.
 // A bad reading — a poll that parsed the wrong row, or a provider hiccup —
 // shows up as a point ABOVE its neighbours that springs straight back. Every
 // burn function here counts falls and ignores rises, so such a point is never
@@ -238,7 +193,7 @@ function fiveHourAllowancePct(targetWeeklyPct, ratio) {
 // 32 points to a real 18, and a 5h 95 -> 100 -> 95 episode spanning six polls.
 //
 // `win` is the field to judge ('wk' or '5h'): a bad poll corrupts whichever
-// meter it misread, and the paired ratio needs both judged.
+// meter it misread.
 function dropSpikes(points, win) {
   const out = [];
   for (let i = 0; i < points.length; i++) {
@@ -257,21 +212,227 @@ function dropSpikes(points, win) {
   return out;
 }
 
-function weeklyBurnSince(snapshots, sinceMs) {
+// ── Daily budget: today's weekly use and the cycle start ──
+// The daily budget counts falls across polling gaps too (work done while the
+// app was closed or asleep is still use), which makes a bad reading costlier
+// than it is for the burn functions above. So the weekly series is cleaned
+// three ways before anything is counted, and a reset is told apart from a
+// partial refill. Every rule here was checked against the real log.
+
+const tsMs = (p) => new Date(p.ts).getTime();
+
+// A bad LOW reading is the mirror of a bad high one: a run below its
+// predecessor that springs straight back. Across a gap its fall would be
+// banked as use, so it is dropped. The return must land between the
+// predecessor's level and RESET_JUMP_MIN above it; a run that comes back far
+// higher is a reset after real use, not a misread. Observed: Claude Desktop,
+// 27 Oct 2026, wk 92 -> 91 -> 92 with jumbled reset times.
+function dropDips(points, win) {
+  const out = [];
+  for (let i = 0; i < points.length; i++) {
+    const prev = out.length ? out[out.length - 1] : null;
+    if (prev && points[i][win] < prev[win]) {
+      let j = i;
+      while (j < points.length && points[j][win] < prev[win]) j++;
+      const springsBack = j < points.length
+        && (new Date(points[j].ts) - new Date(points[i].ts)) < ACTIVE_GAP_MAX
+        && points[j][win] <= prev[win] + RESET_JUMP_MIN;
+      if (springsBack) { i = j - 1; continue; }
+    }
+    out.push(points[i]);
+  }
+  return out;
+}
+
+// The scheduled weekly reset fell between two polls.
+function scheduledResetBetween(a, b) {
+  return a.reset7dTs > 0 && tsMs(a) < a.reset7dTs && a.reset7dTs <= tsMs(b);
+}
+
+// A new week began between two polls: the week b is in started after a was
+// read. A reset inside a polling gap can leave the reading LOWER than before
+// it, so the moved reset time is the only sign: Codex on 16 Oct 2026 read 98
+// (reset 19 Oct) and then 89 (reset 22 Oct). The move must be real, not
+// sub-second jitter, and a garbled reset time on one poll (Claude Desktop,
+// 27 Oct 2026, 20:20 that day) never puts a week's start between the polls.
+function newWeekBetween(a, b) {
+  if (!(a.reset7dTs > 0 && b.reset7dTs > 0)) return false;
+  const start = b.reset7dTs - WINDOW_MS.wk;
+  return b.reset7dTs - a.reset7dTs >= ACTIVE_GAP_MAX && tsMs(a) < start && start <= tsMs(b);
+}
+
+// A real reset: a new week began, whichever way the reading moved, or a rise
+// at the scheduled reset, or an early refill that lands near full. Codex on
+// 29 Oct 2026 rose 67 -> 83 with the reset time unchanged, a partial refill;
+// counting it as a reset would have added 17 points of use that never
+// happened.
+function isWeeklyReset(a, b) {
+  return newWeekBetween(a, b) || (b.wk > a.wk && (scheduledResetBetween(a, b)
+    || (b.wk - a.wk > RESET_JUMP_MIN && b.wk >= 100 - RESET_JUMP_MIN)));
+}
+
+// When the new week began, for a reset isWeeklyReset accepts; null when only
+// the refill itself shows it.
+function resetStartBetween(a, b) {
+  if (scheduledResetBetween(a, b)) return a.reset7dTs;
+  if (newWeekBetween(a, b)) return b.reset7dTs - WINDOW_MS.wk;
+  return null;
+}
+
+// A bad high reading that was the last poll before a gap never springs back
+// within dropSpikes' window, so a rise must be confirmed by the next poll
+// within ACTIVE_GAP_MAX, unless the scheduled reset or a new week explains it.
+function dropUnconfirmedRises(points) {
+  const out = [];
+  for (let i = 0; i < points.length; i++) {
+    const prev = out.length ? out[out.length - 1] : null;
+    const p = points[i];
+    if (prev && p.wk > prev.wk && !scheduledResetBetween(prev, p) && !newWeekBetween(prev, p)) {
+      const next = points[i + 1];
+      if (!(next && tsMs(next) - tsMs(p) < ACTIVE_GAP_MAX)) continue;
+    }
+    out.push(p);
+  }
+  return out;
+}
+
+function weeklyPoints(snapshots) {
+  const pts = (snapshots || []).filter(s => s && s.wk != null && Number.isFinite(tsMs(s)));
+  return dropUnconfirmedRises(dropDips(dropSpikes(pts, 'wk'), 'wk'));
+}
+
+// Weekly points used since sinceMs (local midnight, passed in). Every fall
+// counts, across polling gaps too. An interval that straddles sinceMs counts
+// only the share of it after sinceMs. Use after a reset seen across a gap is
+// measured from 100 whichever way the reading moved, from when the new week
+// began when that is known.
+function dayBurnSince(snapshots, sinceMs) {
+  const pts = weeklyPoints(snapshots);
   let sum = 0;
-  const pts = dropSpikes((snapshots || []).filter(s => s && s.wk != null), 'wk');
   for (let i = 1; i < pts.length; i++) {
-    const t = new Date(pts[i].ts).getTime();
-    // Known, accepted approximation: an active interval that STRADDLES sinceMs
-    // is counted in full (only the later point is tested). Bounded by
-    // ACTIVE_GAP_MAX (<15 min), and there is no sub-interval data to pro-rate.
-    if (!Number.isFinite(t) || t < sinceMs) continue;
-    const dt = new Date(pts[i].ts) - new Date(pts[i - 1].ts);
-    if (!(dt > 0) || dt >= ACTIVE_GAP_MAX) continue;
-    const dw = pts[i - 1].wk - pts[i].wk;
-    if (dw > 0) sum += dw;
+    const a = pts[i - 1], b = pts[i];
+    const tb = tsMs(b);
+    if (!(tb > sinceMs)) continue;
+    let use = 0;
+    let start = tsMs(a);
+    if (isWeeklyReset(a, b) && tb - start >= ACTIVE_GAP_MAX) {
+      use = Math.max(0, 100 - b.wk);
+      const began = resetStartBetween(a, b);
+      if (began != null) start = began;
+    } else if (b.wk < a.wk) {
+      use = a.wk - b.wk;
+    }
+    if (!(use > 0)) continue;
+    sum += start >= sinceMs ? use : use * (tb - sinceMs) / (tb - start);
   }
   return sum;
+}
+
+// When the current weekly cycle began: the logged reset minus a week, or the
+// last reset seen in the log if later (an early refill that left the reset
+// time alone). null when there is neither.
+function weeklyCycleStart(snapshots) {
+  const reset = latestResetTs((snapshots || []).filter(Boolean), 'reset7dTs');
+  const pts = weeklyPoints(snapshots);
+  let detected = null;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    if (isWeeklyReset(a, b)) {
+      const began = resetStartBetween(a, b);
+      detected = began != null ? began : tsMs(b);
+    }
+  }
+  const fromReset = reset != null ? reset - WINDOW_MS.wk : null;
+  if (fromReset == null || detected == null) return fromReset != null ? fromReset : detected;
+  return Math.max(fromReset, detected);
+}
+
+// The four figures get-budget-info serves for one account. The weekly
+// remaining is the raw latest reading, as the weekly tile shows it.
+function dayBudgetInfo(snapshots, midnightMs) {
+  const rows = (snapshots || []).filter(s => s && s.wk != null);
+  if (!rows.length) {
+    return { dayBurnPct: null, weeklyRemainingPct: null, weeklyResetTs: null, cycleStartTs: null };
+  }
+  return {
+    dayBurnPct: dayBurnSince(rows, midnightMs),
+    weeklyRemainingPct: rows[rows.length - 1].wk,
+    weeklyResetTs: latestResetTs((snapshots || []).filter(Boolean), 'reset7dTs'),
+    cycleStartTs: weeklyCycleStart(snapshots),
+  };
+}
+
+// ── Daily budget: the verdict and the week line ──
+// Shared by the main window and the analytics page, so the two cannot
+// disagree. The plan rule: the cycle is on plan while the weekly points used
+// are at most target x calendar days so far (capped at the whole week). Any
+// five days at the target are on plan, with two days off anywhere and no
+// weekday logic.
+
+const DEFAULT_DAY_TARGET = 20;
+const DAY_MS = 86_400_000;
+
+function localMidnightOf(ms) {
+  const d = new Date(ms);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function dayBudgetVerdict(info, dayTarget, nowMs) {
+  const target = dayTarget > 0 ? dayTarget : DEFAULT_DAY_TARGET;
+  const i = info || {};
+  const burn = Number.isFinite(i.dayBurnPct) ? i.dayBurnPct : null;
+  const hasReset = Number.isFinite(i.weeklyResetTs);
+  const hasStart = Number.isFinite(i.cycleStartTs);
+  // A reading from before a reset that has since passed says nothing about
+  // the new week.
+  const stale = hasReset && i.weeklyResetTs <= nowMs;
+  const rem = Number.isFinite(i.weeklyRemainingPct) && !stale ? i.weeklyRemainingPct : null;
+
+  let todayRemainingPct = null;
+  let todayLevel = null;
+  if (burn != null) {
+    todayRemainingPct = rem != null ? Math.min(target - burn, rem) : target - burn;
+    if ((rem != null && rem <= 0) || burn >= 1.5 * target) todayLevel = 2;
+    else if (burn > target) todayLevel = 1;
+    else todayLevel = 0;
+  }
+  const weekDays = rem != null ? Math.max(0, rem / target) : null;
+  // Rounded, not floored: a clocks-change day is 23 or 25 hours long.
+  const daysSoFar = hasStart
+    ? Math.max(1, Math.round((localMidnightOf(nowMs) - localMidnightOf(i.cycleStartTs)) / DAY_MS) + 1)
+    : null;
+
+  let state = 'unknown';
+  let behindDays = 0;
+  if (rem != null && rem <= 0) {
+    state = 'usedUp';
+  } else if (rem != null && hasReset && hasStart) {
+    const used = 100 - rem;
+    const allowance = Math.min(100, target * daysSoFar);
+    if (used <= allowance) {
+      state = 'onPlan';
+    } else {
+      state = 'behind';
+      behindDays = (used - allowance) / target;
+    }
+  }
+  return { todayRemainingPct, todayLevel, weekDays, state, behindDays, daysSoFar };
+}
+
+function weekLine(verdict, dayTarget, resetLabel) {
+  const v = verdict || {};
+  const target = dayTarget > 0 ? dayTarget : DEFAULT_DAY_TARGET;
+  if (v.state === 'usedUp') {
+    return { head: 'used up', tail: resetLabel ? 'resets ' + resetLabel : '', tone: 'red' };
+  }
+  if (v.weekDays == null) return null;
+  const head = '≈ ' + v.weekDays.toFixed(1) + ' days at ' + target + '%';
+  if (v.state === 'onPlan') return { head, tail: 'on plan · resets ' + resetLabel, tone: 'muted' };
+  if (v.state === 'behind') {
+    const days = Math.max(0.1, v.behindDays).toFixed(1);
+    return { head, tail: 'behind plan by ' + days + ' days · resets ' + resetLabel, tone: 'red' };
+  }
+  return { head, tail: '', tone: 'muted' };
 }
 
 function hourlyBurn(snapshots, win) {
@@ -496,5 +657,5 @@ function normalizeCodexTokenUsage(u, model, timestamp) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_FRAC, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, MIN_RATIO_EVIDENCE_PCT, weeklyPerFiveHourRatio, fiveHourAllowancePct, weeklyBurnSince, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
+  module.exports = { RESET_JUMP_MIN, RESET_ADVANCE_FRAC, ACTIVE_GAP_MAX, segmentCycles, cycleStats, summarize, countDepletionEvents, weeklyRunway, dayBurnSince, weeklyCycleStart, dayBudgetInfo, DEFAULT_DAY_TARGET, dayBudgetVerdict, weekLine, hourlyBurn, monthBurnGrid, entryCost, summarizeCost, tokenMix, costByDay, costByMonth, activeMs, subscriptionValue, FAMILY_PRICES, CACHE_WRITE_MULT, CACHE_READ_MULT, MONTH_MS, modelFamily, normalizeCodexTokenUsage };
 }

@@ -260,3 +260,51 @@ test('applyAccountDetails says so rather than leaving a blank line', () => {
 
   assert.strictEqual(els[0].textContent, 'account not detected yet');
 });
+
+// ── Daily budget target (2 Nov 2026) ──
+// Settings keeps only the daily target. Saving it must not drop the stored
+// 5h-window value: saveSettings merges shallowly, so a budgetTargets object
+// built from scratch would replace the stored one wholesale.
+function loadSaveBudgetTargets(value, lastSettings) {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'settings-renderer.js'), 'utf8');
+  const start = source.indexOf('function saveBudgetTargets');
+  const end = source.indexOf('function saveOverrides');
+  assert.ok(start >= 0 && end > start, 'expected saveBudgetTargets source markers');
+
+  const saved = [];
+  const context = {
+    document: { getElementById: () => ({ value }) },
+    lastSettings,
+    BUDGET_DEFAULTS: { day: 20 },
+    window: { electronAPI: { saveSettings: (s) => saved.push(s) } },
+    parseFloat, isFinite,
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  context.saveBudgetTargets();
+  // Spread: the saved objects are built inside the vm, with their own prototypes.
+  return { saved: saved.map(s => ({ budgetTargets: { ...s.budgetTargets } })), context };
+}
+
+test('saving the daily target keeps the stored 5h-window value', () => {
+  const { saved, context } = loadSaveBudgetTargets('25', { budgetTargets: { window: 12, day: 20 } });
+  assert.deepStrictEqual(saved, [{ budgetTargets: { window: 12, day: 25 } }]);
+  assert.strictEqual(context.lastSettings.budgetTargets.day, 25);
+});
+
+test('an unusable daily target saves the default', () => {
+  const { saved } = loadSaveBudgetTargets('abc', { budgetTargets: { window: 12, day: 20 } });
+  assert.deepStrictEqual(saved, [{ budgetTargets: { window: 12, day: 20 } }]);
+});
+
+test('a first save with nothing stored writes only the day', () => {
+  const { saved } = loadSaveBudgetTargets('20', {});
+  assert.deepStrictEqual(saved, [{ budgetTargets: { day: 20 } }]);
+});
+
+test('Settings no longer offers the 5h-window target or the tier-change date', () => {
+  for (const file of ['settings.html', 'settings-renderer.js']) {
+    const text = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    assert.doesNotMatch(text, /budget-window|tier-date|tier-today|saveTierDates/, file);
+  }
+});

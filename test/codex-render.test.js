@@ -12,7 +12,7 @@ const vm = require('node:vm');
 function loadStatRenderers() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
   const start = source.indexOf('function pctColor');
-  const end = source.indexOf('function renderBudget');
+  const end = source.indexOf('// ── BUDGET ──');
   assert.ok(start >= 0 && end > start, 'expected stat-rendering source markers');
 
   const els = new Map();

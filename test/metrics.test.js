@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { segmentCycles, countDepletionEvents, weeklyRunway, weeklyPerFiveHourRatio, fiveHourAllowancePct, weeklyBurnSince, MIN_RATIO_EVIDENCE_PCT } = require('../metrics.js');
+const { segmentCycles, countDepletionEvents, weeklyRunway } = require('../metrics.js');
 
 test('segmentCycles splits on a large upward jump (reset by recovery)', () => {
   const snaps = [
@@ -611,155 +611,11 @@ test('tokenMix handles empty/undefined input and missing fields', () => {
   assert.equal(m.total, 7);
 });
 
-test('weeklyPerFiveHourRatio: aggregates active drops into a wk-per-5h ratio', () => {
-  // 5h drops 10 + 15 = 25 (>= MIN_RATIO_EVIDENCE_PCT); wk drops 2 + 3 = 5 → 0.2
-  const snaps = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
-    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 },
-    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 95 },
-  ];
-  assert.equal(weeklyPerFiveHourRatio(snaps), 0.2);
-});
-
-test('weeklyPerFiveHourRatio: ignores idle gaps and resets', () => {
-  const snaps = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
-    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 },  // active: 10 / 2
-    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 95 },  // active: 15 / 3
-    { ts: '2026-07-20T08:40:00Z', '5h': 60,  wk: 92 },  // 30m gap >= ACTIVE_GAP_MAX → excluded
-    { ts: '2026-07-20T08:45:00Z', '5h': 100, wk: 100 }, // reset (negative drop) → excluded
-  ];
-  assert.equal(weeklyPerFiveHourRatio(snaps), 0.2);
-});
-
-test('weeklyPerFiveHourRatio: returns null below the evidence floor', () => {
-  const snaps = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
-    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 }, // only 10% of 5h burn < 20
-  ];
-  assert.equal(weeklyPerFiveHourRatio(snaps), null);
-  assert.equal(weeklyPerFiveHourRatio([]), null);
-});
-
-test('weeklyPerFiveHourRatio: skips intervals where either meter reset', () => {
-  const snaps = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
-    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 },  // active: 10 / 2
-    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 95 },  // active: 15 / 3
-    // 5h resets (refill) while weekly keeps dropping — must NOT contribute wk
-    { ts: '2026-07-20T08:15:00Z', '5h': 100, wk: 94 },
-  ];
-  assert.equal(weeklyPerFiveHourRatio(snaps), 0.2); // 5/25 — not 6/25
-});
-
-test('fiveHourAllowancePct: converts a weekly target into 5h-window %, clamped to 100', () => {
-  const v = fiveHourAllowancePct(10, 0.1932);          // measured real-log ratio
-  assert.ok(Math.abs(v - 51.76) < 0.1, `got ${v}`);    // 10 / 0.1932
-  assert.equal(fiveHourAllowancePct(10, 0.05), 100);   // would be 200 → clamped
-  assert.equal(fiveHourAllowancePct(10, 0), null);
-  assert.equal(fiveHourAllowancePct(10, null), null);
-  assert.equal(fiveHourAllowancePct(0, 0.2), null);
-});
-
-test('weeklyBurnSince: sums only active weekly drops at or after the boundary', () => {
-  const since = Date.parse('2026-07-20T00:00:00Z');
-  const snaps = [
-    { ts: '2026-07-19T22:00:00Z', wk: 100 },
-    { ts: '2026-07-19T22:05:00Z', wk: 97 },  // before boundary → excluded
-    { ts: '2026-07-20T08:00:00Z', wk: 95 },  // ~10h gap → idle, excluded
-    { ts: '2026-07-20T08:05:00Z', wk: 93 },  // active: 2
-    { ts: '2026-07-20T08:10:00Z', wk: 90 },  // active: 3
-  ];
-  assert.equal(weeklyBurnSince(snaps, since), 5);
-});
-
-test('weeklyPerFiveHourRatio: sinceMs cutoff ignores pre-cutoff intervals', () => {
-  const since = Date.parse('2026-07-20T00:00:00Z');
-  const snaps = [
-    // Pre-cutoff burn at a DIFFERENT ratio (0.5) — must be excluded entirely.
-    { ts: '2026-07-19T08:00:00Z', '5h': 100, wk: 100 },
-    { ts: '2026-07-19T08:05:00Z', '5h': 70,  wk: 85 },
-    // Post-cutoff burn at ratio 0.2: 5h drops 10 + 15 = 25, wk drops 2 + 3 = 5.
-    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 80 },
-    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 78 },
-    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 75 },
-  ];
-  assert.equal(weeklyPerFiveHourRatio(snaps, since), 0.2);
-});
-
-test('weeklyPerFiveHourRatio: omitted or non-finite sinceMs applies no filter', () => {
-  const snaps = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
-    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 },
-    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 95 },
-  ];
-  assert.equal(weeklyPerFiveHourRatio(snaps), 0.2);
-  assert.equal(weeklyPerFiveHourRatio(snaps, undefined), 0.2);
-  assert.equal(weeklyPerFiveHourRatio(snaps, null), 0.2);
-  assert.equal(weeklyPerFiveHourRatio(snaps, NaN), 0.2);
-});
-
-test('weeklyPerFiveHourRatio: cutoff leaving too little evidence returns null', () => {
-  const since = Date.parse('2026-07-20T08:06:00Z');
-  const snaps = [
-    { ts: '2026-07-20T08:00:00Z', '5h': 100, wk: 100 },
-    { ts: '2026-07-20T08:05:00Z', '5h': 90,  wk: 98 },
-    { ts: '2026-07-20T08:10:00Z', '5h': 75,  wk: 95 }, // only 15 < 20 after cutoff
-  ];
-  assert.equal(weeklyPerFiveHourRatio(snaps, since), null);
-});
-
 // ── Bad-reading spikes (15 Oct 2026) ───────────────────────────────────────
-// weeklyBurnSince counts falls and ignores rises, so a single bad reading is
-// not self-cancelling: the rise is discarded and the fall back to the true
-// value is counted as real burn. A 68 -> 100 -> 68 blip from the scrape
-// fallback added 32 points to a real 18, reporting 49% of the weekly quota
-// spent in a day on an account that had spent 43% all week.
-test('weeklyBurnSince: a bad reading that springs back does not inject burn', () => {
-  const since = Date.parse('2026-10-15T00:00:00Z');
-  const snaps = [
-    { ts: '2026-10-15T09:57:27Z', wk: 68 },
-    { ts: '2026-10-15T09:59:48Z', wk: 100 },  // bad reading
-    { ts: '2026-10-15T10:01:27Z', wk: 68 },   // true value again
-    { ts: '2026-10-15T10:11:27Z', wk: 67 },   // the only real burn: 1
-  ];
-  assert.equal(weeklyBurnSince(snaps, since), 1);
-});
-
-test('weeklyBurnSince: a real weekly reset is still not counted as burn', () => {
-  const since = Date.parse('2026-10-13T00:00:00Z');
-  const snaps = [
-    { ts: '2026-10-13T12:55:00Z', wk: 12 },
-    { ts: '2026-10-13T13:00:00Z', wk: 100 },  // window reset - stays high
-    { ts: '2026-10-13T13:05:00Z', wk: 99 },
-    { ts: '2026-10-13T13:10:00Z', wk: 97 },
-  ];
-  assert.equal(weeklyBurnSince(snaps, since), 3);
-});
-
-test('weeklyBurnSince: a reset is still a reset when the new week later burns below the old', () => {
-  // The distinguishing mark of a bad reading is that it springs back within
-  // ONE poll gap, not that the series later dips under the pre-rise level --
-  // which every reset eventually does, and which a naive rule would read as a
-  // spike, discarding a whole week of real burn.
-  const since = Date.parse('2026-10-13T00:00:00Z');
-  const snaps = [
-    { ts: '2026-10-13T12:55:00Z', wk: 12 },
-    { ts: '2026-10-13T13:00:00Z', wk: 100 },  // reset
-    { ts: '2026-10-13T13:05:00Z', wk: 98 },   // burn: 2
-    { ts: '2026-10-14T09:00:00Z', wk: 90 },   // idle gap - not counted
-    { ts: '2026-10-14T09:05:00Z', wk: 8 },    // burn: 82, still below the old 12
-  ];
-  assert.equal(weeklyBurnSince(snaps, since), 84);
-});
-
-// ── The same one-sided exposure in the rest of the burn family ─────────────
-// hourlyBurn and monthBurnGrid count `drop > 0` and ignore rises, exactly as
-// weeklyBurnSince did. weeklyPerFiveHourRatio skips an interval when EITHER
-// meter rises -- which drops the rise but still banks the fall back to the true
-// value, where dw is large and d5 is ~0, inflating the numerator alone.
-const { weeklyPerFiveHourRatio: ratio } = require('../metrics.js');
-
+// hourlyBurn and monthBurnGrid count falls and ignore rises, so a single bad
+// reading is not self-cancelling: the rise is discarded and the fall back to
+// the true value is counted as real burn. A 68 -> 100 -> 68 blip from the
+// scrape fallback once added 32 points to a real 18.
 test('hourlyBurn: a bad reading that springs back does not inflate its hour', () => {
   const snaps = [
     { ts: '2026-10-15T09:00:00Z', wk: 68 },
@@ -785,50 +641,319 @@ test('monthBurnGrid: a bad reading does not inflate its day', () => {
   assert.ok(grid.some(r => r.date === '2026-10-15' && r.hasData));
 });
 
-test('weeklyPerFiveHourRatio: a bad weekly reading does not inflate the ratio', () => {
-  const clean = [
-    { ts: '2026-10-15T09:00:00Z', '5h': 100, wk: 50 },
-    { ts: '2026-10-15T09:05:00Z', '5h': 90,  wk: 48 },
-    { ts: '2026-10-15T09:10:00Z', '5h': 80,  wk: 46 },
-    { ts: '2026-10-15T09:15:00Z', '5h': 70,  wk: 44 },
-  ];
-  assert.equal(ratio(clean), 0.2);
+// ── Daily budget: today's use and the cycle (2 Nov 2026) ──
+// Fixtures use local wall time, so they hold in any time zone.
+const { dayBurnSince, weeklyCycleStart, dayBudgetInfo } = require('../metrics.js');
+const at = (d, h, m = 0) => new Date(2026, 10, d, h, m).toISOString(); // Nov 2026; 3 Nov is a Tuesday
+const ms = (d, h, m = 0) => new Date(2026, 10, d, h, m).getTime();
+const R = ms(10, 13);                                                    // reset Tue 10 Nov 13:00
+const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} ≈ ${b}`);
+const row = (d, h, m, wk, reset) =>
+  reset === undefined ? { ts: at(d, h, m), wk } : { ts: at(d, h, m), wk, reset7dTs: reset };
 
-  const spiked = [
-    { ts: '2026-10-15T09:00:00Z', '5h': 100, wk: 50 },
-    { ts: '2026-10-15T09:05:00Z', '5h': 90,  wk: 48 },
-    { ts: '2026-10-15T09:10:00Z', '5h': 80,  wk: 46 },
-    { ts: '2026-10-15T09:12:00Z', '5h': 80,  wk: 100 },  // bad reading
-    { ts: '2026-10-15T09:14:00Z', '5h': 80,  wk: 46 },   // true value again
-    { ts: '2026-10-15T09:15:00Z', '5h': 70,  wk: 44 },
-  ];
-  // The fall back from 100 adds 54 to the numerator against 0 of denominator:
-  // a tenfold ratio off one bad poll, and the ratio sets the budget marker.
-  assert.equal(ratio(spiked), 0.2);
+test('dayBurnSince: falls across a polling gap still count', () => {
+  const rows = [row(4, 9, 0, 80), row(4, 9, 5, 78), row(4, 14, 0, 70), row(4, 14, 5, 69)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 11);
 });
 
-test('weeklyPerFiveHourRatio: a real 5h reset is still skipped, not mistaken for one', () => {
-  const snaps = [
-    { ts: '2026-10-15T09:00:00Z', '5h': 20,  wk: 50 },
-    { ts: '2026-10-15T09:05:00Z', '5h': 100, wk: 50 },  // window reset - holds
-    { ts: '2026-10-15T09:10:00Z', '5h': 90,  wk: 48 },
-    { ts: '2026-10-15T09:15:00Z', '5h': 80,  wk: 46 },
-    { ts: '2026-10-15T09:20:00Z', '5h': 70,  wk: 44 },
-  ];
-  assert.equal(ratio(snaps), 0.2);
+test('dayBurnSince: rises are not use', () => {
+  const rows = [row(4, 9, 0, 80), row(4, 9, 5, 82), row(4, 9, 10, 82), row(4, 9, 15, 81)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 1);
 });
 
-test('weeklyPerFiveHourRatio: a bad 5h reading does not deflate the ratio either', () => {
-  // The mirror of the weekly case, and it moves the ratio the OTHER way: the
-  // fall back from a bad 5h value adds d5 against ~0 dw, inflating the
-  // denominator. Seen for real on 14 Aug (5h 95 -> 100 -> 95, six polls).
-  const spiked = [
-    { ts: '2026-10-15T09:00:00Z', '5h': 100, wk: 50 },
-    { ts: '2026-10-15T09:05:00Z', '5h': 90,  wk: 48 },
-    { ts: '2026-10-15T09:10:00Z', '5h': 80,  wk: 46 },
-    { ts: '2026-10-15T09:12:00Z', '5h': 100, wk: 46 },  // bad reading
-    { ts: '2026-10-15T09:14:00Z', '5h': 80,  wk: 46 },  // true value again
-    { ts: '2026-10-15T09:15:00Z', '5h': 70,  wk: 44 },
+test('dayBurnSince: an interval across midnight is split by time', () => {
+  const rows = [row(3, 22, 0, 60), row(4, 8, 0, 50)];
+  near(dayBurnSince(rows, ms(4, 0)), 8);
+});
+
+test('dayBurnSince: the day keeps counting across a weekly reset', () => {
+  const rows = [
+    row(3, 10, 0, 40, ms(3, 13)), row(3, 10, 5, 35, ms(3, 13)), row(3, 12, 55, 30, ms(3, 13)),
+    row(3, 13, 1, 100, R), row(3, 13, 6, 97, R),
   ];
-  assert.equal(ratio(spiked), 0.2);
+  assert.equal(dayBurnSince(rows, ms(3, 0)), 13);
+});
+
+test('dayBurnSince: use after a reset in a polling gap is measured from 100', () => {
+  const rows = [row(9, 17, 0, 10, R), row(10, 15, 0, 88, ms(17, 13)), row(10, 15, 2, 88, ms(17, 13))];
+  assert.equal(dayBurnSince(rows, ms(10, 0)), 12);
+});
+
+test('dayBurnSince: an early refill in a gap counts from 100, split by time', () => {
+  const rows = [row(6, 17, 0, 30, R), row(9, 9, 0, 90, R), row(9, 9, 2, 90, R)];
+  near(dayBurnSince(rows, ms(9, 0)), 10 * 9 / 64);
+});
+
+test('dayBurnSince: a bad high reading that springs back adds no use', () => {
+  const rows = [row(4, 9, 57, 68), row(4, 9, 59, 100), row(4, 10, 1, 68), row(4, 10, 11, 67)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 1);
+});
+
+test('dayBurnSince: a bad high reading just before a gap adds no use', () => {
+  const rows = [row(4, 9, 0, 68), row(4, 9, 1, 100), row(4, 15, 0, 60), row(4, 15, 2, 60)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 8);
+});
+
+test('dayBurnSince: a bad low reading that springs back adds no use', () => {
+  // Claude Desktop, 27 Oct 2026: 92 -> 91 -> 92 with jumbled reset times.
+  const rows = [row(4, 9, 0, 92), row(4, 9, 2, 91), row(4, 9, 4, 92), row(4, 9, 6, 92), row(4, 9, 30, 91)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 1);
+});
+
+test('dayBurnSince: a partial refill across a gap is not a reset', () => {
+  // Codex, 29 Oct 2026: 67 -> 83 with the reset time unchanged.
+  const rows = [row(4, 9, 0, 67), row(4, 13, 0, 83), row(4, 13, 2, 83)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 0);
+});
+
+test('dayBurnSince: a refill seen between close polls adds no use of its own', () => {
+  const rows = [row(4, 10, 0, 30), row(4, 10, 2, 92), row(4, 10, 4, 91)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 1);
+});
+
+// ── Resets that show only in the reset time (final review, 2 Nov 2026) ──
+// A reset inside a polling gap can leave the reading LOWER than before it, so
+// the only sign is a reset time that moved: the week the later poll is in
+// began after the earlier poll was read.
+
+test('dayBurnSince: an early reset seen only as a moved reset time counts from 100', () => {
+  // Codex, 16 Oct 2026: 98 on 12 Oct (reset 19 Oct), then 89 on 16 Oct with
+  // the reset moved to 22 Oct. The new week began 15 Oct 08:16, so the use is
+  // 11 points from 100 spread from then, not the 9-point fall.
+  const rows = [row(2, 15, 7, 98, ms(9, 8, 9)), row(6, 12, 18, 89, ms(12, 8, 16))];
+  near(dayBurnSince(rows, ms(6, 0)), 11 * (ms(6, 12, 18) - ms(6, 0)) / (ms(6, 12, 18) - ms(5, 8, 16)));
+});
+
+test('dayBurnSince: readings of 100 after a moved reset are kept, though a gap follows each', () => {
+  // Codex, 19-20 Oct 2026: 86, then two readings of 100 four hours apart with
+  // the reset moved four days, then 97 the next day. Dropping the 100s as
+  // unconfirmed rises left 86 -> 97, which counted nothing.
+  const rows = [
+    row(2, 15, 53, 86, ms(8, 8, 16)), row(5, 11, 36, 100, ms(12, 7, 58)),
+    row(5, 15, 24, 100, ms(12, 7, 58)), row(6, 14, 13, 97, ms(12, 7, 58)),
+  ];
+  near(dayBurnSince(rows, ms(6, 0)), 3 * (ms(6, 14, 13) - ms(6, 0)) / (ms(6, 14, 13) - ms(5, 15, 24)));
+});
+
+test('dayBurnSince: use after a scheduled reset in a gap counts from 100 though the reading fell', () => {
+  // 40 before the Tue 13:00 reset and 35 the next morning: 65 points used
+  // since the reset, not the 5-point fall.
+  const rows = [row(2, 18, 0, 40, ms(3, 13)), row(4, 9, 0, 35, R)];
+  near(dayBurnSince(rows, ms(4, 0)), 65 * 9 / 20);
+});
+
+test('dayBurnSince: one garbled reset time before a gap is not a reset', () => {
+  // A poll that misreads the reset as 20:20 the same day, between polls that
+  // read the real one: the reset time moves six days, but no week began.
+  const rows = [row(4, 9, 0, 60, R), row(4, 9, 5, 59, ms(4, 20, 20)), row(4, 12, 0, 55, R)];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 5);
+});
+
+test('dayBurnSince: the 27 Oct bad low reading with its garbled reset time adds no use', () => {
+  // Claude Desktop, 27 Oct 2026: 92 (reset 12:59:59) -> 91 (reset 20:20 that
+  // day) -> 92 (reset 13:00).
+  const rows = [
+    row(4, 17, 56, 92, R - 55), row(4, 17, 58, 92, R - 55), row(4, 18, 0, 91, ms(4, 20, 20)),
+    row(4, 18, 2, 92, R), row(4, 18, 4, 92, R), row(4, 18, 30, 91, R),
+  ];
+  assert.equal(dayBurnSince(rows, ms(4, 0)), 1);
+});
+
+test('dayBurnSince: no rows is no use', () => {
+  assert.equal(dayBurnSince([], ms(4, 0)), 0);
+});
+
+test('weeklyCycleStart: a week before the logged reset', () => {
+  assert.equal(weeklyCycleStart([row(4, 9, 0, 80, R), row(4, 9, 5, 79, R)]), ms(3, 13));
+});
+
+test('weeklyCycleStart: an early refill without a moved reset restarts it', () => {
+  const rows = [row(5, 10, 0, 40, R), row(5, 10, 2, 100, R), row(5, 10, 4, 99, R)];
+  assert.equal(weeklyCycleStart(rows), ms(5, 10, 2));
+});
+
+test('weeklyCycleStart: a refill across a gap restarts at the first poll after it', () => {
+  const rows = [row(6, 17, 0, 30, R), row(9, 9, 0, 90, R), row(9, 9, 2, 90, R)];
+  assert.equal(weeklyCycleStart(rows), ms(9, 9));
+});
+
+test('weeklyCycleStart: a bad reading does not restart it', () => {
+  const rows = [row(4, 9, 57, 68, R), row(4, 9, 59, 100, R), row(4, 10, 1, 68, R)];
+  assert.equal(weeklyCycleStart(rows), ms(3, 13));
+});
+
+test('weeklyCycleStart: a partial refill does not restart it', () => {
+  const rows = [row(4, 9, 0, 67, R), row(4, 13, 0, 83, R), row(4, 13, 2, 83, R)];
+  assert.equal(weeklyCycleStart(rows), ms(3, 13));
+});
+
+test('weeklyCycleStart: an early reset seen as a moved reset time starts when the new week began', () => {
+  const rows = [row(2, 15, 7, 98, ms(9, 8, 9)), row(6, 12, 18, 89, ms(12, 8, 16))];
+  assert.equal(weeklyCycleStart(rows), ms(5, 8, 16));
+});
+
+test('weeklyCycleStart: nothing to go on', () => {
+  assert.equal(weeklyCycleStart([row(4, 9, 0, 80), row(4, 9, 5, 79)]), null);
+});
+
+test('dayBudgetInfo: the four figures for one account', () => {
+  const rows = [row(4, 9, 0, 78, R), row(4, 9, 5, 76, R)];
+  assert.deepStrictEqual(dayBudgetInfo(rows, ms(4, 0)),
+    { dayBurnPct: 2, weeklyRemainingPct: 76, weeklyResetTs: R, cycleStartTs: ms(3, 13) });
+});
+
+test('dayBudgetInfo: the weekly remaining is the latest reading, as the weekly tile shows it', () => {
+  const rows = [row(4, 9, 0, 78, R), row(4, 9, 5, 100, R)];
+  assert.equal(dayBudgetInfo(rows, ms(4, 0)).weeklyRemainingPct, 100);
+});
+
+test('dayBudgetInfo: no weekly rows gives nothing to show', () => {
+  assert.deepStrictEqual(dayBudgetInfo([{ ts: at(4, 9), '5h': 50, wk: null }], ms(4, 0)),
+    { dayBurnPct: null, weeklyRemainingPct: null, weeklyResetTs: null, cycleStartTs: null });
+});
+
+// ── Daily budget: the verdict and the week line ──
+const { dayBudgetVerdict, weekLine, DEFAULT_DAY_TARGET } = require('../metrics.js');
+const CYCLE = { weeklyResetTs: R, cycleStartTs: ms(3, 13) };
+const verdictAt = (d, h, rem, burn = 0, target = 20) =>
+  dayBudgetVerdict({ ...CYCLE, weeklyRemainingPct: rem, dayBurnPct: burn }, target, ms(d, h));
+
+test('plan rule: five working days at 20, weekend off', () => {
+  for (const [d, rem] of [[3, 80], [4, 60], [5, 40], [6, 20], [7, 20], [8, 20]]) {
+    assert.equal(verdictAt(d, 23, rem).state, 'onPlan', `${d} Nov`);
+  }
+  assert.equal(verdictAt(9, 23, 0).state, 'usedUp');
+  assert.equal(verdictAt(10, 10, 0).state, 'usedUp');
+});
+
+test('plan rule: 20 every day uses the week up after the fifth day', () => {
+  for (const [d, rem] of [[3, 80], [4, 60], [5, 40], [6, 20]]) {
+    assert.equal(verdictAt(d, 23, rem).state, 'onPlan', `${d} Nov`);
+  }
+  assert.equal(verdictAt(7, 23, 0).state, 'usedUp');
+});
+
+test('plan rule: 30 on Wednesday after 20 on Tuesday is half a day behind', () => {
+  const wed = verdictAt(4, 23, 50);
+  assert.equal(wed.state, 'behind');
+  near(wed.behindDays, 0.5);
+  assert.equal(verdictAt(5, 23, 40).state, 'onPlan');
+  const thu = verdictAt(5, 23, 38);
+  assert.equal(thu.state, 'behind');
+  near(thu.behindDays, 0.1);
+});
+
+test('plan rule: 15 by the first afternoon is on plan', () => {
+  assert.equal(verdictAt(3, 17, 85).state, 'onPlan');
+});
+
+test('plan rule: an early refill restarts the days so far', () => {
+  const v = dayBudgetVerdict(
+    { weeklyRemainingPct: 70, dayBurnPct: 30, weeklyResetTs: R, cycleStartTs: ms(5, 10, 2) }, 20, ms(5, 23));
+  assert.equal(v.daysSoFar, 1);
+  assert.equal(v.state, 'behind');
+  near(v.behindDays, 0.5);
+});
+
+test('today: remaining in weekly points, coloured by use against the target', () => {
+  const v = verdictAt(4, 10, 74, 1);
+  assert.equal(v.todayRemainingPct, 19);
+  assert.equal(v.todayLevel, 0);
+  near(v.weekDays, 3.7);
+  assert.equal(verdictAt(4, 10, 74, 20).todayLevel, 0);
+  assert.equal(verdictAt(4, 10, 74, 20.1).todayLevel, 1);
+  const over = verdictAt(4, 10, 74, 24.5);
+  assert.equal(over.todayRemainingPct, -4.5);
+  assert.equal(over.todayLevel, 1);
+  assert.equal(verdictAt(4, 10, 74, 29.9).todayLevel, 1);
+  assert.equal(verdictAt(4, 10, 74, 30).todayLevel, 2);
+});
+
+test('today: capped at what the week has left', () => {
+  const v = verdictAt(4, 10, 5, 0);
+  assert.equal(v.todayRemainingPct, 5);
+  assert.equal(v.weekDays, 0.25);
+});
+
+test('today: an over-quota week reads negative and red', () => {
+  const v = verdictAt(4, 10, -3, 2);
+  assert.equal(v.todayRemainingPct, -3);
+  assert.equal(v.todayLevel, 2);
+  assert.equal(v.state, 'usedUp');
+  assert.equal(v.weekDays, 0);
+});
+
+test('no figures yet', () => {
+  const v = dayBudgetVerdict(undefined, 20, ms(4, 10));
+  assert.deepStrictEqual(
+    { todayRemainingPct: v.todayRemainingPct, todayLevel: v.todayLevel, weekDays: v.weekDays, state: v.state },
+    { todayRemainingPct: null, todayLevel: null, weekDays: null, state: 'unknown' });
+});
+
+const NO_RESET = { dayBurnPct: 1, weeklyRemainingPct: 74, weeklyResetTs: null, cycleStartTs: null };
+
+test('no reset time: days but no verdict', () => {
+  const v = dayBudgetVerdict(NO_RESET, 20, ms(4, 10));
+  assert.equal(v.state, 'unknown');
+  near(v.weekDays, 3.7);
+  assert.equal(v.todayRemainingPct, 19);
+});
+
+test('stale reset: a reading from before a reset that has passed gives no verdict', () => {
+  const v = dayBudgetVerdict({ dayBurnPct: 3, weeklyRemainingPct: 0, ...CYCLE }, 20, ms(10, 14));
+  assert.equal(v.state, 'unknown');
+  assert.equal(v.weekDays, null);
+  assert.equal(v.todayRemainingPct, 17);
+  assert.equal(v.todayLevel, 0);
+});
+
+test('clock changes: days so far counts calendar days', () => {
+  const daysAt = (start, reset, now) => dayBudgetVerdict(
+    { weeklyRemainingPct: 80, dayBurnPct: 0, weeklyResetTs: reset.getTime(), cycleStartTs: start.getTime() },
+    20, now.getTime()).daysSoFar;
+  // UK clocks go forward on 28 Mar 2027 and back on 25 Oct 2026.
+  assert.equal(daysAt(new Date(2027, 2, 23, 13), new Date(2027, 2, 30, 13), new Date(2027, 2, 29, 10)), 7);
+  assert.equal(daysAt(new Date(2026, 9, 20, 13), new Date(2026, 9, 27, 13), new Date(2026, 9, 26, 10)), 7);
+});
+
+test('target 25', () => {
+  const v = verdictAt(4, 23, 50, 0, 25);
+  assert.equal(v.state, 'onPlan');
+  assert.equal(v.weekDays, 2);
+  assert.equal(v.todayRemainingPct, 25);
+});
+
+test('a missing or zero target falls back to 20', () => {
+  assert.equal(verdictAt(4, 10, 74, 1, 0).todayRemainingPct, 19);
+  assert.equal(DEFAULT_DAY_TARGET, 20);
+});
+
+test('weekLine: on plan', () => {
+  assert.deepStrictEqual(weekLine(verdictAt(4, 10, 74, 1), 20, 'Tue 13:00'),
+    { head: '≈ 3.7 days at 20%', tail: 'on plan · resets Tue 13:00', tone: 'muted' });
+});
+
+test('weekLine: behind', () => {
+  assert.deepStrictEqual(weekLine(verdictAt(4, 22, 50), 20, 'Tue 13:00'),
+    { head: '≈ 2.5 days at 20%', tail: 'behind plan by 0.5 days · resets Tue 13:00', tone: 'red' });
+});
+
+test('weekLine: used up comes first', () => {
+  assert.deepStrictEqual(weekLine(verdictAt(9, 23, 0), 20, 'Tue 13:00'),
+    { head: 'used up', tail: 'resets Tue 13:00', tone: 'red' });
+  assert.equal(weekLine(verdictAt(9, 23, 0), 20, '').tail, '');
+});
+
+test('weekLine: no reset time leaves the days alone', () => {
+  assert.deepStrictEqual(weekLine(dayBudgetVerdict(NO_RESET, 20, ms(4, 10)), 20, ''),
+    { head: '≈ 3.7 days at 20%', tail: '', tone: 'muted' });
+});
+
+test('weekLine: nothing to say', () => {
+  assert.equal(weekLine(dayBudgetVerdict(undefined, 20, 0), 20, ''), null);
+});
+
+test('weekLine: behind never reads 0.0 days', () => {
+  const line = weekLine({ state: 'behind', weekDays: 2, behindDays: 0.04 }, 25, 'Tue 13:00');
+  assert.ok(line.tail.startsWith('behind plan by 0.1 days'), line.tail);
 });

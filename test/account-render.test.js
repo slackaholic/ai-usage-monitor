@@ -26,6 +26,7 @@ function loadRenderer() {
   const trends = [];
   const labels = [];
   const budgets = [];
+  const stats = [];
   const saved = [];
   const shown = [];
   const trackCalls = [];
@@ -36,9 +37,12 @@ function loadRenderer() {
     Date, Math, Number, Object,
     applyAccountLabel: (id, v) => labels.push([id, v]),
     renderStat: (prefix, win, pct, placeholder) => {
+      stats.push([prefix, win]);
       el(`${prefix}-${win}-pct`).textContent = pct != null ? pct + '%' : (placeholder || '—');
     },
-    renderBudget: (id, pct) => budgets.push([id, pct]),
+    // Records the 5h reset line as it stood when the budget repainted: the
+    // budget writes its own line there, so it has to run last.
+    renderBudget: (id) => budgets.push([id, el(id + '-5h-reset').textContent]),
     setText: (id, v) => { el(id).textContent = v ?? '—'; },
     fmtResetIn: (ms) => 'in:' + ms,
     fmtResetOn: (ms) => 'on:' + ms,
@@ -58,7 +62,7 @@ function loadRenderer() {
   };
   vm.createContext(context);
   vm.runInContext(source.slice(start, end), context);
-  return { ...context, el, logged, trends, labels, budgets, saved, shown, trackCalls,
+  return { ...context, el, logged, trends, labels, budgets, stats, saved, shown, trackCalls,
            resizeCount: () => resizes };
 }
 
@@ -86,12 +90,13 @@ test('every provider renders identically from an identical reading', () => {
   assert.deepStrictEqual(shapes[1], shapes[2]);
 });
 
-test('a window the plan lacks reads n/a and blanks its reset line', () => {
+test('a weekly-only reading leaves the left tile to the budget', () => {
   const c = loadRenderer();
   c.renderAccountData({ id: 'codex', logKey: 'codex' },
     { ...READING, pct5h: null, has5h: false });
-  assert.strictEqual(c.el('codex-5h-pct').textContent, 'n/a');
-  assert.strictEqual(c.el('codex-5h-reset').textContent, '');
+  assert.ok(!c.stats.some(([p, w]) => p === 'codex' && w === '5h'), 'no 5H stat is painted');
+  assert.ok(c.stats.some(([p, w]) => p === 'codex' && w === 'wk'), 'the weekly stat still is');
+  assert.deepStrictEqual(c.budgets, [['codex', '']]);
 });
 
 test('a momentarily missing meter still reads as an em-dash', () => {
@@ -199,7 +204,7 @@ test('each collaborator receives the field it is meant to', () => {
   assert.strictEqual(c.el('codex-5h-reset').textContent, 'in:1000', '5h reset is a countdown');
   assert.strictEqual(c.el('codex-wk-reset').textContent, 'on:2000', 'weekly reset is a date');
   assert.deepStrictEqual(c.trends, [['codex-5h', 55], ['codex-wk', 86]]);
-  assert.deepStrictEqual(c.budgets, [['codex', 55]], 'the budget marker follows the 5h figure');
+  assert.deepStrictEqual(c.budgets, [['codex', 'in:1000']], 'the budget repaints after the reset lines are set');
   assert.deepStrictEqual(c.labels, [['codex', 'x@example.com']]);
   assert.strictEqual(c.saved.length, 1);
   assert.deepStrictEqual(c.saved[0], ['codex', reading], 'the cache is keyed by id and holds the reading');
@@ -222,7 +227,7 @@ test('a stale render neither relabels nor re-caches, but still repaints', () => 
   c.renderAccountData({ id: 'codex', logKey: 'codex' }, { ...READING }, true);
   assert.strictEqual(c.labels.length, 0, 'a cached label must not overwrite a live one');
   assert.strictEqual(c.saved.length, 0, 'the cache is not rewritten from itself');
-  assert.deepStrictEqual(c.budgets, [['codex', 55]], 'the budget still repaints');
+  assert.deepStrictEqual(c.budgets, [['codex', 'in:1000']], 'the budget still repaints');
   assert.deepStrictEqual(c.shown, [['codex-section', true]]);
 });
 

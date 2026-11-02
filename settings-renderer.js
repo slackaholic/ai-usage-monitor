@@ -1,10 +1,10 @@
 'use strict';
 
 // Two id namespaces, not one:
-//   - price / tier-date / tier-today / mult are keyed by `logKey` (the
-//     usage-log account key: 'codex', 'claude-desktop', 'claude-vscode', ...) —
-//     that is what keeps a previously saved price/date/multiplier attached to
-//     the same account after a registry rebuild.
+//   - price / mult are keyed by `logKey` (the usage-log account key: 'codex',
+//     'claude-desktop', 'claude-vscode', ...) — that is what keeps a
+//     previously saved price/multiplier attached to the same account after a
+//     registry rebuild.
 //   - the label override is keyed by descriptor `id` (the renderer's DOM/state
 //     prefix: 'codex', 'claude', 'claude2', ...) — that is what `renderer.js`
 //     reads via `accountOverrides[acct.id]`.
@@ -17,12 +17,12 @@ let ACCOUNT_PAIRS = [
 ];
 const MULT_DEFAULTS = { 'codex': 5, 'claude-desktop': 1 };
 const CLAUDE_CODE_MULT_DEFAULT = 20;
-const BUDGET_DEFAULTS = { window: 10, day: 20 };
+const BUDGET_DEFAULTS = { day: 20 };
 const status = (msg) => { document.getElementById('login-status').textContent = msg || ''; };
 
 // The last full settings object we know about, kept in sync by loadSettings()
 // and by every save*() below. save*() needs this because each per-account
-// object (planPrices, tierChangedAt, planMultipliers, accountOverrides) can
+// object (planPrices, planMultipliers, accountOverrides) can
 // hold entries for accounts that are not part of the *current* ACCOUNT_PAIRS
 // — e.g. a second Claude Code account whose credentials briefly expired, so
 // this session's registry scan doesn't include it. Building a save patch from
@@ -91,9 +91,7 @@ function buildAccountRows() {
       <div class="account-name"></div>
       <div class="account-detail"></div>
       <div class="row"><label>Plan price</label>
-        <input type="number" class="f-price" min="0" step="1" placeholder="—">
-        <input type="date" class="f-tier-date tier-date" title="Plan/tier changed on">
-        <button class="f-tier-today mini-btn" type="button" title="Set to today">Today</button></div>
+        <input type="number" class="f-price" min="0" step="1" placeholder="—"></div>
       <div class="row"><label>Multiplier</label>
         <input type="number" class="f-mult" min="0.1" step="0.1"><span class="suffix">x</span></div>
       <div class="row"><label>Label override</label>
@@ -103,8 +101,6 @@ function buildAccountRows() {
     // settings, which isn't loaded yet at build time.
     row.querySelector('.account-detail').dataset.for = id;
     row.querySelector('.f-price').id = 'price-' + logKey;
-    row.querySelector('.f-tier-date').id = 'tier-date-' + logKey;
-    row.querySelector('.f-tier-today').id = 'tier-today-' + logKey;
     row.querySelector('.f-mult').id = 'mult-' + logKey;
     row.querySelector('.f-ov').id = 'ov-' + id;
     host.appendChild(row);
@@ -151,11 +147,6 @@ function applyAccountDetails() {
 // (no leak — but the new nodes have none until this runs).
 function wireAccountRowListeners() {
   ACCOUNT_PAIRS.forEach(({ logKey }) => document.getElementById('price-' + logKey).addEventListener('change', savePlanPrices));
-  ACCOUNT_PAIRS.forEach(({ logKey }) => document.getElementById('tier-date-' + logKey).addEventListener('change', saveTierDates));
-  ACCOUNT_PAIRS.forEach(({ logKey }) => document.getElementById('tier-today-' + logKey).addEventListener('click', () => {
-    document.getElementById('tier-date-' + logKey).value = todayLocalISO();
-    saveTierDates();
-  }));
   ACCOUNT_PAIRS.forEach(({ logKey }) => document.getElementById('mult-' + logKey).addEventListener('change', savePlanMultipliers));
   ACCOUNT_PAIRS.forEach(({ id }) => document.getElementById('ov-' + id).addEventListener('change', saveOverrides));
 }
@@ -176,15 +167,11 @@ async function loadSettings() {
   const pp = s.planPrices || {};
   ACCOUNT_PAIRS.forEach(({ logKey }) => { document.getElementById('price-' + logKey).value = pp[logKey] != null ? pp[logKey] : ''; });
 
-  const tc = s.tierChangedAt || {};
-  ACCOUNT_PAIRS.forEach(({ logKey }) => { document.getElementById('tier-date-' + logKey).value = tc[logKey] || ''; });
-
   const pm = s.planMultipliers || {};
   ACCOUNT_PAIRS.forEach(({ logKey }) => { document.getElementById('mult-' + logKey).value = pm[logKey] != null ? pm[logKey] : MULT_DEFAULTS[logKey]; });
 
   const bt = s.budgetTargets || {};
-  document.getElementById('budget-window').value = bt.window != null ? bt.window : BUDGET_DEFAULTS.window;
-  document.getElementById('budget-day').value    = bt.day    != null ? bt.day    : BUDGET_DEFAULTS.day;
+  document.getElementById('budget-day').value = bt.day != null ? bt.day : BUDGET_DEFAULTS.day;
 
   const ov = s.accountOverrides || {};
   ACCOUNT_PAIRS.forEach(({ id }) => { document.getElementById('ov-' + id).value = ov[id] || ''; });
@@ -203,30 +190,6 @@ function savePlanPrices() {
   window.electronAPI.saveSettings({ planPrices });
 }
 
-// NB: do NOT try to use validity.badInput to tell "user cleared it" from "user
-// typed a partial date". Measured in Chromium: clearing a date input with the
-// keyboard — even clearing every segment — leaves value === '' with badInput
-// TRUE, indistinguishable from a half-typed entry. (The picker's own Clear
-// leaves it false, so a badInput guard makes clearing work via the picker but
-// silently revert via the keyboard.) An empty field is therefore just saved as
-// '' = "use all history"; the "ratio since <date>" note in the budget readouts
-// is what makes an active cutoff visible.
-function saveTierDates() {
-  const updates = {};
-  ACCOUNT_PAIRS.forEach(({ logKey }) => { updates[logKey] = document.getElementById('tier-date-' + logKey).value || ''; });
-  const tierChangedAt = mergeAccountPatch(lastSettings.tierChangedAt, updates);
-  lastSettings.tierChangedAt = tierChangedAt;
-  window.electronAPI.saveSettings({ tierChangedAt });
-}
-
-// Local YYYY-MM-DD for the "Today" buttons (not toISOString, which is UTC and
-// can land on the wrong day near midnight).
-function todayLocalISO() {
-  const d = new Date();
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
 function savePlanMultipliers() {
   const updates = {};
   ACCOUNT_PAIRS.forEach(({ logKey }) => {
@@ -238,15 +201,16 @@ function savePlanMultipliers() {
   window.electronAPI.saveSettings({ planMultipliers });
 }
 
+// saveSettings merges shallowly, so the stored budgetTargets is spread in
+// first: a `window` value saved before the 5h limits went is kept, not lost.
 function saveBudgetTargets() {
-  const win = parseFloat(document.getElementById('budget-window').value);
   const day = parseFloat(document.getElementById('budget-day').value);
-  window.electronAPI.saveSettings({
-    budgetTargets: {
-      window: (isFinite(win) && win > 0) ? win : BUDGET_DEFAULTS.window,
-      day:    (isFinite(day) && day > 0) ? day : BUDGET_DEFAULTS.day,
-    },
-  });
+  const budgetTargets = {
+    ...(lastSettings.budgetTargets || {}),
+    day: (isFinite(day) && day > 0) ? day : BUDGET_DEFAULTS.day,
+  };
+  lastSettings.budgetTargets = budgetTargets;
+  window.electronAPI.saveSettings({ budgetTargets });
 }
 
 function saveOverrides() {
@@ -272,8 +236,7 @@ document.getElementById('cur-rate').addEventListener('change', e => {
   const r = parseFloat(e.target.value);
   if (!isNaN(r) && r > 0) window.electronAPI.saveSettings({ usdRate: r });
 });
-['budget-window', 'budget-day'].forEach(id =>
-  document.getElementById(id).addEventListener('change', saveBudgetTargets));
+document.getElementById('budget-day').addEventListener('change', saveBudgetTargets);
 
 document.getElementById('btn-rescan-accounts').addEventListener('click', async () => {
   const btn = document.getElementById('btn-rescan-accounts');
