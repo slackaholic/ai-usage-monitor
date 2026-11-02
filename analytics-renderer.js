@@ -307,7 +307,7 @@ function renderSparkline(svgEl, entries, ratePerMs) {
 }
 
 // ── Stat cards ─────────────────────────────────────────────────────────────
-function renderStats(entries, container, settings = {}, budget = {}) {
+function renderStats(entries, container, settings = {}, budget = {}, nowMs = Date.now()) {
   if (!entries.length) {
     container.innerHTML = '<div class="empty">No data in this window.</div>';
     return;
@@ -324,10 +324,6 @@ function renderStats(entries, container, settings = {}, budget = {}) {
   const mult   = PLAN_MULTIPLIERS[currentAccount] ?? 1;
   const configuredPlanMultiplier = planMultiplierFor(settings, currentAccount);
   const runway = weeklyRunway(entries, configuredPlanMultiplier);
-  const runwayCls = runway.confidence === 'none' || runway.gapMs == null ? 'dim'
-    : runway.gapMs > 0 ? 'red'
-    : runway.gapMs > -12 * 3_600_000 ? 'amber'
-    : 'green';
   const runwayHasProjection = runway.confidence !== 'none' && runway.gapMs != null;
   const runwayEvidence = fmtEvidenceSpan(runway.evidenceMs);
   const runwayPace = runway.evidenceMs > 0 && runway.evidenceMs < 12 * 3_600_000 ? 'early pace' : 'current pace';
@@ -349,67 +345,55 @@ function renderStats(entries, container, settings = {}, budget = {}) {
     planFitValue = `${fmtMultiplier(cur)} · won't fit`;
     planFitSub = 'pace far exceeds any plan';
   }
-  // ── Weekly budget ───────────────────────────────────────────────────────
+  // ── Daily budget ────────────────────────────────────────────────────────
+  // The same figures and verdict as the card (get-budget-info, never this
+  // page's filtered rows), so the two cannot disagree. The runway cards keep
+  // their pace numbers but take their colour from the plan rule, so an
+  // on-plan week never goes red here either.
   const bt = (settings && settings.budgetTargets) || {};
-  const budgetWindowTarget = bt.window > 0 ? bt.window : 10;
-  const budgetDayTarget    = bt.day    > 0 ? bt.day    : 20;
-  const budgetRatio = budget && budget.ratio;
-  const budgetLevel = (v, t) => (v <= t ? '' : v <= t * 1.5 ? 'amber' : 'red');
-  let windowBudgetCard, dayBudgetCard;
-  if (!(budgetRatio > 0) || last['5h'] == null) {
-    const noRatioSub = budget && budget.tierChangedAt
-      ? 'need more history since tier change'
-      : 'need more history';
-    windowBudgetCard = { label: 'Window Budget', value: '—', sub: noRatioSub, cls: 'dim' };
-    dayBudgetCard    = { label: "Today's Budget", value: '—', sub: noRatioSub, cls: 'dim' };
-  } else {
-    const wkEquiv = (100 - last['5h']) * budgetRatio;
-    const dayBurn = budget.dayWeeklyBurnPct || 0;
-    // Only this card is ratio-derived, so the tier-change scope belongs here —
-    // Today's Budget is raw weekly burn and is unaffected by the cutoff.
-    const scope = budget && budget.tierChangedAt
-      ? ' · ratio since ' + new Date(budget.tierChangedAt).toLocaleDateString([], { day: 'numeric', month: 'short' })
-      : '';
-    windowBudgetCard = {
-      label: 'Window Budget',
-      value: `${wkEquiv.toFixed(1)}% / ${budgetWindowTarget}%`,
-      sub: 'weekly-equivalent burn this window' + scope,
-      cls: budgetLevel(wkEquiv, budgetWindowTarget),
-    };
-    dayBudgetCard = {
+  const dayTarget = bt.day > 0 ? bt.day : DEFAULT_DAY_TARGET;
+  const verdict = dayBudgetVerdict(budget, dayTarget, nowMs);
+  const line = weekLine(verdict, dayTarget,
+    budget && Number.isFinite(budget.weeklyResetTs) ? fmtRunwayDate(budget.weeklyResetTs) : '');
+  const planCls = { onPlan: 'green', behind: 'red', usedUp: 'red' }[verdict.state] || 'dim';
+  const weekBudgetCard = line
+    ? { label: 'Week Budget', value: line.head, sub: line.tail, cls: line.tone === 'red' ? 'red' : '' }
+    : { label: 'Week Budget', value: '—', sub: 'waiting for a weekly reading', cls: 'dim' };
+  const todayBudgetCard = verdict.todayRemainingPct != null
+    ? {
       label: "Today's Budget",
-      value: `${dayBurn.toFixed(1)}% / ${budgetDayTarget}%`,
-      sub: 'weekly burn today',
-      cls: budgetLevel(dayBurn, budgetDayTarget),
-    };
-  }
+      value: verdict.todayRemainingPct.toFixed(1) + '%',
+      sub: `of ${dayTarget}% · resets at midnight`,
+      cls: ['green', 'amber', 'red'][verdict.todayLevel],
+    }
+    : { label: "Today's Budget", value: '—', sub: 'waiting for budget data', cls: 'dim' };
   const runwayCards = !runwayHasProjection ? [
-    { label: 'Weekly Runway', value: '-', sub: runway.confidence === 'limited' ? `${runwayEvidence} so far` : 'need weekly movement', cls: 'dim' },
-    { label: 'Reset Gap', value: '-', sub: 'vs weekly reset', cls: 'dim' },
-    { label: 'Plan Fit', value: `${fmtMultiplier(configuredPlanMultiplier)} -> -`, sub: runway.confidence === 'limited' ? 'waiting for steadier sample' : 'current plan - pace check', cls: 'dim' },
-    { label: 'At Reset', value: '-', sub: 'projected weekly headroom', cls: 'dim' },
+    { label: 'Weekly Runway', value: '-', sub: runway.confidence === 'limited' ? `${runwayEvidence} so far` : 'need weekly movement', cls: planCls },
+    { label: 'Reset Gap', value: '-', sub: 'vs weekly reset', cls: planCls },
+    { label: 'Plan Fit', value: `${fmtMultiplier(configuredPlanMultiplier)} -> -`, sub: runway.confidence === 'limited' ? 'waiting for steadier sample' : 'current plan - pace check', cls: planCls },
+    { label: 'At Reset', value: '-', sub: 'projected weekly headroom', cls: planCls },
   ] : [
     {
       label: 'Weekly Runway',
       value: runway.gapMs > 0 ? fmtRunwayDate(runway.projectedDepleteTs) : 'Lasts to reset',
       sub: `based on ${runwayPace} - ${runwayEvidence}`,
-      cls: runwayCls,
+      cls: planCls,
     },
-    { label: 'Reset Gap', value: fmtGap(runway.gapMs), sub: 'vs weekly reset', cls: runwayCls },
+    { label: 'Reset Gap', value: fmtGap(runway.gapMs), sub: 'vs weekly reset', cls: planCls },
     {
       label: 'Plan Fit',
       value: planFitValue,
       sub: planFitSub,
-      cls: runwayCls,
+      cls: planCls,
     },
     {
       label: 'At Reset',
       value: runsOutBeforeReset ? '0%' : Math.round(headroomRaw) + '%',
       sub: runsOutBeforeReset ? 'runs out before reset' : `if ${runwayPace} holds`,
-      cls: runwayCls,
+      cls: planCls,
     },
   ];
-  runwayCards.push(windowBudgetCard, dayBudgetCard);
+  runwayCards.push(weekBudgetCard, todayBudgetCard);
   const fmtDepleteTime = (d) => d
     ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (d - Date.now() < 0 ? ' (past)' : '')
     : null;
